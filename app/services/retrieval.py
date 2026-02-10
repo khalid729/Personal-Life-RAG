@@ -516,12 +516,22 @@ class RetrievalService:
             await self.memory.push_message(session_id, "user", query_ar)
             await self.memory.push_message(session_id, "assistant", reply_ar)
 
-            # Extract and store facts from the conversation
+            # Translate user query separately for fact extraction
+            # (combined translation often loses actionable intent)
+            query_en = await self.llm.translate_to_english(query_ar)
+
+            # Extract facts from user query alone (captures intents like
+            # reminders, expenses, debts that get lost in combined translation)
+            query_facts = await self.llm.extract_facts(query_en)
+            if query_facts.get("entities"):
+                await self.graph.upsert_from_facts(query_facts)
+
+            # Also extract from combined exchange for relationship context
             combined = f"User said: {query_ar}\nAssistant replied: {reply_ar}"
             combined_en = await self.llm.translate_to_english(combined)
-            facts = await self.llm.extract_facts(combined_en)
-            if facts.get("entities"):
-                await self.graph.upsert_from_facts(facts)
+            combined_facts = await self.llm.extract_facts(combined_en)
+            if combined_facts.get("entities"):
+                await self.graph.upsert_from_facts(combined_facts)
 
             # Store the exchange as a vector for future retrieval
             await self.vector.upsert_chunks(
