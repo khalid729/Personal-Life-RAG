@@ -39,6 +39,7 @@
 | `fastmcp` | >= 2.0.0 | MCP server framework (SSE transport) |
 | `apscheduler` | >= 3.10.0 | Scheduled jobs (proactive notifications) |
 | `python-dateutil` | >= 2.9.0 | Recurring reminder date advancement (relativedelta) |
+| `pyzbar` | >= 0.1.9 | QR/barcode scanning from images (requires system `libzbar0`) |
 
 ## Why These Choices
 

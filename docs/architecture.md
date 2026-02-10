@@ -144,10 +144,13 @@ Zero-latency keyword-based routing, checked in specificity order:
 | 9 | `graph_project` | مشروع، project، progress |
 | 10 | `graph_person` | مين، who، person |
 | 11 | `graph_task` | مهمة، مهام، task، todo |
-| 12 | `graph_inventory` (move) | نقلت، حركت، حطيته في، moved، relocated |
-| 13 | `graph_inventory` (usage) | استخدمت، ضاع، خلص، عطيت، انكسر |
-| 14 | `graph_inventory` (query) | مخزون، أغراضي، وين ال، inventory |
-| 15 | `llm_classify` | fallback to LLM classification |
+| 12 | `graph_inventory_duplicates` | أغراض مكررة، duplicate item |
+| 13 | `graph_inventory_report` | تقرير مخزون، inventory report |
+| 14 | `graph_inventory` (move) | نقلت، حركت، حطيته في، moved، relocated |
+| 15 | `graph_inventory` (usage) | استخدمت، ضاع، خلص، عطيت، انكسر |
+| 16 | `graph_inventory_unused` | ما استخدمت، مهمل، unused |
+| 17 | `graph_inventory` (query) | مخزون، أغراضي، وين ال، inventory |
+| 18 | `llm_classify` | fallback to LLM classification |
 
 ## Data Flow: Ingestion
 
@@ -212,6 +215,8 @@ All settings are in `app/config.py` via Pydantic `BaseSettings` (overridable via
 | `entity_resolution_person_threshold` | 0.85 | Similarity threshold for Person dedup |
 | `entity_resolution_default_threshold` | 0.80 | Similarity threshold for other entity types |
 | `graph_max_hops` | 3 | Max hops for graph context traversal |
+| `inventory_unused_days` | 90 | Days threshold for unused item detection |
+| `inventory_report_top_n` | 10 | Max items in "top by quantity" report section |
 
 ## Interfaces (Phase 5)
 
@@ -308,6 +313,15 @@ Features:
 - **ItemMove pseudo-entity**: "نقلت/حركت" → delete old STORED_IN, create new
 - **Purchase alert**: confirmed Expense → `find_similar_items()` → "⚠️ عندك في المخزون"
 - **Photo similarity**: vector search after auto-item for similar existing items
+
+## Advanced Inventory (Phase 9)
+
+- **QR/Barcode scanning**: `_scan_barcodes(file_bytes)` uses pyzbar + PIL on image bytes. Barcode value + type stored on Item node. `find_item_by_barcode()` for lookup
+- **Last-use tracking**: `_touch_item_last_used(name)` fire-and-forget SET `last_used_at` on Item. Called from `adjust_item_quantity()`, `move_item()`, and `graph_inventory` route via `asyncio.create_task`
+- **Unused items**: `query_unused_items(days)` finds items with no `last_used_at` or older than cutoff
+- **Inventory report**: `query_inventory_report()` — 7 sub-queries (totals, by category, by location, by condition, without location, unused count, top by quantity)
+- **Duplicate detection**: `detect_duplicate_items()` — Cypher name-overlap; `detect_duplicate_items_vector()` — embedding similarity ≥ 0.8
+- **Telegram**: `/inventory report` subcommand with `_format_inventory_report_ar()` Arabic formatter
 
 ## Smart Knowledge + Entity Resolution (Phase 8)
 

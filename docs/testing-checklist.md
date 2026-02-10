@@ -154,7 +154,8 @@
 | Phase 8 — Entity Resolution | 2 | 2 | 0 |
 | Phase 8 — Smart Tags + Knowledge | 2 | 2 | 0 |
 | Phase 8 — Multi-hop Traversal | 1 | 1 | 0 |
-| **الإجمالي** | **95** | **93** | **2** |
+| Phase 9 — Advanced Inventory | 6 | 6 | 0 |
+| **الإجمالي** | **101** | **99** | **2** |
 
 الاختبارين الباقيين يحتاجون Open WebUI Docker container شغال.
 
@@ -215,3 +216,38 @@
 | Smart Tags + Knowledge | 2 | 2 |
 | Multi-hop Traversal | 1 | 1 |
 | **الإجمالي Phase 8** | **5** | **5** |
+
+---
+
+## Phase 9 — Advanced Inventory
+
+### QR/Barcode Scanning
+- [x] `_scan_barcodes(file_bytes)` — pyzbar + PIL on BytesIO
+- [x] GET `/inventory/by-barcode/1234567890` → 404 (correct, no barcodes stored yet)
+
+### Last-Use Tracking
+- [x] `_touch_item_last_used()` fire-and-forget on inventory queries + usage + move
+- [x] GET `/inventory/unused?days=90` → 200 (19 unused items)
+
+### Inventory Report
+- [x] GET `/inventory/report` → 200 (26 items, 7 sub-queries: totals, category, location, condition, no-location, unused, top)
+- [x] Telegram `/inventory report` — Arabic formatted report
+
+### Duplicate Detection
+- [x] GET `/inventory/duplicates` → 200 (14 name-overlap duplicates)
+- [x] GET `/inventory/duplicates?method=vector` → 200 (empty — expected, embedding similarity)
+
+### Regression
+- [x] GET `/inventory/` → 200
+- [x] GET `/inventory/summary` → 200
+
+### ملخص Phase 9
+
+| المكون | الاختبارات | ناجحة |
+|--------|-----------|-------|
+| QR/Barcode Scanning | 2 | 2 |
+| Last-Use Tracking | 2 | 2 |
+| Inventory Report | 2 | 2 |
+| Duplicate Detection | 2 | 2 |
+| Regression | 2 | 2 |
+| **الإجمالي Phase 9** | **10** | **10** |

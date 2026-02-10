@@ -181,15 +181,37 @@
 - [x] Multi-hop chat: "tell me about Mohammed" → 3-hop graph context (person + company + debts)
 - [x] Zero errors in API logs after all tests
 
+### Phase 9 — Advanced Inventory
+- [x] QR/Barcode scanning from photos (`pyzbar` + PIL on image bytes)
+- [x] `_scan_barcodes(file_bytes)` in files.py, barcode/barcode_type stored on Item node
+- [x] `find_item_by_barcode()` + GET `/inventory/by-barcode/{barcode}` — lookup by barcode value
+- [x] Vision prompt: `barcode_visible` field added to inventory_item JSON template
+- [x] Last-use tracking: `_touch_item_last_used(name)` — fire-and-forget SET `last_used_at`
+- [x] Called from: `adjust_item_quantity()`, `move_item()`, `graph_inventory` route (via `asyncio.create_task`)
+- [x] `query_unused_items(days)` — items with no `last_used_at` or older than cutoff
+- [x] GET `/inventory/unused?days=N` — unused items endpoint
+- [x] Comprehensive inventory report: `query_inventory_report()` — 7 sub-queries (totals, by category, by location, by condition, without location, unused count, top by quantity)
+- [x] GET `/inventory/report` — inventory report endpoint
+- [x] Telegram `/inventory report` subcommand with Arabic formatter
+- [x] `_format_inventory_report()` in retrieval.py for RAG context
+- [x] Duplicate detection: `detect_duplicate_items()` — Cypher name-overlap (`toLower CONTAINS`)
+- [x] `detect_duplicate_items_vector()` — embedding similarity ≥ 0.8 on `file_inventory_item` vectors
+- [x] GET `/inventory/duplicates?method=name|vector` — duplicate detection endpoint
+- [x] Smart router: 3 new keyword patterns (duplicates > report > unused)
+- [x] 2 new config settings: `inventory_unused_days` (90), `inventory_report_top_n` (10)
+- [x] Dependency: `pyzbar>=0.1.9` + system `libzbar0`
+
+### Phase 9 — Testing Results (6/6 passed)
+- [x] GET `/inventory/report` → 200, comprehensive report (26 items)
+- [x] GET `/inventory/unused?days=90` → 200, 19 unused items
+- [x] GET `/inventory/duplicates` → 200, 14 name-overlap duplicates
+- [x] GET `/inventory/duplicates?method=vector` → 200 (empty — expected)
+- [x] GET `/inventory/by-barcode/1234567890` → 404 (correct, no barcodes stored yet)
+- [x] Regression: existing inventory endpoints unaffected
+
 ---
 
 ## Remaining Phases
-
-### Phase 9 — Advanced Inventory
-- [ ] QR/Barcode scanning → contents of box/container
-- [ ] Last-use tracking ("كم غرض عندي ما استخدمته من سنة؟")
-- [ ] Comprehensive inventory report (by category, location, value)
-- [ ] Duplicate detection across locations (similar items in different places)
 
 ### Phase 10 — Productivity Enhancements
 - [ ] Time-blocking suggestions based on task priorities (ADHD Mode)

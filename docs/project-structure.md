@@ -16,14 +16,16 @@ Personal_Rag/
 │   │   │                        #   smart tags (normalization + TAGGED_WITH), knowledge auto-categorization,
 │   │   │                        #   multi-hop traversal (3-hop), financial reports, debt management,
 │   │   │                        #   reminders, daily planner, projects overview, knowledge queries,
-│   │   │                        #   active tasks, idea similarity, inventory (items, locations, movement)
+│   │   │                        #   active tasks, idea similarity, inventory (items, locations, movement,
+│   │   │                        #   barcode lookup, last-use tracking, reports, duplicate detection)
 │   │   ├── vector.py            # Qdrant — BGE-M3 embedding, chunk upsert/search with filtering
 │   │   ├── memory.py            # Redis — 3-layer memory (working/daily/core), pending actions,
 │   │   │                        #   message counter, context builders
 │   │   ├── retrieval.py         # Agentic RAG pipeline — smart router, ingestion, retrieval
 │   │   │                        #   (think/act/reflect/retry), confirmation flow, post-processing
 │   │   └── files.py             # File processing — images (vision), PDFs (pymupdf4llm),
-│   │                            #   audio (WhisperX), auto-expense, auto-item from photos
+│   │                            #   audio (WhisperX), auto-expense, auto-item from photos,
+│   │                            #   barcode scanning (pyzbar)
 │   │
 │   ├── routers/
 │   │   ├── chat.py              # POST /chat/ — main conversational endpoint
@@ -35,7 +37,8 @@ Personal_Rag/
 │   │   ├── projects.py          # GET /projects/ + POST /projects/update
 │   │   ├── tasks.py             # GET /tasks/
 │   │   ├── knowledge.py         # GET /knowledge/
-│   │   ├── inventory.py         # GET/POST /inventory/* (items, summary, location, quantity, search-similar)
+│   │   ├── inventory.py         # GET/POST /inventory/* (items, summary, location, quantity, search-similar,
+│   │   │                        #   report, unused, duplicates, by-barcode)
 │   │   └── proactive.py         # GET/POST /proactive/* (morning, noon, evening, reminders, alerts)
 │   │
 │   ├── prompts/

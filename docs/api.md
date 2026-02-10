@@ -310,6 +310,70 @@ Update an item's quantity.
 {"quantity": 3}
 ```
 
+### GET /inventory/by-barcode/{barcode}
+Find inventory item by barcode/QR code value.
+
+**Response (200):**
+```json
+{
+  "name": "USB-C cable",
+  "quantity": 5,
+  "category": "إلكترونيات",
+  "barcode_type": "EAN13",
+  "location": "السطح > الرف الثاني"
+}
+```
+Returns 404 if no item with that barcode.
+
+### GET /inventory/report
+Comprehensive inventory report with 7 sub-queries.
+
+**Response:**
+```json
+{
+  "total_items": 26,
+  "total_quantity": 95,
+  "by_category": [{"category": "إلكترونيات", "items": 10, "quantity": 35}],
+  "by_location": [{"location": "السطح > الرف الثاني", "items": 8, "quantity": 20}],
+  "by_condition": [{"condition": "new", "count": 15}],
+  "without_location": 3,
+  "unused_count": 19,
+  "top_by_quantity": [{"name": "USB-C cable", "quantity": 10, "category": "إلكترونيات"}]
+}
+```
+
+### GET /inventory/unused
+Items not used/mentioned for N days.
+
+**Parameters:** `days` (int, default 90)
+
+**Response:**
+```json
+{
+  "items": [
+    {"name": "USB-C cable", "quantity": 5, "category": "إلكترونيات", "last_used_at": null, "location": "السطح"}
+  ],
+  "threshold_days": 90
+}
+```
+
+### GET /inventory/duplicates
+Detect potential duplicate items.
+
+**Parameters:** `method` (string: `"name"` or `"vector"`, default `"name"`)
+
+**Response:**
+```json
+{
+  "duplicates": [
+    {
+      "item_a": {"name": "USB cable", "quantity": 3, "location": "السطح"},
+      "item_b": {"name": "USB-C cable", "quantity": 5, "location": "المكتب"}
+    }
+  ]
+}
+```
+
 ### POST /inventory/search-similar
 Search for similar inventory items by text description (vector similarity).
 
@@ -444,6 +508,7 @@ The Telegram bot runs as a separate process and calls the RAG API. Auth: only re
 | `/tasks` | Tasks list | `GET /tasks/` |
 | `/report` | Monthly financial report | `GET /financial/report` |
 | `/inventory` | Inventory items list | `GET /inventory/` |
+| `/inventory report` | Inventory report (stats) | `GET /inventory/report` |
 
 ### Message Types
 - **Text** → `POST /chat/` → Arabic reply
