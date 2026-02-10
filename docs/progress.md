@@ -98,6 +98,27 @@
 - [x] Open WebUI: 2/4 (syntax + instantiation OK — اختبار مباشر يحتاج Docker)
 - [x] اختبارات عامة: 10/10 (تواريخ، sessions، timeouts، errors، splitting)
 
+### Phase 6 — Proactive System (Scheduled Notifications + Smart Alerts)
+- [x] APScheduler (AsyncIOScheduler) in Telegram bot process
+- [x] 5 scheduled jobs: morning summary (cron 07:00), noon check-in (cron 13:00), evening summary (cron 21:00), reminder check (30min interval), smart alerts (6h interval)
+- [x] Local-to-UTC hour conversion for CronTrigger
+- [x] Graceful scheduler shutdown in `finally` block
+- [x] 7 REST endpoints under `/proactive/*` (morning-summary, noon-checkin, evening-summary, due-reminders, advance-reminder, stalled-projects, old-debts)
+- [x] `advance_recurring_reminder()` in graph service (daily/weekly/monthly/yearly via dateutil.relativedelta)
+- [x] 6 Arabic formatters for Telegram messages
+- [x] 5 async job functions with try/except (noon check-in + smart alerts skip if empty)
+- [x] Stalled projects detection (active projects with no task update in N days)
+- [x] Old debts detection (debts I owe older than N days)
+- [x] 8 `proactive_*` settings in config.py (enabled, hours, intervals, thresholds)
+- [x] Dependencies: apscheduler>=3.10.0, python-dateutil>=2.9.0
+
+### Phase 6 — Testing Results (27/27 passed, total 73/75)
+- [x] Proactive endpoints: 7/7 (all returning correct data)
+- [x] Scheduler: 4/4 (5 jobs registered, UTC conversion, startup log)
+- [x] Fire tests: 3/3 (morning + evening sent to Telegram, smart alerts correctly skipped)
+- [x] Graph/Config: 3/3 (advance_recurring_reminder, relativedelta, config settings)
+- [x] Regression: 10/10 (all existing endpoints unaffected)
+
 ---
 
 ## Remaining / Future Ideas
@@ -112,7 +133,6 @@
 - [ ] Time-blocking suggestions based on task priorities
 - [ ] Energy-level awareness (morning vs evening tasks)
 - [ ] Pomodoro-style breakdowns for large tasks
-- [ ] Push notifications / webhook integration
 
 ### Project Management
 - [ ] Gantt-style timeline view
@@ -132,6 +152,5 @@
 - [ ] Frontend UI (web dashboard)
 - [ ] User authentication (multi-user support)
 - [ ] Backup/export (graph + vector snapshots)
-- [ ] Recurring reminder execution (cron-like scheduler)
 - [ ] Arabic NER improvement (custom patterns for Saudi names/places)
 - [ ] Conversation summarization for long sessions
