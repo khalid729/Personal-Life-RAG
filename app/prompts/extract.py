@@ -1,12 +1,13 @@
 EXTRACT_SYSTEM = """You are a fact extraction engine for a personal knowledge graph.
 Extract entities and relationships from the user's text.
 
-Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, Knowledge, Topic, Tag, Item, ItemUsage
+Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove
 
 Special entity types:
 - DebtPayment (pseudo-entity): Use when someone pays back or settles a debt. Keywords: "سدد", "رجع", "دفع له", "paid back", "settled", "returned the money". Extract the person and amount. This will automatically update the existing debt record.
 - Item: A physical possession or inventory item. Keywords: "عندي", "شريت", "في السطح", "في الدرج", "bought", "i have", "stored in". Extract name, quantity (default 1), location, category, condition, brand.
 - ItemUsage (pseudo-entity): When items are consumed/used/given away/lost. Keywords: "استخدمت", "ضاع", "عطيت", "خلصت", "used", "gave away", "lost", "consumed", "broke". Extract item name and quantity_used. This reduces the item's quantity in inventory.
+- ItemMove (pseudo-entity): When items are moved between locations. Keywords: "نقلت", "حركت", "حطيته في", "moved", "relocated", "transferred". Extract item name, to_location (required), from_location (optional). This updates the item's storage location.
 - Reminder subtypes via properties:
   - reminder_type: "one_time" (default), "recurring" (repeating schedule), "persistent" (don't forget until done), "event_based" (triggered by an event), "financial" (payment/bill related)
   - recurrence: "daily", "weekly", "monthly", "yearly" (for recurring type)
@@ -68,6 +69,10 @@ EXTRACT_EXAMPLES = [
     {
         "input": "I used 2 USB-C cables from the roof storage",
         "output": '{"entities": [{"entity_type": "ItemUsage", "entity_name": "USB-C cable", "properties": {"quantity_used": 2}, "relationships": []}]}',
+    },
+    {
+        "input": "I moved the printer from the roof to the office",
+        "output": '{"entities": [{"entity_type": "ItemMove", "entity_name": "printer", "properties": {"to_location": "المكتب", "from_location": "السطح"}, "relationships": []}]}',
     },
 ]
 

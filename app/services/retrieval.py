@@ -129,6 +129,11 @@ TASK_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+INVENTORY_MOVE_KEYWORDS = re.compile(
+    r"(نقلت|حركت|حطيته في|حطيتها في|شلته من|نقله|حوّل|moved|relocated|transferred|put it in)",
+    re.IGNORECASE,
+)
+
 INVENTORY_USAGE_KEYWORDS = re.compile(
     r"(استخدمت|ضاع|خلص|عطيت|انكسر|رميت|used .+ (cable|item|tool|بطارية|كيبل)|gave away|lost|broke)",
     re.IGNORECASE,
@@ -172,6 +177,8 @@ def smart_route(text: str) -> str:
         return "graph_person"
     if TASK_KEYWORDS.search(text):
         return "graph_task"
+    if INVENTORY_MOVE_KEYWORDS.search(text):
+        return "graph_inventory"
     if INVENTORY_USAGE_KEYWORDS.search(text):
         return "graph_inventory"
     if INVENTORY_KEYWORDS.search(text):
@@ -518,7 +525,7 @@ class RetrievalService:
         """Map extracted entity types to action type string."""
         for entity in entities:
             etype = entity.get("entity_type", "")
-            if etype in ("Expense", "Debt", "DebtPayment", "Reminder", "Item", "ItemUsage"):
+            if etype in ("Expense", "Debt", "DebtPayment", "Reminder", "Item", "ItemUsage", "ItemMove"):
                 return etype
         # Fallback from route
         route_map = {
@@ -581,9 +588,24 @@ class RetrievalService:
                     "Reminder": "التذكير",
                     "Item": "الغرض",
                     "ItemUsage": "استخدام الغرض",
+                    "ItemMove": "نقل الغرض",
                 }
                 label = labels.get(action_type, "العملية")
-                return f"تم تسجيل {label} بنجاح."
+                reply = f"تم تسجيل {label} بنجاح."
+                # Purchase alert: check if similar item exists in inventory
+                if action_type == "Expense":
+                    item_name = entities[0].get("entity_name", "")
+                    if item_name:
+                        try:
+                            similar = await self.graph.find_similar_items(item_name)
+                            if similar:
+                                items_text = ", ".join(
+                                    f"{s['name']} ({s['quantity']} حبة)" for s in similar
+                                )
+                                reply += f"\n\n⚠️ تنبيه: عندك في المخزون: {items_text}"
+                        except Exception as e:
+                            logger.debug("Purchase alert check failed: %s", e)
+                return reply
             return "ما قدرت أسجل العملية، حاول مرة ثانية."
         except Exception as e:
             logger.error("Confirmed action failed: %s", e)

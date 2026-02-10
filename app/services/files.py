@@ -176,6 +176,26 @@ class FileService:
                 except Exception as e:
                     logger.warning("Auto-item creation failed: %s", e)
 
+        # Search for similar items via vector embeddings
+        similar_items = []
+        if file_type == "inventory_item":
+            item_desc = (analysis.get("item_name", "") + " " + analysis.get("description", "")).strip()
+            if item_desc:
+                try:
+                    results = await self.retrieval.vector.search(
+                        item_desc, limit=5, source_type="file_inventory_item"
+                    )
+                    current_name = analysis.get("item_name", "").lower()
+                    for r in results:
+                        if r["score"] >= 0.5 and current_name not in r["text"].lower()[:100]:
+                            similar_items.append({
+                                "text": r["text"][:200],
+                                "score": round(r["score"], 2),
+                            })
+                    similar_items = similar_items[:3]
+                except Exception as e:
+                    logger.debug("Similar item search failed: %s", e)
+
         return {
             "status": "ok",
             "filename": filename,
@@ -187,6 +207,7 @@ class FileService:
             "processing_steps": steps,
             "auto_expense": auto_expense,
             "auto_item": auto_item,
+            "similar_items": similar_items,
         }
 
     # ========================

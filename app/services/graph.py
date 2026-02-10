@@ -122,6 +122,52 @@ class GraphService:
         path = re.sub(r'\s+', ' ', path)
         return path.strip() or None
 
+    # --- Category normalization ---
+    _CATEGORY_ALIASES: dict[str, str] = {
+        # Electronics
+        "electronics": "إلكترونيات",
+        "electronic": "إلكترونيات",
+        "cables": "إلكترونيات",
+        "cable": "إلكترونيات",
+        "كيابل": "إلكترونيات",
+        "شواحن": "إلكترونيات",
+        "chargers": "إلكترونيات",
+        "batteries": "إلكترونيات",
+        "بطاريات": "إلكترونيات",
+        # Tools
+        "tools": "أدوات",
+        "tool": "أدوات",
+        "عدة": "أدوات",
+        "عدد": "أدوات",
+        # Parts
+        "parts": "قطع غيار",
+        "spare parts": "قطع غيار",
+        # Household
+        "household": "منزلية",
+        "home": "منزلية",
+        "منزلي": "منزلية",
+        # Accessories
+        "accessories": "إكسسوارات",
+        "accessory": "إكسسوارات",
+        # Stationery
+        "stationery": "قرطاسية",
+        "office supplies": "قرطاسية",
+        # Chemicals
+        "chemicals": "كيماويات",
+        "chemical": "كيماويات",
+    }
+
+    @staticmethod
+    def _normalize_category(category: str) -> str:
+        """Normalize category to consistent Arabic form."""
+        if not category:
+            return ""
+        cat = category.strip()
+        lower = cat.lower()
+        if lower in GraphService._CATEGORY_ALIASES:
+            return GraphService._CATEGORY_ALIASES[lower]
+        return cat
+
     async def upsert_debt(self, person_name: str, amount: float, direction: str, **props) -> None:
         direction = self._normalize_direction(direction)
         q = """
@@ -381,6 +427,17 @@ class GraphService:
                         count += 1
                     else:
                         logger.warning("ItemUsage failed: %s", result["error"])
+                    continue  # Skip relationship creation for pseudo-entity
+
+                if etype == "ItemMove":
+                    to_loc = props.get("to_location", "")
+                    from_loc = props.get("from_location")
+                    if to_loc:
+                        result = await self.move_item(ename, to_loc, from_loc)
+                        if "error" not in result:
+                            count += 1
+                        else:
+                            logger.warning("ItemMove failed: %s", result["error"])
                     continue  # Skip relationship creation for pseudo-entity
 
                 if etype == "Expense":
@@ -1084,6 +1141,9 @@ class GraphService:
         location = props.pop("location", None)
         if location:
             location = self._normalize_location(location)
+        category = props.get("category")
+        if category:
+            props["category"] = self._normalize_category(category)
         file_hash = props.pop("file_hash", None)
         quantity = props.pop("quantity", 1)
         if quantity is None:
@@ -1250,6 +1310,8 @@ class GraphService:
         location = props.pop("location", None)
         if location:
             location = self._normalize_location(location)
+        if "category" in props and props["category"]:
+            props["category"] = self._normalize_category(props["category"])
 
         # Build SET clause for non-None props
         filtered = {k: v for k, v in props.items() if v is not None}
@@ -1318,6 +1380,52 @@ class GraphService:
         if not rows:
             return {"error": f"Item '{name}' not found"}
         return {"name": rows[0][0], "quantity": int(rows[0][1]), "status": rows[0][2]}
+
+    async def move_item(self, name: str, to_location: str, from_location: str | None = None) -> dict:
+        """Move an item to a new location. Deletes old STORED_IN, creates new one."""
+        to_location = self._normalize_location(to_location) or to_location
+        # Find the item
+        q_find = """
+        MATCH (i:Item)
+        WHERE toLower(i.name) CONTAINS toLower($name)
+        OPTIONAL MATCH (i)-[:STORED_IN]->(l:Location)
+        RETURN i.name, l.path
+        LIMIT 1
+        """
+        rows = await self.query(q_find, {"name": name})
+        if not rows:
+            return {"error": f"Item '{name}' not found"}
+        item_name, old_location = rows[0][0], rows[0][1]
+        # Delete old STORED_IN
+        q_del = "MATCH (i:Item {name: $name})-[r:STORED_IN]->() DELETE r"
+        await self.query(q_del, {"name": item_name})
+        # Create new location + relationship
+        await self.upsert_location(to_location)
+        q_link = """
+        MATCH (i:Item {name: $name})
+        MATCH (l:Location {path: $loc})
+        MERGE (i)-[:STORED_IN]->(l)
+        """
+        await self.query(q_link, {"name": item_name, "loc": to_location})
+        # Update timestamp
+        await self.query(
+            "MATCH (i:Item {name: $name}) SET i.updated_at = $now",
+            {"name": item_name, "now": _now()},
+        )
+        return {"name": item_name, "from_location": old_location, "to_location": to_location}
+
+    async def find_similar_items(self, name: str) -> list[dict]:
+        """Find inventory items whose name fuzzy-matches the given text."""
+        q = """
+        MATCH (i:Item)
+        WHERE i.status IN ['active', null]
+          AND toLower(i.name) CONTAINS toLower($name)
+        OPTIONAL MATCH (i)-[:STORED_IN]->(l:Location)
+        RETURN i.name, i.quantity, l.path
+        LIMIT 5
+        """
+        rows = await self.query(q, {"name": name})
+        return [{"name": r[0], "quantity": int(r[1] or 0), "location": r[2]} for r in (rows or [])]
 
     async def _create_generic(self, label: str, key_field: str, value: str, **props) -> None:
         extra = {}

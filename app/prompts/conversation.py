@@ -34,6 +34,7 @@ def is_confirmation(text: str) -> str | None:
 ACTION_PATTERNS = re.compile(
     r"(صرفت|دفعت|سددت|سدد|رجع|سجل|ذكرني|أضف|ضيف|حط|اشتريت|عندي |شريت|"
     r"استخدمت|ضاع|خلص|عطيت|رميت|انكسر|"
+    r"نقلت|حركت|حطيته في|حطيتها في|moved|relocated|transferred|"
     r"spent|paid|record|add|bought|create|register|remind me|set reminder|i have|stored|"
     r"used|gave away|lost|broke)",
     re.IGNORECASE,
@@ -86,6 +87,7 @@ _ACTION_LABELS = {
     "Reminder": "تذكير",
     "Item": "غرض في المخزون",
     "ItemUsage": "استخدام غرض",
+    "ItemMove": "نقل غرض",
 }
 
 
@@ -181,6 +183,19 @@ def build_confirmation_message(action_type: str, entities: list[dict]) -> str:
         parts.append("؟")
         return "".join(parts)
 
+    if action_type == "ItemMove":
+        parts = ["تبيني أنقل"]
+        if name:
+            parts.append(f" {name}")
+        from_loc = props.get("from_location", "")
+        to_loc = props.get("to_location", "")
+        if from_loc:
+            parts.append(f" من {from_loc}")
+        if to_loc:
+            parts.append(f" إلى {to_loc}")
+        parts.append("؟")
+        return "".join(parts)
+
     return f"تبيني أسجل {label}: {name}؟"
 
 
@@ -195,6 +210,7 @@ Action requirements:
 - Reminder: needs title/description (required)
 - Item: needs name (required), location is helpful but optional
 - ItemUsage: needs item name (required) and quantity_used (default 1)
+- ItemMove: needs item name (required) and to_location (required)
 
 Respond in JSON:
 {

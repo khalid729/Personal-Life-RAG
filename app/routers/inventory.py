@@ -56,3 +56,19 @@ async def update_item_location(name: str, req: InventoryLocationUpdate, request:
 async def update_item_quantity(name: str, req: InventoryQuantityUpdate, request: Request):
     graph = request.app.state.retrieval.graph
     return await graph.update_item(name, quantity=req.quantity)
+
+
+@router.post("/search-similar")
+async def search_similar_items(request: Request, body: dict):
+    """Search for similar inventory items by text description."""
+    description = body.get("description", "")
+    if not description:
+        return {"results": []}
+    vector = request.app.state.retrieval.vector
+    results = await vector.search(description, limit=5, source_type="file_inventory_item")
+    return {
+        "results": [
+            {"text": r["text"][:300], "score": round(r["score"], 2), "metadata": r["metadata"]}
+            for r in results if r["score"] >= 0.4
+        ]
+    }

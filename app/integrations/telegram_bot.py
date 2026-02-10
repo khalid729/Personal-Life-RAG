@@ -440,6 +440,27 @@ async def handle_photo(message: Message):
         file_type = result.get("file_type", "")
         file_type_ar = _AR_FILE_TYPES.get(file_type, file_type)
         sid = session_id(message.from_user.id)
+        # Photo search mode: search keywords in caption trigger similarity search
+        _SEARCH_KEYWORDS = ("ابحث", "شبيه", "مشابه", "عندي زي", "similar", "search", "find")
+        if context and any(kw in context for kw in _SEARCH_KEYWORDS):
+            analysis_props = result.get("analysis", {})
+            desc = analysis_props.get("description", "") or analysis_props.get("brief_description", "")
+            if desc:
+                try:
+                    search_result = await api_post("/inventory/search-similar", json={"description": desc})
+                    matches = search_result.get("results", [])
+                    if matches:
+                        lines = ["🔍 أغراض مشابهة:"]
+                        for m in matches:
+                            preview = m["text"].split("\n")[0] if "\n" in m["text"] else m["text"][:80]
+                            lines.append(f"  • {preview}")
+                        await send_reply(message, "\n".join(lines))
+                    else:
+                        await message.answer("ما لقيت أغراض مشابهة في المخزون.")
+                except Exception as e:
+                    logger.error("Photo search failed: %s", e)
+                    await message.answer("❌ فشل البحث عن أغراض مشابهة.")
+                return
         if context:
             # User has a caption/question — enrich with item name if inventory
             query = context
@@ -542,6 +563,14 @@ async def handle_photo(message: Message):
                 "created_at": time.monotonic(),
             }
             reply_parts.append("📍 وين حاطه؟ (أرسل المكان، مثلاً: السطح > الرف الثاني)")
+
+    similar = result.get("similar_items", [])
+    if similar:
+        sim_lines = ["🔍 أغراض مشابهة في المخزون:"]
+        for s in similar:
+            preview = s["text"].split("\n")[0] if "\n" in s["text"] else s["text"][:80]
+            sim_lines.append(f"  • {preview}")
+        reply_parts.append("\n".join(sim_lines))
 
     reply_parts.append(
         f"✅ تم الحفظ: {result.get('chunks_stored', 0)} أجزاء، "
