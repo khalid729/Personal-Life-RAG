@@ -282,11 +282,23 @@ class ChatRequest(BaseModel):
     session_id: str = "default"
 
 
+class PendingAction(BaseModel):
+    action_type: str
+    extracted_entities: list[dict] = []
+    query_ar: str = ""
+    query_en: str = ""
+    route: str = ""
+    created_at: str = ""
+    confirmation_message: str = ""
+    disambiguation_options: Optional[list[dict]] = None
+
+
 class ChatResponse(BaseModel):
     reply: str
     sources: list[str] = []
     route: Optional[str] = None
     agentic_trace: list[dict] = []
+    pending_confirmation: bool = False
 
 
 class IngestRequest(BaseModel):

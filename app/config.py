@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     agentic_max_retries: int = 1
     self_rag_threshold: float = 0.3
 
+    # Conversation (Phase 4)
+    confirmation_enabled: bool = True
+    confirmation_ttl_seconds: int = 300
+    daily_summary_interval: int = 10
+    core_memory_interval: int = 20
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

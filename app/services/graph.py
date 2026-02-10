@@ -524,17 +524,17 @@ class GraphService:
     async def record_debt_payment(
         self, person: str, amount: float, direction: str | None = None
     ) -> dict:
-        """Record a debt payment. Finds matching open/partial debt, updates amount/status."""
-        # Find matching debt
+        """Record a debt payment. Finds matching open/partial debt, updates amount/status.
+        Returns disambiguation_needed if multiple debts match."""
+        # Find matching debts (no LIMIT 1 — check for disambiguation)
         direction_clause = "AND d.direction = $direction" if direction else ""
         q_find = f"""
         MATCH (d:Debt)-[:INVOLVES]->(p:Person)
         WHERE toLower(p.name) CONTAINS toLower($person)
           AND d.status IN ['open', 'partial']
           {direction_clause}
-        RETURN id(d) as debt_id, d.amount, d.direction, p.name, d.original_amount
+        RETURN id(d) as debt_id, d.amount, d.direction, p.name, d.original_amount, d.reason
         ORDER BY d.amount DESC
-        LIMIT 1
         """
         params: dict = {"person": person}
         if direction:
@@ -544,13 +544,43 @@ class GraphService:
         if not rows:
             return {"error": f"No open debt found for '{person}'"}
 
-        debt_id, current_amount, debt_dir, person_name, orig_amount = rows[0]
+        # Multiple debts found — disambiguation needed
+        if len(rows) > 1:
+            options = []
+            for i, r in enumerate(rows):
+                options.append({
+                    "index": i + 1,
+                    "debt_id": r[0],
+                    "current_amount": r[1],
+                    "direction": r[2],
+                    "person": r[3],
+                    "original_amount": r[4],
+                    "reason": r[5] or "",
+                })
+            return {"disambiguation_needed": True, "options": options}
+
+        return await self._apply_debt_payment(rows[0], amount)
+
+    async def apply_debt_payment_by_id(self, debt_id: int, amount: float) -> dict:
+        """Apply payment to a specific debt by graph node ID."""
+        q = """
+        MATCH (d:Debt)-[:INVOLVES]->(p:Person)
+        WHERE id(d) = $debt_id
+        RETURN id(d), d.amount, d.direction, p.name, d.original_amount, d.reason
+        """
+        rows = await self.query(q, {"debt_id": debt_id})
+        if not rows:
+            return {"error": "Debt not found"}
+        return await self._apply_debt_payment(rows[0], amount)
+
+    async def _apply_debt_payment(self, row: list, amount: float) -> dict:
+        """Internal: apply payment to a single debt row."""
+        debt_id, current_amount, debt_dir, person_name, orig_amount, _reason = row
         if not orig_amount:
             orig_amount = current_amount
 
         remaining = current_amount - amount
         if remaining <= 0:
-            # Fully paid
             q_update = """
             MATCH (d:Debt) WHERE id(d) = $debt_id
             SET d.amount = 0, d.status = 'paid', d.paid_at = $now,
@@ -565,7 +595,6 @@ class GraphService:
                 "direction": debt_dir,
             }
         else:
-            # Partial payment
             q_update = """
             MATCH (d:Debt) WHERE id(d) = $debt_id
             SET d.amount = $remaining, d.status = 'partial',

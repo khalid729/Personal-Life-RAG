@@ -14,12 +14,16 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, request: Req
         session_id=req.session_id,
     )
 
+    pending_confirmation = result.get("pending_confirmation", False)
+
     # Post-processing in background (memory update, fact extraction, embeddings)
+    # Skip fact extraction when a confirmation prompt was returned
     background_tasks.add_task(
         retrieval.post_process,
         req.message,
         result["reply"],
         req.session_id,
+        skip_fact_extraction=pending_confirmation,
     )
 
     return ChatResponse(
@@ -27,4 +31,5 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, request: Req
         sources=result.get("sources", []),
         route=result.get("route"),
         agentic_trace=result.get("agentic_trace", []),
+        pending_confirmation=pending_confirmation,
     )

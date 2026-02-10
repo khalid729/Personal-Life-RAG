@@ -8,6 +8,7 @@ from app.prompts.agentic import build_reflect, build_think
 from app.prompts.classify import build_classify
 from app.prompts.extract import build_context_enrichment, build_extract
 from app.prompts.file_classify import build_file_classify
+from app.prompts.conversation import CLARIFICATION_SYSTEM, CORE_MEMORY_SYSTEM
 from app.prompts.translate import build_translate_ar_to_en, build_translate_en_to_ar
 from app.prompts.vision import build_vision_analysis
 
@@ -136,7 +137,11 @@ class LLMService:
             return {"sufficient": True, "chunk_scores": [], "retry_strategy": None}
 
     async def generate_response(
-        self, query: str, context: str, memory_context: str
+        self,
+        query: str,
+        context: str,
+        memory_context: str,
+        conversation_history: list[dict] | None = None,
     ) -> str:
         system_prompt = f"""أنت مساعد شخصي ذكي لإدارة الحياة اليومية. اسمك "المساعد".
 ترد بالعربية السعودية العامية. كن مختصر ومفيد.
@@ -151,9 +156,43 @@ class LLMService:
 - رد بالعربي السعودي العامي
 - لو المعلومات موجودة في السياق، استخدمها
 - لو ما عندك معلومات كافية، قول بصراحة
-- كن مختصر وواضح"""
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": query},
-        ]
+- كن مختصر وواضح
+- لو المستخدم يشير لشي قاله قبل، ارجع لسياق المحادثة"""
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # Inject conversation history as actual message turns
+        if conversation_history:
+            for turn in conversation_history:
+                messages.append({
+                    "role": turn["role"],
+                    "content": turn["content"],
+                })
+
+        messages.append({"role": "user", "content": query})
         return await self.chat(messages, max_tokens=2048, temperature=0.7)
+
+    async def check_clarification(self, query_en: str, action_type: str) -> dict:
+        """Check if user message has enough info for the action."""
+        messages = [
+            {"role": "system", "content": CLARIFICATION_SYSTEM},
+            {"role": "user", "content": f"Action type: {action_type}\nUser message: {query_en}"},
+        ]
+        raw = await self.chat(messages, max_tokens=256, temperature=0.1, json_mode=True)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse clarification JSON: %s", raw[:200])
+            return {"complete": True, "missing_fields": [], "clarification_question_ar": ""}
+
+    async def extract_core_preferences(self, recent_messages: str) -> dict:
+        """Extract user preferences from recent conversation."""
+        messages = [
+            {"role": "system", "content": CORE_MEMORY_SYSTEM},
+            {"role": "user", "content": recent_messages},
+        ]
+        raw = await self.chat(messages, max_tokens=512, temperature=0.1, json_mode=True)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse core_preferences JSON: %s", raw[:200])
+            return {"preferences": {}}

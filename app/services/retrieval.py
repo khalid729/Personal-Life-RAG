@@ -1,10 +1,18 @@
 import asyncio
 import logging
 import re
+from datetime import datetime
 
 import tiktoken
 
 from app.config import get_settings
+from app.prompts.conversation import (
+    SIDE_EFFECT_ROUTES,
+    NUMBER_SELECTION,
+    build_confirmation_message,
+    is_action_intent,
+    is_confirmation,
+)
 from app.services.graph import GraphService
 from app.services.llm import LLMService
 from app.services.memory import MemoryService
@@ -236,19 +244,62 @@ class RetrievalService:
     async def retrieve_and_respond(
         self, query_ar: str, session_id: str = "default"
     ) -> dict:
-        """Agentic RAG pipeline: Think → Act → Reflect (with Self-RAG).
+        """Agentic RAG pipeline with confirmation flow + multi-turn history.
 
+        Pre-check: handle pending confirmations (yes/no/number selection)
         1. Translate query Arabic → English
         2. FAST PATH: keyword router — if match, skip Think step
-        3. THINK (if no keyword match): LLM decides strategy + search queries
-        4. ACT: execute retrieval strategy → context_parts, sources
-        5. REFLECT + Self-RAG: LLM scores chunks, filter below threshold
-        6. RETRY (if !sufficient && retries > 0): flip strategy, merge results
-        7. Build context (memory + filtered chunks, ≤15K tokens)
-        8. Generate Arabic response
-        9. Return reply + sources + route + agentic_trace
+        3. Confirmation gate: if side-effect route + action intent, confirm first
+        4. THINK (if no keyword match): LLM decides strategy + search queries
+        5. ACT: execute retrieval strategy → context_parts, sources
+        6. REFLECT + Self-RAG: LLM scores chunks, filter below threshold
+        7. RETRY (if !sufficient && retries > 0): flip strategy, merge results
+        8. Build context (system memory + conversation turns + filtered chunks, ≤15K tokens)
+        9. Generate Arabic response with multi-turn history
+        10. Return reply + sources + route + agentic_trace
         """
         agentic_trace: list[dict] = []
+
+        # --- A. Confirmation pre-check ---
+        if settings.confirmation_enabled:
+            pending = await self.memory.get_pending_action(session_id)
+            if pending:
+                confirmation = is_confirmation(query_ar.strip())
+                if confirmation == "yes":
+                    result = await self._execute_confirmed_action(pending, session_id)
+                    # Don't clear if disambiguation was set (pending re-stored)
+                    if not pending.get("disambiguation_options"):
+                        await self.memory.clear_pending_action(session_id)
+                    return {
+                        "reply": result,
+                        "sources": [],
+                        "route": pending.get("route", ""),
+                        "query_en": pending.get("query_en", ""),
+                        "agentic_trace": [{"step": "confirmed_action", "action_type": pending.get("action_type")}],
+                        "pending_confirmation": bool(pending.get("disambiguation_options")),
+                    }
+                elif confirmation == "no":
+                    await self.memory.clear_pending_action(session_id)
+                    return {
+                        "reply": "تمام، ما سويت شي.",
+                        "sources": [],
+                        "route": pending.get("route", ""),
+                        "query_en": "",
+                        "agentic_trace": [{"step": "cancelled_action"}],
+                    }
+                elif NUMBER_SELECTION.match(query_ar.strip()):
+                    result = await self._resolve_disambiguation(pending, int(query_ar.strip()))
+                    await self.memory.clear_pending_action(session_id)
+                    return {
+                        "reply": result,
+                        "sources": [],
+                        "route": pending.get("route", ""),
+                        "query_en": pending.get("query_en", ""),
+                        "agentic_trace": [{"step": "disambiguation_resolved"}],
+                    }
+                else:
+                    # Not a confirmation — clear stale pending and proceed normally
+                    await self.memory.clear_pending_action(session_id)
 
         # Step 1: Translate
         query_en = await self.llm.translate_to_english(query_ar)
@@ -261,7 +312,6 @@ class RetrievalService:
         used_fast_path = route != "llm_classify"
 
         if used_fast_path:
-            # Fast path: keyword matched, skip Think step
             agentic_trace.append({
                 "step": "route",
                 "method": "fast_path_keyword",
@@ -282,6 +332,53 @@ class RetrievalService:
                 "reasoning": think_result.get("reasoning", ""),
             })
 
+        # --- B. Confirmation creation (side-effect routes only) ---
+        if (
+            settings.confirmation_enabled
+            and route in SIDE_EFFECT_ROUTES
+            and is_action_intent(query_ar, route)
+        ):
+            # Extract facts to understand the action
+            facts = await self.llm.extract_facts(query_en)
+            entities = facts.get("entities", [])
+            action_type = self._classify_action_type(entities, route)
+
+            if action_type:
+                # Check clarification — does the message have enough info?
+                clarification = await self.llm.check_clarification(query_en, action_type)
+                if not clarification.get("complete", True) or not entities:
+                    # Missing info — ask for it (no pending stored)
+                    question = clarification.get("clarification_question_ar", "ممكن توضح أكثر؟")
+                    return {
+                        "reply": question,
+                        "sources": [],
+                        "route": route,
+                        "query_en": query_en,
+                        "agentic_trace": [{"step": "clarification", "missing": clarification.get("missing_fields", [])}],
+                    }
+
+                # Build confirmation message and store pending action
+                confirm_msg = build_confirmation_message(action_type, entities)
+                pending_action = {
+                    "action_type": action_type,
+                    "extracted_entities": entities,
+                    "query_ar": query_ar,
+                    "query_en": query_en,
+                    "route": route,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "confirmation_message": confirm_msg,
+                }
+                await self.memory.set_pending_action(session_id, pending_action)
+                agentic_trace.append({"step": "confirmation_requested", "action_type": action_type})
+                return {
+                    "reply": confirm_msg,
+                    "sources": [],
+                    "route": route,
+                    "query_en": query_en,
+                    "agentic_trace": agentic_trace,
+                    "pending_confirmation": True,
+                }
+
         # Step 4: ACT — execute retrieval
         context_parts, sources = await self._execute_retrieval_strategy(
             route, query_en, search_queries
@@ -300,7 +397,6 @@ class RetrievalService:
             chunk_scores = reflect_result.get("chunk_scores", [])
             sufficient = reflect_result.get("sufficient", True)
 
-            # Filter chunks below threshold
             threshold = settings.self_rag_threshold
             if chunk_scores:
                 scored_parts = []
@@ -309,7 +405,6 @@ class RetrievalService:
                     score = cs.get("score", 1.0)
                     if 0 <= idx < len(context_parts) and score >= threshold:
                         scored_parts.append(context_parts[idx])
-                # Keep at least 1 chunk if all filtered out
                 filtered_parts = scored_parts if scored_parts else context_parts[:1]
             else:
                 filtered_parts = context_parts
@@ -335,7 +430,6 @@ class RetrievalService:
                 retry_parts, retry_sources = await self._execute_retrieval_strategy(
                     retry_strategy, query_en, search_queries
                 )
-                # Merge new results (deduplicate)
                 existing_set = set(filtered_parts)
                 for rp in retry_parts:
                     if rp not in existing_set:
@@ -349,12 +443,17 @@ class RetrievalService:
                     "total_chunks": len(filtered_parts),
                 })
 
-        # Step 7: Build context with budget
-        memory_context = await self.memory.build_memory_context(session_id)
+        # --- C. Multi-turn history in response generation ---
+        memory_context = await self.memory.build_system_memory_context(session_id)
+        conversation_history = await self.memory.get_conversation_turns(session_id)
         retrieved_context = "\n\n".join(filtered_parts)
 
+        # Token budget: system memory + history + retrieved context ≤ max
         memory_tokens = count_tokens(memory_context)
-        remaining = self.max_context_tokens - memory_tokens
+        history_tokens = sum(count_tokens(t.get("content", "")) for t in conversation_history)
+        remaining = self.max_context_tokens - memory_tokens - history_tokens
+        if remaining < 0:
+            remaining = 500  # Minimum for retrieved context
         if count_tokens(retrieved_context) > remaining:
             words = retrieved_context.split()
             truncated: list[str] = []
@@ -367,9 +466,10 @@ class RetrievalService:
                 tokens_so_far += wt
             retrieved_context = " ".join(truncated)
 
-        # Step 8: Generate response
+        # Step 8: Generate response with multi-turn history
         reply = await self.llm.generate_response(
-            query_ar, retrieved_context, memory_context
+            query_ar, retrieved_context, memory_context,
+            conversation_history=conversation_history,
         )
 
         return {
@@ -379,6 +479,105 @@ class RetrievalService:
             "query_en": query_en,
             "agentic_trace": agentic_trace,
         }
+
+    def _classify_action_type(self, entities: list[dict], route: str) -> str | None:
+        """Map extracted entity types to action type string."""
+        for entity in entities:
+            etype = entity.get("entity_type", "")
+            if etype in ("Expense", "Debt", "DebtPayment", "Reminder"):
+                return etype
+        # Fallback from route
+        route_map = {
+            "graph_financial": "Expense",
+            "graph_debt_payment": "DebtPayment",
+            "graph_reminder": "Reminder",
+            "graph_reminder_action": "Reminder",
+        }
+        return route_map.get(route)
+
+    async def _execute_confirmed_action(self, pending: dict, session_id: str) -> str:
+        """Execute a previously confirmed action."""
+        entities = pending.get("extracted_entities", [])
+        action_type = pending.get("action_type", "")
+
+        if not entities:
+            return "ما قدرت أنفذ العملية، حاول مرة ثانية."
+
+        try:
+            # For DebtPayment, handle disambiguation
+            if action_type == "DebtPayment":
+                entity = entities[0]
+                props = entity.get("properties", {})
+                rels = entity.get("relationships", [])
+                person = ""
+                for r in rels:
+                    if r.get("target_type") == "Person":
+                        person = r.get("target_name", "")
+                        break
+                amount = props.get("amount", 0)
+                direction = props.get("direction")
+                if person and amount > 0:
+                    result = await self.graph.record_debt_payment(person, float(amount), direction)
+                    if result.get("disambiguation_needed"):
+                        # Store disambiguation options back as pending
+                        options = result["options"]
+                        lines = ["عندك أكثر من دين مع هالشخص، اختر الرقم:"]
+                        for opt in options:
+                            direction_ar = "لك عليه" if opt["direction"] == "owed_to_me" else "عليك له"
+                            reason = f" ({opt['reason']})" if opt.get("reason") else ""
+                            lines.append(f"{opt['index']}) {opt['current_amount']:.0f} ريال {direction_ar}{reason}")
+                        pending["disambiguation_options"] = options
+                        # Re-store pending so user can pick a number
+                        await self.memory.set_pending_action(session_id, pending)
+                        return "\n".join(lines)
+                    if "error" in result:
+                        return f"ما قدرت أسجل السداد: {result['error']}"
+                    status_ar = "مسدد بالكامل" if result["status"] == "paid" else f"باقي {result['remaining']:.0f} ريال"
+                    return f"تم تسجيل سداد {result['person']} بمبلغ {result['paid']:.0f} ريال. ({status_ar})"
+                return "ما قدرت أنفذ العملية — معلومات ناقصة."
+
+            # For other types, use upsert_from_facts
+            facts = {"entities": entities}
+            count = await self.graph.upsert_from_facts(facts)
+            if count > 0:
+                labels = {
+                    "Expense": "المصروف",
+                    "Debt": "الدين",
+                    "Reminder": "التذكير",
+                }
+                label = labels.get(action_type, "العملية")
+                return f"تم تسجيل {label} بنجاح."
+            return "ما قدرت أسجل العملية، حاول مرة ثانية."
+        except Exception as e:
+            logger.error("Confirmed action failed: %s", e)
+            return "صار خطأ وأنا أنفذ العملية، حاول مرة ثانية."
+
+    async def _resolve_disambiguation(self, pending: dict, choice: int) -> str:
+        """Resolve a disambiguation selection (user picked a number)."""
+        options = pending.get("disambiguation_options")
+        if not options:
+            return "ما في خيارات متاحة."
+
+        selected = None
+        for opt in options:
+            if opt["index"] == choice:
+                selected = opt
+                break
+
+        if not selected:
+            return f"رقم غير صحيح. اختر رقم من 1 إلى {len(options)}."
+
+        entity = pending.get("extracted_entities", [{}])[0]
+        amount = entity.get("properties", {}).get("amount", 0)
+        if not amount:
+            return "ما قدرت أحدد المبلغ."
+
+        result = await self.graph.apply_debt_payment_by_id(selected["debt_id"], float(amount))
+        if "error" in result:
+            return f"ما قدرت أسجل السداد: {result['error']}"
+
+        status_ar = "مسدد بالكامل" if result["status"] == "paid" else f"باقي {result['remaining']:.0f} ريال"
+        return f"تم تسجيل سداد {result['person']} بمبلغ {result['paid']:.0f} ريال. ({status_ar})"
 
     async def _execute_retrieval_strategy(
         self, strategy: str, query_en: str, search_queries: list[str]
@@ -508,7 +707,11 @@ class RetrievalService:
     # ========================
 
     async def post_process(
-        self, query_ar: str, reply_ar: str, session_id: str
+        self,
+        query_ar: str,
+        reply_ar: str,
+        session_id: str,
+        skip_fact_extraction: bool = False,
     ) -> None:
         """Run after response is sent: update memory, extract facts, store embeddings."""
         try:
@@ -516,40 +719,88 @@ class RetrievalService:
             await self.memory.push_message(session_id, "user", query_ar)
             await self.memory.push_message(session_id, "assistant", reply_ar)
 
-            # Translate user query separately for fact extraction
-            # (combined translation often loses actionable intent)
-            query_en = await self.llm.translate_to_english(query_ar)
+            # Increment message counter for periodic tasks
+            msg_count = await self.memory.increment_message_count(session_id)
 
-            # Extract facts from user query alone (captures intents like
-            # reminders, expenses, debts that get lost in combined translation)
-            query_facts = await self.llm.extract_facts(query_en)
-            if query_facts.get("entities"):
-                await self.graph.upsert_from_facts(query_facts)
+            if not skip_fact_extraction:
+                # Translate user query separately for fact extraction
+                # (combined translation often loses actionable intent)
+                query_en = await self.llm.translate_to_english(query_ar)
 
-            # Also extract from combined exchange for relationship context,
-            # but skip DebtPayment to avoid double-applying payments
-            query_entity_types = {
-                e.get("entity_type") for e in query_facts.get("entities", [])
-            }
-            combined = f"User said: {query_ar}\nAssistant replied: {reply_ar}"
-            combined_en = await self.llm.translate_to_english(combined)
-            combined_facts = await self.llm.extract_facts(combined_en)
-            if combined_facts.get("entities"):
-                # Filter out entity types already handled by query extraction
-                combined_facts["entities"] = [
-                    e for e in combined_facts["entities"]
-                    if e.get("entity_type") not in query_entity_types
-                ]
-                if combined_facts["entities"]:
-                    await self.graph.upsert_from_facts(combined_facts)
+                # Extract facts from user query alone (captures intents like
+                # reminders, expenses, debts that get lost in combined translation)
+                query_facts = await self.llm.extract_facts(query_en)
+                if query_facts.get("entities"):
+                    await self.graph.upsert_from_facts(query_facts)
 
-            # Store the exchange as a vector for future retrieval
-            await self.vector.upsert_chunks(
-                [combined_en],
-                [{"source_type": "conversation", "topic": "chat"}],
-            )
+                # Also extract from combined exchange for relationship context,
+                # but skip DebtPayment to avoid double-applying payments
+                query_entity_types = {
+                    e.get("entity_type") for e in query_facts.get("entities", [])
+                }
+                combined = f"User said: {query_ar}\nAssistant replied: {reply_ar}"
+                combined_en = await self.llm.translate_to_english(combined)
+                combined_facts = await self.llm.extract_facts(combined_en)
+                if combined_facts.get("entities"):
+                    combined_facts["entities"] = [
+                        e for e in combined_facts["entities"]
+                        if e.get("entity_type") not in query_entity_types
+                    ]
+                    if combined_facts["entities"]:
+                        await self.graph.upsert_from_facts(combined_facts)
+
+                # Store the exchange as a vector for future retrieval
+                await self.vector.upsert_chunks(
+                    [combined_en],
+                    [{"source_type": "conversation", "topic": "chat"}],
+                )
+
+            # Periodic: daily summary
+            if msg_count % settings.daily_summary_interval == 0:
+                await self._trigger_daily_summary(session_id)
+
+            # Periodic: core memory extraction
+            if msg_count % settings.core_memory_interval == 0:
+                await self._trigger_core_memory_extraction(session_id)
+
         except Exception as e:
             logger.error("Post-processing failed: %s", e)
+
+    async def _trigger_daily_summary(self, session_id: str) -> None:
+        """Generate and store a daily summary from recent messages."""
+        try:
+            messages = await self.memory.get_working_memory(session_id)
+            if not messages:
+                return
+            messages_text = "\n".join(
+                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+                for m in messages
+            )
+            summary = await self.llm.summarize_daily(messages_text)
+            await self.memory.set_daily_summary(summary)
+            logger.info("Daily summary updated for session %s", session_id)
+        except Exception as e:
+            logger.warning("Daily summary generation failed: %s", e)
+
+    async def _trigger_core_memory_extraction(self, session_id: str) -> None:
+        """Extract user preferences from recent conversation and store in core memory."""
+        try:
+            messages = await self.memory.get_working_memory(session_id)
+            if not messages:
+                return
+            messages_text = "\n".join(
+                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+                for m in messages
+            )
+            result = await self.llm.extract_core_preferences(messages_text)
+            prefs = result.get("preferences", {})
+            for key, value in prefs.items():
+                if key and value:
+                    await self.memory.set_core_memory(str(key), str(value))
+            if prefs:
+                logger.info("Core memory updated with %d preferences", len(prefs))
+        except Exception as e:
+            logger.warning("Core memory extraction failed: %s", e)
 
     async def search_direct(
         self,

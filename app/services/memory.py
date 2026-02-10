@@ -81,9 +81,43 @@ class MemoryService:
     async def get_all_core_memory(self) -> dict[str, str]:
         return await self._redis.hgetall(self.CORE_KEY)
 
+    # --- Pending Actions (Phase 4) ---
+
+    def _pending_key(self, session_id: str) -> str:
+        return f"pending_action:{session_id}"
+
+    async def set_pending_action(self, session_id: str, action: dict) -> None:
+        key = self._pending_key(session_id)
+        await self._redis.set(key, json.dumps(action))
+        await self._redis.expire(key, settings.confirmation_ttl_seconds)
+
+    async def get_pending_action(self, session_id: str) -> dict | None:
+        raw = await self._redis.get(self._pending_key(session_id))
+        if raw:
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    async def clear_pending_action(self, session_id: str) -> None:
+        await self._redis.delete(self._pending_key(session_id))
+
+    # --- Message Counter (Phase 4) ---
+
+    def _msg_count_key(self, session_id: str) -> str:
+        return f"msg_count:{session_id}"
+
+    async def increment_message_count(self, session_id: str) -> int:
+        key = self._msg_count_key(session_id)
+        count = await self._redis.incr(key)
+        await self._redis.expire(key, 86400)
+        return count
+
     # --- Build combined context ---
 
     async def build_memory_context(self, session_id: str) -> str:
+        """Original full context builder (kept for backward compatibility)."""
         parts = []
 
         # Core memory (preferences/patterns)
@@ -110,3 +144,25 @@ class MemoryService:
                 parts.append(f"{role}: {content}")
 
         return "\n".join(parts)
+
+    async def build_system_memory_context(self, session_id: str) -> str:
+        """Core memory + daily summary only (for system prompt in multi-turn mode).
+        Conversation history is passed as separate message turns."""
+        parts = []
+
+        core = await self.get_all_core_memory()
+        if core:
+            parts.append("=== Core Memory (Preferences) ===")
+            for k, v in core.items():
+                parts.append(f"- {k}: {v}")
+
+        summary = await self.get_daily_summary()
+        if summary:
+            parts.append("\n=== Today's Summary ===")
+            parts.append(summary)
+
+        return "\n".join(parts)
+
+    async def get_conversation_turns(self, session_id: str) -> list[dict]:
+        """Returns working memory messages as structured turns for multi-turn prompting."""
+        return await self.get_working_memory(session_id)
