@@ -42,9 +42,13 @@ Personal Life RAG is a bilingual (Arabic/English) personal life management syste
 ### 2. Graph Service (`app/services/graph.py`)
 - **FalkorDB** (Redis-based graph database) on port 6379
 - Stores structured entities: Person, Company, Project, Task, Idea, Topic, Tag, Expense, Debt, Reminder, Knowledge, File, Item, Location
-- Entity relationships via Cypher queries (STORED_IN, FROM_PHOTO, INVOLVES, BELONGS_TO, etc.)
+- Entity relationships via Cypher queries (STORED_IN, FROM_PHOTO, INVOLVES, BELONGS_TO, TAGGED_WITH, etc.)
+- **Entity resolution**: `resolve_entity_name()` — embeds name in Qdrant, searches for similar existing entities, uses canonical name if match above threshold (Person: 0.85, default: 0.80). Stores aliases on canonical node's `name_aliases` list
+- **Smart tags**: `_normalize_tag()` with English→Arabic aliases, vector dedup at 0.85 threshold, `tag_entity()` for TAGGED_WITH relationships
+- **Knowledge auto-categorization**: `_guess_knowledge_category()` keyword heuristic + automatic TAGGED_WITH linking
+- **Multi-hop traversal**: `query_entity_context()` with configurable depth (default 3 hops), selective 3rd hop limited to key relationship types
 - Dedicated query methods: financial summary/reports, debt management, reminders, daily planner, projects overview, knowledge search, active tasks, inventory queries, item movement
-- `upsert_from_facts()` — auto-handles all entity types from LLM extraction
+- `upsert_from_facts()` — auto-handles all entity types from LLM extraction, resolves relationship targets, routes Tag targets to `tag_entity()`
 - Idea similarity detection: new ideas get embedded and linked via `SIMILAR_TO` edges
 
 ### 3. Vector Service (`app/services/vector.py`)
@@ -204,6 +208,10 @@ All settings are in `app/config.py` via Pydantic `BaseSettings` (overridable via
 | `proactive_alert_interval_hours` | 6 | Smart alerts interval (hours) |
 | `proactive_stalled_days` | 14 | Days threshold for stalled projects |
 | `proactive_old_debt_days` | 30 | Days threshold for old debts |
+| `entity_resolution_enabled` | True | Enable/disable entity resolution |
+| `entity_resolution_person_threshold` | 0.85 | Similarity threshold for Person dedup |
+| `entity_resolution_default_threshold` | 0.80 | Similarity threshold for other entity types |
+| `graph_max_hops` | 3 | Max hops for graph context traversal |
 
 ## Interfaces (Phase 5)
 
@@ -300,3 +308,48 @@ Features:
 - **ItemMove pseudo-entity**: "نقلت/حركت" → delete old STORED_IN, create new
 - **Purchase alert**: confirmed Expense → `find_similar_items()` → "⚠️ عندك في المخزون"
 - **Photo similarity**: vector search after auto-item for similar existing items
+
+## Smart Knowledge + Entity Resolution (Phase 8)
+
+### Entity Resolution
+```
+upsert_person("Mohamed")
+      |
+      v
+[resolve_entity_name("Mohamed", "Person")]
+      |
+      v
+[Qdrant search: entity_type="Person", limit=3]
+      |
+      v
+[Match: "Mohammed" (score=0.89) >= threshold (0.85)]
+      |
+      v
+[_store_alias("Person", "name", "Mohammed", "Mohamed")]
+      |
+      v
+[Return "Mohammed" → MERGE uses canonical name]
+```
+
+- Resolves Person, Company, Project, Topic, Knowledge entities
+- Skips Expense, Debt, Reminder, Item, Idea, Tag (transactional/unique entities)
+- Also resolves relationship targets in `upsert_from_facts()`
+- Configurable thresholds: Person 0.85 (stricter), default 0.80
+
+### Smart Tags
+- `_TAG_ALIASES` maps English→Arabic (e.g. "programming" → "برمجة", "tech" → "تقنية")
+- `upsert_tag()` normalizes + vector dedup (0.85 threshold) before creating
+- `tag_entity()` creates TAGGED_WITH relationship between any entity and a tag
+- Tag targets in extraction relationships are automatically routed to `tag_entity()`
+
+### Knowledge Auto-categorization
+- `_guess_knowledge_category()` keyword heuristic assigns categories (تقنية, طبخ, صحة, etc.)
+- Applied in `_create_generic()` when no category is provided by LLM extraction
+- Auto-tags Knowledge with its category via TAGGED_WITH
+
+### Multi-hop Graph Traversal
+- `query_entity_context(label, key_field, value)` with `graph_max_hops` (default 3)
+- Hop 1-2: unrestricted traversal
+- Hop 3: selective — only BELONGS_TO, INVOLVES, WORKS_AT, RELATED_TO, TAGGED_WITH, STORED_IN, SIMILAR_TO
+- `query_person_context` and `query_project_context` delegate to `query_entity_context`
+- `graph_person` route tries person context first, falls back to `search_nodes`

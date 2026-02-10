@@ -52,7 +52,7 @@
 - Redis-based = fast, lightweight, no separate JVM/cluster
 - Cypher query language for relationship traversal
 - Perfect for structured personal data (people, debts, projects, etc.)
-- 2-hop queries for rich context (person -> project -> tasks)
+- Configurable multi-hop queries (default 3-hop) for rich context (person -> project -> tasks -> tags)
 
 ### Qdrant (Vector)
 - Purpose-built vector DB with filtering support

@@ -12,7 +12,9 @@ Personal_Rag/
 │   ├── services/
 │   │   ├── llm.py               # vLLM client — translate, extract, classify, vision, think/reflect,
 │   │   │                        #   clarification, core memory extraction, daily summarization
-│   │   ├── graph.py             # FalkorDB — entity CRUD, financial reports, debt management,
+│   │   ├── graph.py             # FalkorDB — entity CRUD, entity resolution (vector dedup),
+│   │   │                        #   smart tags (normalization + TAGGED_WITH), knowledge auto-categorization,
+│   │   │                        #   multi-hop traversal (3-hop), financial reports, debt management,
 │   │   │                        #   reminders, daily planner, projects overview, knowledge queries,
 │   │   │                        #   active tasks, idea similarity, inventory (items, locations, movement)
 │   │   ├── vector.py            # Qdrant — BGE-M3 embedding, chunk upsert/search with filtering

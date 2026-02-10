@@ -157,17 +157,33 @@
 - [x] Search similar items: vector search returns scored results
 - [x] Category normalization: "cables" → "إلكترونيات"
 
+### Phase 8 — Smart Knowledge + Entity Resolution
+- [x] Entity resolution via vector similarity (`resolve_entity_name()` — Person 0.85, default 0.80 threshold)
+- [x] Alias storage: canonical node gets `name_aliases` list (e.g. "Mohammed" ← ["Mohamed"])
+- [x] Resolution integrated into: upsert_person, upsert_project, upsert_company, upsert_topic, _create_generic, relationship targets
+- [x] Smart Tags: `_TAG_ALIASES` dict (English→Arabic normalization) + `_normalize_tag()`
+- [x] `upsert_tag()` returns canonical name, does vector dedup at 0.85 threshold
+- [x] `tag_entity()` helper creates TAGGED_WITH relationship between any entity and a tag
+- [x] Tag targets in `upsert_from_facts` relationship loop → routed to `tag_entity()` + continue
+- [x] Knowledge auto-categorization: `_guess_knowledge_category()` keyword heuristic → `category` property
+- [x] Knowledge auto-tagging: TAGGED_WITH → Tag(category) created automatically
+- [x] Multi-hop graph traversal: `query_entity_context()` with configurable depth (`graph_max_hops`, default 3)
+- [x] 3-hop query: selective hop 3 limited to BELONGS_TO/INVOLVES/WORKS_AT/RELATED_TO/TAGGED_WITH/STORED_IN/SIMILAR_TO
+- [x] `_format_graph_context_3hop()` handles 10-column rows, deduplicates, limits to 30 lines
+- [x] `query_person_context`/`query_project_context` delegate to `query_entity_context`
+- [x] `graph_person` route in retrieval: tries person context (3-hop) first, falls back to `search_nodes`
+- [x] 4 config settings: `entity_resolution_enabled`, `entity_resolution_person_threshold`, `entity_resolution_default_threshold`, `graph_max_hops`
+
+### Phase 8 — Testing Results (5/5 passed)
+- [x] Entity resolution: "Mohamed" → "Mohammed" (score 0.89), single Person node with `name_aliases: ["Mohamed"]`
+- [x] Knowledge auto-categorization: "Python async code trick" → `category: "تقنية"`, TAGGED_WITH → Tag("تقنية")
+- [x] Knowledge entity resolution: "Python async code handling trick" → "Python async code trick" (score 0.94)
+- [x] Multi-hop chat: "tell me about Mohammed" → 3-hop graph context (person + company + debts)
+- [x] Zero errors in API logs after all tests
+
 ---
 
 ## Remaining Phases
-
-### Phase 8 — Smart Knowledge + Entity Resolution
-- [ ] Entity resolution / dedup (merge "Mohammed" / "Mohamed" / "محمد" via vector similarity)
-- [ ] Auto-tag knowledge entries by category
-- [ ] Smart Tags with vector dedup (tag normalization before creation)
-- [ ] Multi-hop graph traversal in retrieval (beyond 2-hop)
-- [ ] Community detection (auto-cluster related entities)
-- [ ] Graph-based ranking (PageRank on entities for importance scoring)
 
 ### Phase 9 — Advanced Inventory
 - [ ] QR/Barcode scanning → contents of box/container

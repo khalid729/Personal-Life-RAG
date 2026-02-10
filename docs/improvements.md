@@ -1,23 +1,11 @@
 # تحسينات مستقبلية
 
-## 1. Smart Tags بـ Vector Dedup
-**المشكلة**: لما المستخدم يقول "خزنه مع اغراضي" النظام ما يفهم نية التصنيف، ولما يسأل "ايش اغراضي" يجاوب إجابة عامة.
-
-**الحل**:
-1. عند حفظ ملف مع كابشن فيه نية تصنيف → نستخرج Tag إنجليزي normalized عبر LLM
-2. قبل إنشاء Tag جديد → نبحث بالـ Qdrant عن tags متشابهة (threshold 0.85+)
-3. لو فيه تشابه عالي → نستخدم الموجود بدل ما نسوي جديد
-4. نربط الملف بالـ Tag عبر `TAGGED_WITH` في FalkorDB
-5. عند السؤال "ايش X" → router يبحث عن Tag → يجيب كل المرتبط فيه
-
-**مثال**:
-```
-"خزنه مع اغراضي"      → Tag: personal_belongings
-"هذا من أدوات المطبخ"   → Tag: kitchen_tools
-"أشيائي الشخصية"       → يلاقي personal_belongings (تشابه 0.92) → يستخدمه
-```
-
-**الملفات المتأثرة**: retrieval.py (router), graph.py (tag search), vector.py (tag similarity), extract prompt
+## ~~1. Smart Tags بـ Vector Dedup~~ ✅ (Phase 8)
+تم التنفيذ:
+- `_TAG_ALIASES` dict + `_normalize_tag()` لتحويل English→Arabic
+- `upsert_tag()` يبحث بالـ Qdrant عن tags متشابهة (threshold 0.85+) → يستخدم الموجود
+- `tag_entity()` يربط أي entity بـ Tag عبر `TAGGED_WITH` في FalkorDB
+- Knowledge auto-tagging: `_guess_knowledge_category()` → TAGGED_WITH تلقائي
 
 ---
 
@@ -30,10 +18,11 @@
 
 ---
 
-## 3. Entity Resolution / Dedup
-**المشكلة**: "Mohammed" و "Mohamed" و "محمد" ممكن يكونون نفس الشخص بس يتخزنون كـ 3 nodes.
-
-**الحل**: Vector similarity على أسماء الكيانات قبل الإنشاء — لو التشابه عالي، يدمج.
+## ~~3. Entity Resolution / Dedup~~ ✅ (Phase 8)
+تم التنفيذ:
+- `resolve_entity_name()` يبحث بالـ Qdrant عن كيانات مشابهة (Person: 0.85، default: 0.80)
+- `_store_alias()` يحفظ الأسماء البديلة على الـ canonical node (`name_aliases` list)
+- مدمج في: upsert_person/project/company/topic, _create_generic (Knowledge/Topic), relationship targets
 
 ---
 

@@ -151,7 +151,10 @@
 | Phase 7 — Core Inventory | 8 | 8 | 0 |
 | Phase 7 — Usage/Interactions | 3 | 3 | 0 |
 | Phase 7 — Smart Inventory | 4 | 4 | 0 |
-| **الإجمالي** | **90** | **88** | **2** |
+| Phase 8 — Entity Resolution | 2 | 2 | 0 |
+| Phase 8 — Smart Tags + Knowledge | 2 | 2 | 0 |
+| Phase 8 — Multi-hop Traversal | 1 | 1 | 0 |
+| **الإجمالي** | **95** | **93** | **2** |
 
 الاختبارين الباقيين يحتاجون Open WebUI Docker container شغال.
 
@@ -187,4 +190,28 @@
 | Core Inventory (7a) | 8 | 8 |
 | Usage + Interactions (7b) | 3 | 3 |
 | Smart Inventory (7c) | 4 | 4 |
-| **الإجمالي** | **15** | **15** |
+| **الإجمالي Phase 7** | **15** | **15** |
+
+---
+
+## Phase 8 — Smart Knowledge + Entity Resolution
+
+### Entity Resolution
+- [x] "Mohamed" → "Mohammed" (score 0.89) — single Person node with `name_aliases: ["Mohamed"]`
+- [x] Knowledge resolution: "Python async code handling trick" → "Python async code trick" (score 0.94)
+
+### Smart Tags + Knowledge Auto-categorization
+- [x] Knowledge auto-category: "Python async code trick" → `category: "تقنية"`, TAGGED_WITH → Tag("تقنية")
+- [x] Tag normalization: English→Arabic aliases applied (`_TAG_ALIASES` dict)
+
+### Multi-hop Graph Traversal
+- [x] "tell me about Mohammed" → `graph_person` route → 3-hop context (person + company + debts + aliases)
+
+### ملخص Phase 8
+
+| المكون | الاختبارات | ناجحة |
+|--------|-----------|-------|
+| Entity Resolution | 2 | 2 |
+| Smart Tags + Knowledge | 2 | 2 |
+| Multi-hop Traversal | 1 | 1 |
+| **الإجمالي Phase 8** | **5** | **5** |
