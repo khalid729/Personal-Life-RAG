@@ -202,6 +202,13 @@ async def api_post(path: str, json: dict | None = None, timeout: float = CHAT_TI
         return resp.json()
 
 
+async def api_put(path: str, json: dict | None = None) -> dict:
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=CHAT_TIMEOUT) as client:
+        resp = await client.put(path, json=json)
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def api_post_file(
     path: str,
     file_bytes: bytes,
@@ -452,7 +459,7 @@ async def handle_photo(message: Message):
                 keyboard = confirmation_keyboard()
             await send_reply(message, chat_result["reply"], keyboard=keyboard)
         elif file_type == "inventory_item":
-            # Inventory item re-sent without caption — find linked item, ask for location
+            # Inventory item re-sent without caption — ask chat about it
             file_hash = result.get("file_hash", "")
             item_name = ""
             if file_hash:
@@ -462,11 +469,8 @@ async def handle_photo(message: Message):
                 except Exception:
                     pass
             if item_name:
-                _pending_locations[sid] = {
-                    "item_name": item_name,
-                    "created_at": time.monotonic(),
-                }
-                await message.answer(f"📦 {item_name} موجود مسبقاً.\n📍 وين حاطه؟ (أرسل المكان، مثلاً: السطح > الرف الثاني)")
+                chat_result = await chat_api(f"وين {item_name}؟", sid)
+                await send_reply(message, chat_result["reply"])
             else:
                 await message.answer(f"📁 الملف موجود مسبقاً ({file_type_ar}).")
         else:
@@ -600,10 +604,9 @@ async def handle_text(message: Message):
             location = message.text.strip()
             item_name = pending["item_name"]
             try:
-                await api_post(
+                await api_put(
                     f"/inventory/item/{item_name}/location",
                     json={"location": location},
-                    timeout=CHAT_TIMEOUT,
                 )
                 await message.answer(f"📍 تم تحديث مكان {item_name}: {location}")
             except Exception as e:

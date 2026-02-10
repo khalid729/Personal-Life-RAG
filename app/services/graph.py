@@ -1127,6 +1127,15 @@ class GraphService:
             """
             await self.query(q_loc, {"name": name, "location": location})
             result["location"] = location
+        else:
+            # Return existing location if item already has one
+            q_existing_loc = """
+            MATCH (i:Item {name: $name})-[:STORED_IN]->(l:Location)
+            RETURN l.path LIMIT 1
+            """
+            loc_rows = await self.query(q_existing_loc, {"name": name})
+            if loc_rows and loc_rows[0][0]:
+                result["location"] = loc_rows[0][0]
 
         # Link to File if file_hash provided
         if file_hash:
