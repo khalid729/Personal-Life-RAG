@@ -2,6 +2,7 @@ import asyncio
 import base64
 import gc
 import hashlib
+import io
 import json
 import logging
 from pathlib import Path
@@ -24,6 +25,18 @@ AUDIO_MIMES = {
     "audio/ogg", "audio/flac", "audio/m4a", "audio/mp4",
     "audio/x-m4a", "audio/aac",
 }
+
+
+def _scan_barcodes(file_bytes: bytes) -> list[dict]:
+    """Scan barcodes/QR codes from image bytes. Returns list of {data, type}."""
+    try:
+        from pyzbar.pyzbar import decode as pyzbar_decode
+        from PIL import Image
+        img = Image.open(io.BytesIO(file_bytes))
+        results = pyzbar_decode(img)
+        return [{"data": r.data.decode("utf-8", errors="replace"), "type": r.type} for r in results]
+    except Exception:
+        return []
 
 
 class FileService:
@@ -156,13 +169,22 @@ class FileService:
 
         # Auto-create item from inventory_item photo
         auto_item = None
+        barcode_value = None
+        barcode_type = None
         if file_type == "inventory_item":
+            # Scan for barcodes/QR codes
+            barcodes = _scan_barcodes(file_bytes)
+            barcode_value = barcodes[0]["data"] if barcodes else None
+            barcode_type = barcodes[0]["type"] if barcodes else None
+            if barcodes:
+                steps.append(f"barcode:{barcode_type}:{barcode_value[:30]}")
+
             item_name = analysis.get("item_name", "")
             if item_name:
                 try:
                     # User caption = location (e.g. "السطح > الرف الثاني")
                     location = user_context.strip() if user_context else None
-                    auto_item = await self.retrieval.graph.upsert_item(
+                    upsert_kwargs = dict(
                         name=item_name,
                         brand=analysis.get("brand"),
                         description=analysis.get("description"),
@@ -172,6 +194,10 @@ class FileService:
                         file_hash=file_hash,
                         location=location,
                     )
+                    if barcode_value:
+                        upsert_kwargs["barcode"] = barcode_value
+                        upsert_kwargs["barcode_type"] = barcode_type
+                    auto_item = await self.retrieval.graph.upsert_item(**upsert_kwargs)
                     steps.append(f"auto_item:{item_name}")
                 except Exception as e:
                     logger.warning("Auto-item creation failed: %s", e)

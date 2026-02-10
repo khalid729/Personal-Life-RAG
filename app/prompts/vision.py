@@ -88,6 +88,7 @@ Return a JSON object:
   "estimated_value": null,
   "quantity_visible": 1,
   "specifications": ["spec1", "spec2"],
+  "barcode_visible": "any visible barcode/QR code text or null",
   "notes": "any other relevant info"
 }""",
 }

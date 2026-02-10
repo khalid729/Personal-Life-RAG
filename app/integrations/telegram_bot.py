@@ -320,9 +320,40 @@ async def cmd_report(message: Message):
     await send_reply(message, "\n".join(lines))
 
 
+def _format_inventory_report_ar(data: dict) -> str:
+    lines = ["📊 تقرير المخزون\n"]
+    lines.append(f"الإجمالي: {data['total_items']} غرض ({data['total_quantity']} وحدة)")
+    if data.get("by_category"):
+        lines.append("\n📂 حسب الفئة:")
+        for c in data["by_category"]:
+            lines.append(f"  • {c['category']}: {c['items']} أغراض ({c['quantity']} وحدة)")
+    if data.get("by_location"):
+        lines.append("\n📍 حسب المكان:")
+        for loc in data["by_location"]:
+            lines.append(f"  • {loc['location']}: {loc['items']} أغراض")
+    if data.get("by_condition"):
+        lines.append("\n🔧 حسب الحالة:")
+        for c in data["by_condition"]:
+            lines.append(f"  • {c['condition']}: {c['count']}")
+    lines.append(f"\n⚠️ بدون مكان: {data.get('without_location', 0)}")
+    lines.append(f"💤 مهملة: {data.get('unused_count', 0)}")
+    if data.get("top_by_quantity"):
+        lines.append("\n🏆 أكثر كمية:")
+        for t in data["top_by_quantity"][:5]:
+            lines.append(f"  • {t['name']}: {t['quantity']}")
+    return "\n".join(lines)
+
+
 @router.message(Command("inventory"))
 async def cmd_inventory(message: Message):
     if not authorized(message):
+        return
+    # Check for "report" subcommand
+    args = message.text.strip().split(maxsplit=1)
+    if len(args) > 1 and args[1].strip().lower() == "report":
+        data = await api_get("/inventory/report")
+        text = _format_inventory_report_ar(data)
+        await send_reply(message, text)
         return
     data = await api_get("/inventory/summary")
     total_items = data.get("total_items", 0)

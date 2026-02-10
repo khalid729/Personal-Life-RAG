@@ -1467,6 +1467,85 @@ class GraphService:
             "by_location": by_location,
         }
 
+    async def query_inventory_report(self) -> dict:
+        """Comprehensive inventory report with 7 sub-queries."""
+        top_n = settings.inventory_report_top_n
+
+        # 1. Totals
+        q1 = "MATCH (i:Item) WHERE i.status = 'active' RETURN count(i), sum(i.quantity)"
+        r1 = await self.query(q1)
+        total_items = r1[0][0] if r1 else 0
+        total_qty = r1[0][1] if r1 else 0
+
+        # 2. By category
+        q2 = """
+        MATCH (i:Item) WHERE i.status = 'active' AND i.category IS NOT NULL
+        RETURN i.category, count(i), sum(i.quantity)
+        ORDER BY count(i) DESC
+        """
+        r2 = await self.query(q2)
+        by_category = [{"category": r[0], "items": r[1], "quantity": r[2]} for r in r2]
+
+        # 3. By location
+        q3 = """
+        MATCH (i:Item)-[:STORED_IN]->(l:Location)
+        WHERE i.status = 'active'
+        RETURN l.path, count(i), sum(i.quantity)
+        ORDER BY count(i) DESC
+        """
+        r3 = await self.query(q3)
+        by_location = [{"location": r[0], "items": r[1], "quantity": r[2]} for r in r3]
+
+        # 4. By condition
+        q4 = """
+        MATCH (i:Item) WHERE i.status = 'active' AND i.condition IS NOT NULL
+        RETURN i.condition, count(i)
+        ORDER BY count(i) DESC
+        """
+        r4 = await self.query(q4)
+        by_condition = [{"condition": r[0], "count": r[1]} for r in r4]
+
+        # 5. Without location
+        q5 = """
+        MATCH (i:Item)
+        WHERE i.status = 'active' AND NOT (i)-[:STORED_IN]->()
+        RETURN count(i)
+        """
+        r5 = await self.query(q5)
+        no_location = r5[0][0] if r5 else 0
+
+        # 6. Unused (no last_used_at or old)
+        cutoff = (_now_dt() - timedelta(days=settings.inventory_unused_days)).isoformat()
+        q6 = """
+        MATCH (i:Item)
+        WHERE i.status = 'active'
+          AND (i.last_used_at IS NULL OR i.last_used_at < $cutoff)
+        RETURN count(i)
+        """
+        r6 = await self.query(q6, {"cutoff": cutoff})
+        unused_count = r6[0][0] if r6 else 0
+
+        # 7. Most items by quantity
+        q7 = f"""
+        MATCH (i:Item) WHERE i.status = 'active'
+        RETURN i.name, i.quantity, i.category
+        ORDER BY i.quantity DESC
+        LIMIT {top_n}
+        """
+        r7 = await self.query(q7)
+        top_by_quantity = [{"name": r[0], "quantity": r[1], "category": r[2]} for r in r7]
+
+        return {
+            "total_items": total_items,
+            "total_quantity": total_qty,
+            "by_category": by_category,
+            "by_location": by_location,
+            "by_condition": by_condition,
+            "without_location": no_location,
+            "unused_count": unused_count,
+            "top_by_quantity": top_by_quantity,
+        }
+
     async def update_item(self, name: str, **props) -> dict:
         """Update an existing Item. Handles location changes by re-linking."""
         location = props.pop("location", None)
@@ -1526,6 +1605,21 @@ class GraphService:
             "location": rows[0][3],
         }
 
+    async def find_item_by_barcode(self, barcode: str) -> dict | None:
+        """Find item by barcode value."""
+        q = """
+        MATCH (i:Item)
+        WHERE i.barcode = $barcode AND i.status = 'active'
+        OPTIONAL MATCH (i)-[:STORED_IN]->(l:Location)
+        RETURN i.name, i.quantity, i.category, i.barcode_type, l.path
+        LIMIT 1
+        """
+        rows = await self.query(q, {"barcode": barcode})
+        if not rows:
+            return None
+        r = rows[0]
+        return {"name": r[0], "quantity": r[1], "category": r[2], "barcode_type": r[3], "location": r[4]}
+
     async def adjust_item_quantity(self, name: str, delta: int) -> dict:
         """Adjust item quantity by delta (negative = reduce). Clamp at 0."""
         q = """
@@ -1541,6 +1635,7 @@ class GraphService:
         rows = await self.query(q, {"name": name, "delta": delta, "now": _now()})
         if not rows:
             return {"error": f"Item '{name}' not found"}
+        await self._touch_item_last_used(name)
         return {"name": rows[0][0], "quantity": int(rows[0][1]), "status": rows[0][2]}
 
     async def move_item(self, name: str, to_location: str, from_location: str | None = None) -> dict:
@@ -1574,6 +1669,7 @@ class GraphService:
             "MATCH (i:Item {name: $name}) SET i.updated_at = $now",
             {"name": item_name, "now": _now()},
         )
+        await self._touch_item_last_used(item_name)
         return {"name": item_name, "from_location": old_location, "to_location": to_location}
 
     async def find_similar_items(self, name: str) -> list[dict]:
@@ -1588,6 +1684,90 @@ class GraphService:
         """
         rows = await self.query(q, {"name": name})
         return [{"name": r[0], "quantity": int(r[1] or 0), "location": r[2]} for r in (rows or [])]
+
+    async def _touch_item_last_used(self, name: str) -> None:
+        """Update last_used_at timestamp on an item (fire-and-forget)."""
+        try:
+            q = """
+            MATCH (i:Item)
+            WHERE toLower(i.name) CONTAINS toLower($name)
+            SET i.last_used_at = $now
+            """
+            await self.query(q, {"name": name, "now": _now()})
+        except Exception:
+            pass
+
+    async def query_unused_items(self, days: int | None = None) -> list[dict]:
+        """Find items not used/mentioned for N days."""
+        days = days or settings.inventory_unused_days
+        cutoff = (_now_dt() - timedelta(days=days)).isoformat()
+        q = """
+        MATCH (i:Item)
+        WHERE i.status = 'active'
+          AND (i.last_used_at IS NULL OR i.last_used_at < $cutoff)
+        OPTIONAL MATCH (i)-[:STORED_IN]->(l:Location)
+        RETURN i.name, i.quantity, i.category, i.last_used_at, l.path
+        ORDER BY i.last_used_at ASC
+        LIMIT 20
+        """
+        rows = await self.query(q, {"cutoff": cutoff})
+        return [{"name": r[0], "quantity": r[1], "category": r[2], "last_used_at": r[3], "location": r[4]} for r in rows]
+
+    async def detect_duplicate_items(self) -> list[dict]:
+        """Find potential duplicate items by name overlap."""
+        q = """
+        MATCH (a:Item), (b:Item)
+        WHERE a.status = 'active' AND b.status = 'active'
+          AND id(a) < id(b)
+          AND (toLower(a.name) CONTAINS toLower(b.name)
+               OR toLower(b.name) CONTAINS toLower(a.name))
+        OPTIONAL MATCH (a)-[:STORED_IN]->(la:Location)
+        OPTIONAL MATCH (b)-[:STORED_IN]->(lb:Location)
+        RETURN a.name, a.quantity, la.path,
+               b.name, b.quantity, lb.path
+        LIMIT 20
+        """
+        rows = await self.query(q)
+        results = []
+        for r in rows:
+            results.append({
+                "item_a": {"name": r[0], "quantity": r[1], "location": r[2]},
+                "item_b": {"name": r[3], "quantity": r[4], "location": r[5]},
+            })
+        return results
+
+    async def detect_duplicate_items_vector(self) -> list[dict]:
+        """Find potential duplicate items via vector similarity."""
+        if not self._vector_service:
+            return []
+        q = "MATCH (i:Item) WHERE i.status = 'active' RETURN i.name"
+        rows = await self.query(q)
+        names = [r[0] for r in rows if r[0]]
+        if len(names) < 2:
+            return []
+
+        duplicates = []
+        checked: set[tuple[str, str]] = set()
+        for name in names:
+            if name in {n for pair in checked for n in pair}:
+                continue
+            try:
+                results = await self._vector_service.search(
+                    name, limit=3, source_type="file_inventory_item"
+                )
+                for r in results:
+                    other = r["metadata"].get("text", "")
+                    if other and other != name and r["score"] >= 0.8 and (name, other) not in checked:
+                        duplicates.append({
+                            "item_a": name,
+                            "item_b": other,
+                            "similarity": round(r["score"], 2),
+                        })
+                        checked.add((name, other))
+                        checked.add((other, name))
+            except Exception:
+                continue
+        return duplicates[:20]
 
     async def _create_generic(self, label: str, key_field: str, value: str, **props) -> None:
         if label in ("Knowledge", "Topic"):
@@ -1680,3 +1860,7 @@ class GraphService:
 
 def _now() -> str:
     return datetime.utcnow().isoformat()
+
+
+def _now_dt() -> datetime:
+    return datetime.utcnow()

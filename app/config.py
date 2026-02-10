@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     entity_resolution_default_threshold: float = 0.80
     graph_max_hops: int = 3
 
+    # Inventory (Phase 9)
+    inventory_unused_days: int = 90
+    inventory_report_top_n: int = 10
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

@@ -139,6 +139,21 @@ INVENTORY_USAGE_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+INVENTORY_DUPLICATE_KEYWORDS = re.compile(
+    r"(أغراض مكررة|مكرر.*مخزون|duplicate.*item|duplicate.*inventory|نفس الغرض)",
+    re.IGNORECASE,
+)
+
+INVENTORY_REPORT_KEYWORDS = re.compile(
+    r"(تقرير.*مخزون|تقرير.*أغراض|inventory report|inventory stats|إحصائيات.*مخزون|ملخص.*أغراض)",
+    re.IGNORECASE,
+)
+
+INVENTORY_UNUSED_KEYWORDS = re.compile(
+    r"(ما استخدمت|منسي|مهمل|unused|forgotten|neglected|not used|أغراض قديمة)",
+    re.IGNORECASE,
+)
+
 INVENTORY_KEYWORDS = re.compile(
     r"(مخزون|جرد|أغراضي|حوائجي|وين ال|فين ال|عندي |inventory|items|stock|where is|do i have|how many .+ do i)",
     re.IGNORECASE,
@@ -177,10 +192,16 @@ def smart_route(text: str) -> str:
         return "graph_person"
     if TASK_KEYWORDS.search(text):
         return "graph_task"
+    if INVENTORY_DUPLICATE_KEYWORDS.search(text):
+        return "graph_inventory_duplicates"
+    if INVENTORY_REPORT_KEYWORDS.search(text):
+        return "graph_inventory_report"
     if INVENTORY_MOVE_KEYWORDS.search(text):
         return "graph_inventory"
     if INVENTORY_USAGE_KEYWORDS.search(text):
         return "graph_inventory"
+    if INVENTORY_UNUSED_KEYWORDS.search(text):
+        return "graph_inventory_unused"
     if INVENTORY_KEYWORDS.search(text):
         return "graph_inventory"
     return "llm_classify"
@@ -722,7 +743,25 @@ class RetrievalService:
         elif route == "graph_task":
             return await self.graph.query_active_tasks()
         elif route == "graph_inventory":
-            return await self.graph.query_inventory(query_en)
+            ctx = await self.graph.query_inventory(query_en)
+            # Touch last_used_at for queried items (best-effort)
+            asyncio.create_task(self.graph._touch_item_last_used(query_en))
+            return ctx
+        elif route == "graph_inventory_unused":
+            items = await self.graph.query_unused_items()
+            if not items:
+                return "لا يوجد أغراض مهملة."
+            lines = [f"- {i['name']} ({i['category'] or '—'}) — {i['location'] or 'بدون مكان'}" for i in items]
+            return "أغراض ما استخدمتها من فترة:\n" + "\n".join(lines)
+        elif route == "graph_inventory_report":
+            report = await self.graph.query_inventory_report()
+            return self._format_inventory_report(report)
+        elif route == "graph_inventory_duplicates":
+            dups = await self.graph.detect_duplicate_items()
+            if not dups:
+                return "No duplicate items detected."
+            lines = [f"- {d['item_a']['name']} ↔ {d['item_b']['name']}" for d in dups]
+            return "Potential duplicates:\n" + "\n".join(lines)
         return ""
 
     @staticmethod
@@ -750,6 +789,20 @@ class RetrievalService:
                          f"{comp['difference']:+.0f} SAR ({comp['percentage_change']:+.1f}%)")
         return "\n".join(parts) if parts else "No expenses for this period."
 
+    def _format_inventory_report(self, report: dict) -> str:
+        parts = [f"Total: {report['total_items']} items ({report['total_quantity']} units)"]
+        if report["by_category"]:
+            parts.append("By category: " + ", ".join(f"{c['category']}({c['items']})" for c in report["by_category"]))
+        if report["by_location"]:
+            parts.append("By location: " + ", ".join(f"{loc['location']}({loc['items']})" for loc in report["by_location"]))
+        if report["by_condition"]:
+            parts.append("By condition: " + ", ".join(f"{c['condition']}({c['count']})" for c in report["by_condition"]))
+        parts.append(f"Without location: {report['without_location']}")
+        parts.append(f"Unused (>{settings.inventory_unused_days}d): {report['unused_count']}")
+        if report["top_by_quantity"]:
+            parts.append("Top by quantity: " + ", ".join(f"{t['name']}({t['quantity']})" for t in report["top_by_quantity"][:5]))
+        return "\n".join(parts)
+
     def _parse_retry_hint(self, hint: str | None, original: str) -> str:
         """Parse retry strategy from Reflect step, or flip to opposite."""
         valid = {
@@ -759,7 +812,8 @@ class RetrievalService:
             "graph_reminder", "graph_reminder_action",
             "graph_daily_plan", "graph_knowledge",
             "graph_project", "graph_person", "graph_task",
-            "graph_inventory",
+            "graph_inventory", "graph_inventory_unused",
+            "graph_inventory_report", "graph_inventory_duplicates",
         }
         if hint and hint in valid and hint != original:
             return hint
