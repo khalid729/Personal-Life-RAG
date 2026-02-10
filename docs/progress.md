@@ -149,7 +149,6 @@
 ### General Improvements
 - [ ] Streaming responses (SSE)
 - [ ] WebSocket real-time updates
-- [ ] Frontend UI (web dashboard)
 - [ ] User authentication (multi-user support)
 - [ ] Backup/export (graph + vector snapshots)
 - [ ] Arabic NER improvement (custom patterns for Saudi names/places)
