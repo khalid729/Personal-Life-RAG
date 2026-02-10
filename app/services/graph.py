@@ -101,9 +101,10 @@ class GraphService:
             extra["snooze_count"] = 0
         sets = ""
         if extra:
-            sets = ", " + ", ".join(f"r.{k} = ${k}" for k in extra)
+            sets = "SET " + ", ".join(f"r.{k} = ${k}" for k in extra)
         q = f"""
-        CREATE (r:Reminder {{title: $title, status: 'pending', created_at: $now{sets}}})
+        CREATE (r:Reminder {{title: $title, status: 'pending', created_at: $now}})
+        {sets}
         """
         await self._graph.query(q, params={"title": title, "now": _now(), **extra})
 
