@@ -36,6 +36,19 @@ class Settings(BaseSettings):
     daily_summary_ttl_days: int = 7
     max_context_tokens: int = 15000
 
+    # File Processing
+    file_storage_path: str = "data/files"
+    max_file_size_mb: int = 50
+
+    # WhisperX
+    whisperx_model: str = "large-v3-turbo"
+    whisperx_compute_type: str = "float16"
+    whisperx_batch_size: int = 16
+
+    # Agentic RAG
+    agentic_max_retries: int = 1
+    self_rag_threshold: float = 0.3
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

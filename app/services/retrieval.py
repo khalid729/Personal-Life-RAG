@@ -4,10 +4,13 @@ import re
 
 import tiktoken
 
+from app.config import get_settings
 from app.services.graph import GraphService
 from app.services.llm import LLMService
 from app.services.memory import MemoryService
 from app.services.vector import VectorService
+
+settings = get_settings()
 
 logger = logging.getLogger(__name__)
 
@@ -185,78 +188,132 @@ class RetrievalService:
         return await self.graph.upsert_from_facts(facts)
 
     # ========================
-    # RETRIEVAL PIPELINE
+    # RETRIEVAL PIPELINE (Agentic RAG)
     # ========================
 
     async def retrieve_and_respond(
         self, query_ar: str, session_id: str = "default"
     ) -> dict:
-        """Full retrieval pipeline.
+        """Agentic RAG pipeline: Think → Act → Reflect (with Self-RAG).
 
-        1. Translate query
-        2. Smart route
-        3. Retrieve from appropriate source(s)
-        4. Build context (memory + retrieved)
-        5. Generate response in Arabic
+        1. Translate query Arabic → English
+        2. FAST PATH: keyword router — if match, skip Think step
+        3. THINK (if no keyword match): LLM decides strategy + search queries
+        4. ACT: execute retrieval strategy → context_parts, sources
+        5. REFLECT + Self-RAG: LLM scores chunks, filter below threshold
+        6. RETRY (if !sufficient && retries > 0): flip strategy, merge results
+        7. Build context (memory + filtered chunks, ≤15K tokens)
+        8. Generate Arabic response
+        9. Return reply + sources + route + agentic_trace
         """
+        agentic_trace: list[dict] = []
+
         # Step 1: Translate
         query_en = await self.llm.translate_to_english(query_ar)
 
-        # Step 2: Route
+        # Step 2: Fast path — keyword router
         route = smart_route(query_ar)
         if route == "llm_classify":
             route = smart_route(query_en)
-        if route == "llm_classify":
-            classification = await self.llm.classify_input(query_en)
-            category = classification.get("category", "general")
-            route_map = {
-                "financial": "graph_financial",
-                "reminder": "graph_reminder",
-                "project": "graph_project",
-                "relationships": "graph_person",
-                "task": "graph_task",
-                "search": "vector",
-                "knowledge": "vector",
-                "idea": "vector",
-                "general": "vector",
-            }
-            route = route_map.get(category, "vector")
 
-        # Step 3: Retrieve
-        context_parts = []
-        sources = []
+        used_fast_path = route != "llm_classify"
 
-        if route.startswith("graph_"):
-            graph_context = await self._retrieve_from_graph(route, query_en)
-            if graph_context:
-                context_parts.append(graph_context)
-                sources.append("graph")
-            # Also do vector search for hybrid results
-            vector_results = await self.vector.search(query_en, limit=3)
-            for r in vector_results:
-                context_parts.append(r["text"])
-                sources.append("vector")
+        if used_fast_path:
+            # Fast path: keyword matched, skip Think step
+            agentic_trace.append({
+                "step": "route",
+                "method": "fast_path_keyword",
+                "strategy": route,
+            })
+            search_queries = [query_en]
         else:
-            # Vector search
-            vector_results = await self.vector.search(query_en, limit=5)
-            for r in vector_results:
-                context_parts.append(r["text"])
-                sources.append("vector")
-            # Also check graph for any matching nodes
-            graph_text = await self.graph.search_nodes(query_en, limit=5)
-            if graph_text:
-                context_parts.append(graph_text)
-                sources.append("graph")
+            # Step 3: THINK — LLM decides strategy
+            think_result = await self.llm.think_step(query_en)
+            route = think_result.get("strategy", "vector")
+            search_queries = think_result.get("search_queries", [query_en])
+            if not search_queries:
+                search_queries = [query_en]
+            agentic_trace.append({
+                "step": "think",
+                "strategy": route,
+                "search_queries": search_queries,
+                "reasoning": think_result.get("reasoning", ""),
+            })
 
-        # Step 4: Build context with budget
+        # Step 4: ACT — execute retrieval
+        context_parts, sources = await self._execute_retrieval_strategy(
+            route, query_en, search_queries
+        )
+        agentic_trace.append({
+            "step": "act",
+            "strategy": route,
+            "chunks_retrieved": len(context_parts),
+            "sources": list(set(sources)),
+        })
+
+        # Step 5: REFLECT + Self-RAG (score chunks, filter low-relevance)
+        filtered_parts = context_parts
+        if context_parts:
+            reflect_result = await self.llm.reflect_step(query_en, context_parts)
+            chunk_scores = reflect_result.get("chunk_scores", [])
+            sufficient = reflect_result.get("sufficient", True)
+
+            # Filter chunks below threshold
+            threshold = settings.self_rag_threshold
+            if chunk_scores:
+                scored_parts = []
+                for cs in chunk_scores:
+                    idx = cs.get("index", -1)
+                    score = cs.get("score", 1.0)
+                    if 0 <= idx < len(context_parts) and score >= threshold:
+                        scored_parts.append(context_parts[idx])
+                # Keep at least 1 chunk if all filtered out
+                filtered_parts = scored_parts if scored_parts else context_parts[:1]
+            else:
+                filtered_parts = context_parts
+
+            agentic_trace.append({
+                "step": "reflect",
+                "sufficient": sufficient,
+                "chunk_scores": chunk_scores,
+                "chunks_after_filter": len(filtered_parts),
+                "threshold": threshold,
+            })
+
+            # Step 6: RETRY if insufficient and retries available
+            if not sufficient and settings.agentic_max_retries > 0:
+                retry_strategy = self._parse_retry_hint(
+                    reflect_result.get("retry_strategy"), route
+                )
+                agentic_trace.append({
+                    "step": "retry",
+                    "original_strategy": route,
+                    "retry_strategy": retry_strategy,
+                })
+                retry_parts, retry_sources = await self._execute_retrieval_strategy(
+                    retry_strategy, query_en, search_queries
+                )
+                # Merge new results (deduplicate)
+                existing_set = set(filtered_parts)
+                for rp in retry_parts:
+                    if rp not in existing_set:
+                        filtered_parts.append(rp)
+                        existing_set.add(rp)
+                sources.extend(retry_sources)
+
+                agentic_trace.append({
+                    "step": "retry_result",
+                    "new_chunks": len(retry_parts),
+                    "total_chunks": len(filtered_parts),
+                })
+
+        # Step 7: Build context with budget
         memory_context = await self.memory.build_memory_context(session_id)
-        retrieved_context = "\n\n".join(context_parts)
+        retrieved_context = "\n\n".join(filtered_parts)
 
-        # Enforce token budget
         memory_tokens = count_tokens(memory_context)
         remaining = self.max_context_tokens - memory_tokens
         if count_tokens(retrieved_context) > remaining:
-            # Truncate retrieved context
             words = retrieved_context.split()
             truncated: list[str] = []
             tokens_so_far = 0
@@ -268,7 +325,7 @@ class RetrievalService:
                 tokens_so_far += wt
             retrieved_context = " ".join(truncated)
 
-        # Step 5: Generate response
+        # Step 8: Generate response
         reply = await self.llm.generate_response(
             query_ar, retrieved_context, memory_context
         )
@@ -278,7 +335,54 @@ class RetrievalService:
             "sources": list(set(sources)),
             "route": route,
             "query_en": query_en,
+            "agentic_trace": agentic_trace,
         }
+
+    async def _execute_retrieval_strategy(
+        self, strategy: str, query_en: str, search_queries: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """Execute a retrieval strategy and return (context_parts, sources)."""
+        context_parts: list[str] = []
+        sources: list[str] = []
+        primary_query = search_queries[0] if search_queries else query_en
+
+        if strategy.startswith("graph_"):
+            graph_context = await self._retrieve_from_graph(strategy, primary_query)
+            if graph_context:
+                context_parts.append(graph_context)
+                sources.append("graph")
+            # Hybrid: also vector search
+            vector_results = await self.vector.search(primary_query, limit=3)
+            for r in vector_results:
+                context_parts.append(r["text"])
+                sources.append("vector")
+        elif strategy == "hybrid":
+            # Both graph search + vector search
+            graph_text = await self.graph.search_nodes(primary_query, limit=5)
+            if graph_text:
+                context_parts.append(graph_text)
+                sources.append("graph")
+            for sq in search_queries:
+                vector_results = await self.vector.search(sq, limit=3)
+                for r in vector_results:
+                    if r["text"] not in context_parts:
+                        context_parts.append(r["text"])
+                        sources.append("vector")
+        else:
+            # Vector search (default)
+            for sq in search_queries:
+                vector_results = await self.vector.search(sq, limit=5)
+                for r in vector_results:
+                    if r["text"] not in context_parts:
+                        context_parts.append(r["text"])
+                        sources.append("vector")
+            # Also check graph
+            graph_text = await self.graph.search_nodes(primary_query, limit=5)
+            if graph_text:
+                context_parts.append(graph_text)
+                sources.append("graph")
+
+        return context_parts, sources
 
     async def _retrieve_from_graph(self, route: str, query_en: str) -> str:
         if route == "graph_financial":
@@ -286,12 +390,9 @@ class RetrievalService:
         elif route == "graph_reminder":
             return await self.graph.query_reminders()
         elif route == "graph_project":
-            # Try to extract project name from query
-            results = await self.graph.search_nodes(query_en, limit=3)
-            return results
+            return await self.graph.search_nodes(query_en, limit=3)
         elif route == "graph_person":
-            results = await self.graph.search_nodes(query_en, limit=5)
-            return results
+            return await self.graph.search_nodes(query_en, limit=5)
         elif route == "graph_task":
             q = "MATCH (t:Task) WHERE t.status <> 'done' RETURN t.title, t.status, t.due_date, t.priority ORDER BY t.priority DESC LIMIT 20"
             rows = await self.graph.query(q)
@@ -302,6 +403,19 @@ class RetrievalService:
                 parts.append(f"  - {r[0]} [{r[1]}]")
             return "\n".join(parts)
         return ""
+
+    def _parse_retry_hint(self, hint: str | None, original: str) -> str:
+        """Parse retry strategy from Reflect step, or flip to opposite."""
+        valid = {
+            "vector", "hybrid", "graph_financial", "graph_reminder",
+            "graph_project", "graph_person", "graph_task",
+        }
+        if hint and hint in valid and hint != original:
+            return hint
+        # Flip: if was graph-based, try vector; if vector, try hybrid
+        if original.startswith("graph_"):
+            return "vector"
+        return "hybrid"
 
     # ========================
     # BACKGROUND POST-PROCESSING

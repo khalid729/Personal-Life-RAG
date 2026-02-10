@@ -56,6 +56,19 @@ class InputCategory(str, Enum):
     GENERAL = "general"
 
 
+class FileType(str, Enum):
+    INVOICE = "invoice"
+    OFFICIAL_DOCUMENT = "official_document"
+    PERSONAL_PHOTO = "personal_photo"
+    INFO_IMAGE = "info_image"
+    NOTE = "note"
+    PROJECT_FILE = "project_file"
+    PRICE_LIST = "price_list"
+    BUSINESS_CARD = "business_card"
+    PDF_DOCUMENT = "pdf_document"
+    AUDIO_RECORDING = "audio_recording"
+
+
 # --- Entity Schemas ---
 
 class PersonBase(BaseModel):
@@ -257,6 +270,7 @@ class ChatResponse(BaseModel):
     reply: str
     sources: list[str] = []
     route: Optional[str] = None
+    agentic_trace: list[dict] = []
 
 
 class IngestRequest(BaseModel):
@@ -270,6 +284,17 @@ class IngestResponse(BaseModel):
     status: str
     chunks_stored: int = 0
     facts_extracted: int = 0
+
+
+class FileUploadResponse(BaseModel):
+    status: str
+    filename: str
+    file_type: Optional[str] = None
+    file_hash: str = ""
+    analysis: dict = {}
+    chunks_stored: int = 0
+    facts_extracted: int = 0
+    processing_steps: list[str] = []
 
 
 class SearchRequest(BaseModel):

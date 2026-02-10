@@ -8,3 +8,5 @@ sentence-transformers>=3.3.0
 pydantic-settings>=2.7.0
 python-multipart>=0.0.18
 tiktoken>=0.8.0
+pymupdf4llm>=0.0.17
+aiofiles>=24.1.0

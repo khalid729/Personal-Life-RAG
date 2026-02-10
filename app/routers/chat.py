@@ -26,4 +26,5 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, request: Req
         reply=result["reply"],
         sources=result.get("sources", []),
         route=result.get("route"),
+        agentic_trace=result.get("agentic_trace", []),
     )

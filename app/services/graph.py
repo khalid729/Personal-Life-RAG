@@ -147,6 +147,29 @@ class GraphService:
         q = "MERGE (t:Tag {name: $name}) ON CREATE SET t.created_at = $now"
         await self._graph.query(q, params={"name": name, "now": _now()})
 
+    # --- File ---
+    async def upsert_file_node(
+        self, file_hash: str, filename: str, file_type: str, analysis: dict
+    ) -> None:
+        description = analysis.get("brief_description") or analysis.get("description") or ""
+        q = """
+        MERGE (f:File {file_hash: $file_hash})
+        ON CREATE SET f.filename = $filename, f.file_type = $file_type,
+                      f.description = $description, f.created_at = $now
+        ON MATCH SET f.filename = $filename, f.file_type = $file_type,
+                     f.description = $description, f.updated_at = $now
+        """
+        await self._graph.query(
+            q,
+            params={
+                "file_hash": file_hash,
+                "filename": filename,
+                "file_type": file_type,
+                "description": description[:500],
+                "now": _now(),
+            },
+        )
+
     # --- Relationships ---
     async def create_relationship(
         self,

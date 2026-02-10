@@ -4,7 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import chat, ingest, search
+from app.routers import chat, files, ingest, search
+from app.services.files import FileService
 from app.services.graph import GraphService
 from app.services.llm import LLMService
 from app.services.memory import MemoryService
@@ -43,6 +44,9 @@ async def lifespan(app: FastAPI):
     retrieval = RetrievalService(llm, graph, vector, memory)
     app.state.retrieval = retrieval
 
+    file_service = FileService(llm, retrieval)
+    app.state.file_service = file_service
+
     logger.info("All services started. API is ready.")
     yield
 
@@ -72,6 +76,7 @@ app.add_middleware(
 
 app.include_router(chat.router)
 app.include_router(ingest.router)
+app.include_router(files.router)
 app.include_router(search.router)
 
 
