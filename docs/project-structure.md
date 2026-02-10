@@ -34,14 +34,19 @@ Personal_Rag/
 │   │   ├── tasks.py             # GET /tasks/
 │   │   └── knowledge.py         # GET /knowledge/
 │   │
-│   └── prompts/
-│       ├── translate.py         # Arabic<>English translation prompts
-│       ├── classify.py          # Input category classification prompt
-│       ├── extract.py           # Fact/entity extraction prompt (incl. DebtPayment pseudo-entity)
-│       ├── file_classify.py     # Image file type classification prompt
-│       ├── vision.py            # Type-specific image analysis prompts (invoice, document, etc.)
-│       ├── agentic.py           # Think + Reflect prompts for agentic RAG pipeline
-│       └── conversation.py      # Confirmation, clarification, action detection (Phase 4)
+│   ├── prompts/
+│   │   ├── translate.py         # Arabic<>English translation prompts
+│   │   ├── classify.py          # Input category classification prompt
+│   │   ├── extract.py           # Fact/entity extraction prompt (incl. DebtPayment pseudo-entity)
+│   │   ├── file_classify.py     # Image file type classification prompt
+│   │   ├── vision.py            # Type-specific image analysis prompts (invoice, document, etc.)
+│   │   ├── agentic.py           # Think + Reflect prompts for agentic RAG pipeline
+│   │   └── conversation.py      # Confirmation, clarification, action detection (Phase 4)
+│   │
+│   └── integrations/            # External interfaces (Phase 5)
+│       ├── __init__.py
+│       ├── telegram_bot.py      # Telegram bot (aiogram 3.x, standalone process)
+│       └── openwebui_tools.py   # Open WebUI tools file (copy to WebUI Admin)
 │
 ├── data/
 │   └── files/                   # Uploaded files (content-addressed: {hash[:2]}/{hash}.{ext})
@@ -53,8 +58,16 @@ Personal_Rag/
 │   ├── progress.md              # Completed phases and remaining work
 │   └── project-structure.md     # This file
 │
+├── mcp_server.py                # MCP server (FastMCP, SSE on port 8600)
 ├── requirements.txt             # Python dependencies
-└── .env                         # Environment overrides (optional)
+├── .env                         # Environment overrides (optional)
+│
+└── scripts/
+    ├── start.sh                 # Start RAG API
+    ├── start_telegram.sh        # Start Telegram bot
+    ├── start_mcp.sh             # Start MCP server
+    ├── setup_graph.py           # FalkorDB schema setup
+    └── test_services.py         # Service connectivity tests
 ```
 
 ## Key Design Patterns

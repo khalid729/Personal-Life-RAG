@@ -66,8 +66,11 @@ Personal Life RAG is a bilingual (Arabic/English) personal life management syste
 - Processes uploaded files: images, PDFs, audio
 - Images: vLLM Vision API (classify type, then type-specific analysis)
 - PDFs: pymupdf4llm for markdown extraction
-- Audio: WhisperX (large-v3-turbo, loaded on-demand, serialized via asyncio.Lock)
+- Audio: WhisperX (large-v3-turbo, `language="ar"`, loaded on-demand, serialized via asyncio.Lock)
+- PyTorch 2.6 compatibility: patches `torch.load` to handle `weights_only=None` for omegaconf checkpoints
 - Files stored at `data/files/{hash[:2]}/{hash}.{ext}`
+- **Content-addressed dedup**: SHA256 hash check before processing — skips duplicates
+- **Audio = transcription only**: no fact extraction, caller sends transcript to `/chat/` for full processing
 - Auto-expense: invoice images with total > 0 auto-create Expense nodes
 
 ### 6. Retrieval Service (`app/services/retrieval.py`)
@@ -182,3 +185,60 @@ All settings are in `app/config.py` via Pydantic `BaseSettings` (overridable via
 | `confirmation_ttl_seconds` | 300 | Pending action TTL |
 | `daily_summary_interval` | 10 | Messages between daily summaries |
 | `core_memory_interval` | 20 | Messages between core memory extraction |
+| `whisperx_model` | `large-v3-turbo` | WhisperX model |
+| `whisperx_language` | `ar` | WhisperX language (Arabic) |
+| `telegram_bot_token` | `""` | Telegram Bot API token |
+| `tg_chat_id` | `""` | Authorized Telegram user ID |
+| `mcp_port` | 8600 | MCP server port |
+| `timezone_offset_hours` | 3 | User timezone offset (UTC+3 = Riyadh) |
+
+## Interfaces (Phase 5)
+
+Three client interfaces provide access from mobile, browser, and Claude Desktop — all calling the RAG API at port 8500.
+
+```
+                  ┌───────────────┐
+                  │  Telegram Bot │  (aiogram 3.x — polling)
+                  │  text/voice/  │
+                  │  photo/docs   │
+                  └──────┬────────┘
+                         │
+  ┌───────────────┐      │      ┌───────────────┐
+  │  Open WebUI   │      │      │  MCP Server   │
+  │  Tools        ├──────┼──────┤  :8600 (SSE)  │
+  │  (Docker)     │      │      │  (FastMCP)    │
+  └──────┬────────┘      │      └──────┬────────┘
+         │               │             │
+         └───────────────┼─────────────┘
+                         │
+                ┌────────▼─────────┐
+                │   FastAPI :8500   │
+                │   (RAG API)      │
+                └──────────────────┘
+```
+
+### Telegram Bot (`app/integrations/telegram_bot.py`)
+- Standalone async process (not inside FastAPI)
+- Calls RAG API via `httpx.AsyncClient`
+- Auth: only responds to configured `TG_CHAT_ID`
+- Session ID: `tg_{user_id}` for per-user memory
+- Features: text chat, voice→transcribe→chat, photo→analyze→Arabic summary via LLM, document→processing
+- Voice flow: `/ingest/file` (transcription only) → transcript sent to `/chat/` for response + fact extraction
+- Photo flow: `/ingest/file` (classify + analyze) → analysis sent to `/chat/` for Arabic summary
+- Photo captions: user context passed to Vision prompt for focused analysis
+- File dedup: duplicate files get "الملف موجود مسبقاً" message
+- Inline keyboard buttons for confirmation flow (yes/no)
+- Commands: `/start`, `/plan`, `/debts`, `/reminders`, `/projects`, `/tasks`, `/report`
+- Message splitting for Telegram's 4096 char limit
+
+### Open WebUI Tools (`app/integrations/openwebui_tools.py`)
+- Standalone Python file — copy into Open WebUI Admin → Functions
+- Sync `requests` (Open WebUI runs tools synchronously)
+- API URL: `http://host.docker.internal:8500` (Docker → host)
+- 8 tools: chat, search_knowledge, get_financial_report, get_debts, get_reminders, get_projects, get_tasks, daily_plan
+- Configurable via Valves (api_base_url, session_id)
+
+### MCP Server (`mcp_server.py`)
+- Standalone process using FastMCP (SSE transport) on port 8600
+- Async `httpx` client to RAG API
+- 12 tools: chat, search, create_reminder, record_expense, get_financial_report, get_debts, get_reminders, get_projects, get_tasks, get_knowledge, daily_plan, ingest_text

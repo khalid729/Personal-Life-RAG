@@ -35,6 +35,8 @@
 | `tiktoken` | >= 0.8.0 | Token counting for context budget |
 | `pymupdf4llm` | >= 0.0.17 | PDF to markdown extraction |
 | `aiofiles` | >= 24.1.0 | Async file I/O |
+| `aiogram` | >= 3.15.0 | Telegram Bot framework (async, aiogram 3.x) |
+| `fastmcp` | >= 2.0.0 | MCP server framework (SSE transport) |
 
 ## Why These Choices
 
@@ -69,6 +71,14 @@
 - Better than vanilla Whisper: word-level timestamps, speaker diarization
 - Loaded on-demand to save GPU memory when not in use
 - Serialized via asyncio.Lock to prevent concurrent GPU access
+
+## Interfaces
+
+| Tool | Version | Role | Port |
+|------|---------|------|------|
+| **aiogram** | >= 3.15.0 | Telegram Bot (text, voice, photo, documents) | — (polling) |
+| **FastMCP** | >= 2.0.0 | MCP server for Claude Desktop (SSE transport) | 8600 |
+| **Open WebUI** | external (Docker) | Browser chat interface with custom tools | 3000→8080 |
 
 ## System Requirements
 

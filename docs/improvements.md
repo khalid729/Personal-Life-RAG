@@ -1,0 +1,166 @@
+# تحسينات مستقبلية
+
+## 1. Smart Tags بـ Vector Dedup
+**المشكلة**: لما المستخدم يقول "خزنه مع اغراضي" النظام ما يفهم نية التصنيف، ولما يسأل "ايش اغراضي" يجاوب إجابة عامة.
+
+**الحل**:
+1. عند حفظ ملف مع كابشن فيه نية تصنيف → نستخرج Tag إنجليزي normalized عبر LLM
+2. قبل إنشاء Tag جديد → نبحث بالـ Qdrant عن tags متشابهة (threshold 0.85+)
+3. لو فيه تشابه عالي → نستخدم الموجود بدل ما نسوي جديد
+4. نربط الملف بالـ Tag عبر `TAGGED_WITH` في FalkorDB
+5. عند السؤال "ايش X" → router يبحث عن Tag → يجيب كل المرتبط فيه
+
+**مثال**:
+```
+"خزنه مع اغراضي"      → Tag: personal_belongings
+"هذا من أدوات المطبخ"   → Tag: kitchen_tools
+"أشيائي الشخصية"       → يلاقي personal_belongings (تشابه 0.92) → يستخدمه
+```
+
+**الملفات المتأثرة**: retrieval.py (router), graph.py (tag search), vector.py (tag similarity), extract prompt
+
+---
+
+## 2. تحسين الملخص العربي للصور
+**المشكلة**: الملخص أحياناً يوصف الخلفية والإضاءة بدل ما يركز على الشي المهم.
+
+**الحل**:
+- تحسين Vision prompt ليركز على المنتج/الشي الرئيسي
+- أو post-filter على الملخص يشيل الوصف غير المهم
+
+---
+
+## 3. Entity Resolution / Dedup
+**المشكلة**: "Mohammed" و "Mohamed" و "محمد" ممكن يكونون نفس الشخص بس يتخزنون كـ 3 nodes.
+
+**الحل**: Vector similarity على أسماء الكيانات قبل الإنشاء — لو التشابه عالي، يدمج.
+
+---
+
+## 4. Recurring Reminder Execution
+**المشكلة**: التذكيرات المتكررة تتخزن بس ما تنفذ تلقائي.
+
+**الحل**: APScheduler يفحص كل 30 دقيقة ويرسل عبر Telegram.
+
+---
+
+## 5. Proactive System (المرحلة 6)
+- ملخص صباحي (7:00) عبر Telegram
+- Check-in الظهر (13:00)
+- ملخص المساء (21:00)
+- تنبيهات ذكية (ديون قديمة، مشاريع متوقفة، مصاريف فوق المعتاد)
+
+---
+
+## 6. Streaming Responses
+**المشكلة**: الرد يأخذ 30+ ثانية بدون أي feedback.
+
+**الحل**: SSE streaming من vLLM → FastAPI → Telegram (إرسال تدريجي).
+
+---
+---
+
+# مشاكل مستعصية وحلولها — Phase 5 Testing
+
+## 1. PyTorch 2.6 + WhisperX: `weights_only` Error
+**المشكلة**: PyTorch 2.6 غيّر default من `weights_only=False` إلى `True`. WhisperX/pyannote checkpoints تستخدم `omegaconf` types اللي مو في safe list.
+
+**المحاولات الفاشلة**:
+1. `torch.serialization.add_safe_globals([ListConfig, DictConfig])` — حلت نوع بس طلع نوع ثاني (`ContainerMetadata`)، ثم `list` builtin... لا نهاية
+2. Monkey-patch `torch.load = _patched_load` — ما وصل للمكتبات لأنها تحفظ reference لـ `torch.load` عند الـ import
+3. `torch.load.__kwdefaults__["weights_only"] = False` — ما نفع لأن Lightning تمرر `weights_only=None` explicitly (مو missing)
+4. Patch كل `sys.modules` اللي فيها reference لـ `torch.load` — بعضها ما انمسك
+
+**الحل النهائي**: Lightning's `_load()` تمرر `weights_only=None` explicitly لـ `torch.load`. و PyTorch 2.6 يعامل `None` كـ `True`. الحل: wrap `torch.load` ونحول `None` → `False`:
+```python
+_orig = torch.load.__wrapped__ if hasattr(torch.load, "__wrapped__") else torch.load
+def _patched_load(*a, **kw):
+    if kw.get("weights_only") is None:
+        kw["weights_only"] = False
+    return _orig(*a, **kw)
+torch.load = _patched_load
+```
+**السبب**: `setdefault("weights_only", False)` ما يشتغل لأن المفتاح موجود بقيمة `None`. لازم نفحص `is None` explicitly.
+
+---
+
+## 2. WhisperX `UnboundLocalError: model`
+**المشكلة**: `cannot access local variable 'model' where it is not associated with a value`
+
+**السبب**: `finally` block فيه `del model` لكن لو `whisperx.load_model()` رمى exception، `model` ما تعرّف أصلاً.
+
+**الحل**: تهيئة `model = None` و `audio = None` قبل `try`، وفحص `if model is not None` قبل `del`.
+
+---
+
+## 3. FalkorDB Cypher: CREATE inline props
+**المشكلة**: `_create_generic` و `create_idea` يستخدمون `n.{k} = ${k}` داخل `CREATE ({...})` — هذا syntax الـ SET clause مو الـ CREATE.
+
+**الحل**: `{k}: ${k}` للـ inline props داخل CREATE.
+```cypher
+-- خطأ:
+CREATE (n:Label {n.key = $val})
+-- صح:
+CREATE (n:Label {key: $val})
+```
+
+---
+
+## 4. FalkorDB Primitive Types
+**المشكلة**: LLM يستخرج properties من نوع `dict` أو `list[dict]` — FalkorDB يقبل بس primitive types.
+
+**الحل**: في `_create_generic`، نحول `dict` → `json.dumps(str)` و `list[dict]` → `list[str]` قبل التخزين.
+
+---
+
+## 5. التاريخ والوقت الخاطئ
+**المشكلة**: النموذج يقول "بكرة الجمعة 4 أبريل 2025" بدل التاريخ الصحيح.
+
+**الأسباب (3 طبقات)**:
+1. **System prompt** ما فيه التاريخ → النموذج يخمّن
+2. **Extract prompt** ما فيه التاريخ → "بكرة" تتحول لتاريخ عشوائي عند استخراج الحقائق
+3. **Working memory** فيها ردود قديمة بتواريخ غلط → النموذج يكررها
+4. **UTC vs local time** — السيرفر يحسب UTC بس المستخدم في UTC+3
+
+**الحل**:
+- إضافة التاريخ + الوقت + "بكرة" في system prompt مع تعليمة واضحة
+- إضافة التاريخ في extract prompt
+- استخدام `timezone_offset_hours` من config (Asia/Riyadh = UTC+3)
+- مسح الـ working memory القديمة اللي فيها تواريخ غلط
+
+---
+
+## 6. Photo Reply بالإنجليزي
+**المشكلة**: تحليل الصور يرجع بالإنجليزي رغم إن الخطة "خزن بالإنجليزي، كلّم بالعربي".
+
+**المحاولات**:
+1. Arabic labels dictionary — ترجم أسماء الحقول بس القيم بقت إنجليزية
+2. إرسال التحليل لـ `/chat/` — ترجمة كاملة للعربي ✓
+
+**الحل النهائي**: بعد تحليل الصورة، نرسل النتائج + كابشن المستخدم لـ `/chat/` endpoint اللي يلخص بالعربي بـ 2-3 أسطر مركزة.
+
+---
+
+## 7. تخزين مكرر للملفات
+**المشكلة**: نفس الصورة تتخزن عدة مرات (8 Knowledge nodes + ~7 vector chunks).
+
+**الحل**: Content-addressed dedup — `find_file_by_hash()` في GraphService يفحص SHA256 hash. لو موجود → يرجع `status: "duplicate"` بدون إعادة معالجة.
+
+---
+
+## 8. Voice = تخزين بدون رد
+**المشكلة**: الصوت يروح لـ `/ingest/file` اللي يخزن بس — ما يجاوب على سؤال المستخدم.
+
+**الحل**: Voice handler يرسل لـ `/ingest/file` للتحويل فقط (transcription_only)، ثم يرسل النص لـ `/chat/` للرد + استخراج الحقائق. مسار واحد بدون تكرار.
+
+---
+
+## 9. Debt Direction Mismatch
+**المشكلة**: الـ LLM يستخرج `direction: "owed_by_me"` أو `"owed_to_other"` للديون اللي عليك، بس الكود يتوقع `"i_owe"`. النتيجة: كل الديون تنحسب كأنها "لك" بدل "عليك"، والمجاميع غلط.
+
+**السبب**: الـ extract prompt فيه مثال واحد بس لـ `"owed_to_me"` (شخص يدينك)، وما فيه مثال لـ "أنا أدين شخص" — فالـ LLM يخترع قيم مثل `"owed_by_me"`.
+
+**الحل**:
+1. `_normalize_direction()` في graph.py — يحول كل الأشكال (`owed_by_me`, `owed_to_other`, `i owe`) → `"i_owe"`
+2. إضافة مثال "I owe Fahd 800 riyals" → `direction: "i_owe"` في extract prompt
+3. إصلاح البيانات الموجودة في FalkorDB

@@ -797,9 +797,9 @@ Knowledge:
 - [ ] GraphRAG (تتبع العلاقات المعقدة في FalkorDB)
 
 ### المرحلة 5: الواجهات + Telegram Bot (أسبوع 7-8)
-- [ ] Telegram Bot (ثنائي الاتجاه + أزرار سريعة)
-- [ ] Open WebUI Tools (أدوات المحادثة)
-- [ ] MCP Server (أدوات Claude Desktop)
+- [x] Telegram Bot (ثنائي الاتجاه + أزرار سريعة)
+- [x] Open WebUI Tools (أدوات المحادثة)
+- [x] MCP Server (أدوات Claude Desktop)
 
 ### المرحلة 6: النظام الاستباقي + Letta (أسبوع 9-10)
 - [ ] Scheduler (ملخصات صباح/ظهر/مساء/أسبوعي)

@@ -244,3 +244,47 @@ Search knowledge entries.
 ```json
 {"status": "ok"}
 ```
+
+---
+
+## Telegram Bot Commands
+
+The Telegram bot runs as a separate process and calls the RAG API. Auth: only responds to the configured `TG_CHAT_ID`.
+
+| Command | Description | API Call |
+|---------|-------------|----------|
+| `/start` | Welcome message with command list | — |
+| `/plan` | Today's daily plan | `POST /chat/` ("رتب لي يومي") |
+| `/debts` | Debt summary (owe/owed) | `GET /financial/debts` |
+| `/reminders` | Active reminders | `GET /reminders/` |
+| `/projects` | Projects overview | `GET /projects/` |
+| `/tasks` | Tasks list | `GET /tasks/` |
+| `/report` | Monthly financial report | `GET /financial/report` |
+
+### Message Types
+- **Text** → `POST /chat/` → Arabic reply
+- **Voice** → download .ogg → `POST /ingest/file` → transcription + processing
+- **Photo** → download → `POST /ingest/file` → classification + analysis
+- **Document** → download → `POST /ingest/file` → processing
+- **Confirmation** → inline keyboard (✅ نعم / ❌ لا) when `pending_confirmation=true`
+
+---
+
+## MCP Server Tools
+
+The MCP server runs on port 8600 (SSE transport) and exposes 12 tools:
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `chat` | `message`, `session_id` | Conversational interface |
+| `search` | `query`, `source`, `limit` | Knowledge search (vector/graph/auto) |
+| `create_reminder` | `text` | Create reminder via natural language |
+| `record_expense` | `text` | Record expense via natural language |
+| `get_financial_report` | `month`, `year` | Monthly spending report |
+| `get_debts` | — | Debt summary |
+| `get_reminders` | — | Active reminders |
+| `get_projects` | `status` | Projects overview |
+| `get_tasks` | `status` | Tasks list |
+| `get_knowledge` | `topic` | Knowledge entries |
+| `daily_plan` | — | Today's aggregated plan |
+| `ingest_text` | `text`, `source_type` | Store text in knowledge base |

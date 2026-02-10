@@ -45,6 +45,21 @@ class FileService:
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         ext = Path(filename).suffix.lower() or self._guess_ext(content_type)
 
+        # Dedup: skip re-processing if this file was already ingested
+        existing = await self.retrieval.graph.find_file_by_hash(file_hash)
+        if existing:
+            logger.info("File %s already processed (hash=%s…), skipping.", filename, file_hash[:12])
+            return {
+                "status": "duplicate",
+                "filename": filename,
+                "file_type": existing.get("file_type"),
+                "file_hash": file_hash,
+                "analysis": existing.get("properties", {}),
+                "chunks_stored": 0,
+                "facts_extracted": 0,
+                "processing_steps": ["duplicate_skipped"],
+            }
+
         # Save file to disk
         file_path = await self._save_file(file_bytes, file_hash, ext)
         steps = [f"saved:{file_path}"]
@@ -283,30 +298,19 @@ class FileService:
         if user_context:
             transcript = f"[User context: {user_context}]\n\n{transcript}"
 
-        # Ingest through existing pipeline
-        ingest_result = await self.retrieval.ingest_text(
-            transcript,
-            source_type="file_audio_recording",
-            tags=tags,
-            topic=topic,
-        )
-        steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
-
-        # Store file node in graph
-        await self.retrieval.graph.upsert_file_node(
-            file_hash, filename, "audio_recording",
-            {"brief_description": f"Audio recording: {filename}", "transcript_preview": transcript[:200]},
-        )
-        steps.append("graph_node_created")
+        # Transcription only — no ingest/fact extraction here.
+        # The caller (e.g. Telegram bot) sends the transcript to /chat/
+        # which handles storage and fact extraction via post_process.
+        steps.append("transcription_only")
 
         return {
             "status": "ok",
             "filename": filename,
             "file_type": "audio_recording",
             "file_hash": file_hash,
-            "analysis": {"text_length": len(transcript), "preview": transcript[:500]},
-            "chunks_stored": ingest_result["chunks_stored"],
-            "facts_extracted": ingest_result["facts_extracted"],
+            "analysis": {"text_length": len(transcript), "preview": transcript},
+            "chunks_stored": 0,
+            "facts_extracted": 0,
             "processing_steps": steps,
         }
 
@@ -315,13 +319,26 @@ class FileService:
         import torch
         import whisperx
 
+        # PyTorch 2.6+ treats weights_only=None as True. Lightning passes
+        # None explicitly, so we wrap torch.load to convert None→False.
+        _orig_torch_load = torch.load.__wrapped__ if hasattr(torch.load, "__wrapped__") else torch.load
+        def _patched_load(*a, **kw):
+            if kw.get("weights_only") is None:
+                kw["weights_only"] = False
+            return _orig_torch_load(*a, **kw)
+        _patched_load.__wrapped__ = _orig_torch_load
+        torch.load = _patched_load
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = None
+        audio = None
         try:
             # Load model
             model = whisperx.load_model(
                 settings.whisperx_model,
                 device=device,
                 compute_type=settings.whisperx_compute_type,
+                language=settings.whisperx_language,
             )
 
             # Load and transcribe audio
@@ -336,9 +353,12 @@ class FileService:
 
             return transcript
         finally:
+            # Restore original torch.load
+            torch.load = _orig_torch_load
             # Release GPU memory
-            del model
-            if "audio" in dir():
+            if model is not None:
+                del model
+            if audio is not None:
                 del audio
             gc.collect()
             if torch.cuda.is_available():

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import chat, files, financial, ingest, knowledge, projects, reminders, search, tasks
+from app.routers import chat, files, financial, ingest, knowledge, proactive, projects, reminders, search, tasks
 from app.services.files import FileService
 from app.services.graph import GraphService
 from app.services.llm import LLMService
@@ -85,6 +85,7 @@ app.include_router(reminders.router)
 app.include_router(projects.router)
 app.include_router(tasks.router)
 app.include_router(knowledge.router)
+app.include_router(proactive.router)
 
 
 @app.get("/health")

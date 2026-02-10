@@ -10,3 +10,7 @@ python-multipart>=0.0.18
 tiktoken>=0.8.0
 pymupdf4llm>=0.0.17
 aiofiles>=24.1.0
+aiogram>=3.15.0
+fastmcp>=2.0.0
+apscheduler>=3.10.0
+python-dateutil>=2.9.0

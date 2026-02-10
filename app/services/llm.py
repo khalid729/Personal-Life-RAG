@@ -143,8 +143,23 @@ class LLMService:
         memory_context: str,
         conversation_history: list[dict] | None = None,
     ) -> str:
+        from datetime import datetime, timedelta, timezone
+        from app.config import get_settings as _gs
+        riyadh_tz = timezone(timedelta(hours=_gs().timezone_offset_hours))
+        now = datetime.now(riyadh_tz)
+        today_str = now.strftime("%Y-%m-%d")
+        tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        weekdays_ar = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+        today_weekday = weekdays_ar[now.weekday()]
+        tomorrow_weekday = weekdays_ar[(now.weekday() + 1) % 7]
+
         system_prompt = f"""أنت مساعد شخصي ذكي لإدارة الحياة اليومية. اسمك "المساعد".
 ترد بالعربية السعودية العامية. كن مختصر ومفيد.
+
+الوقت الحالي: {now.strftime("%H:%M")}
+اليوم = {today_weekday} {today_str}
+بكرة/غداً = {tomorrow_weekday} {tomorrow_str}
+مهم: لما المستخدم يقول "بكرة" أو "غداً" يقصد {tomorrow_weekday} {tomorrow_str} وليس اليوم.
 
 ذاكرتك:
 {memory_context}

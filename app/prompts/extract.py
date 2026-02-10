@@ -40,6 +40,10 @@ EXTRACT_EXAMPLES = [
         "output": '{"entities": [{"entity_type": "Debt", "entity_name": "dinner debt", "properties": {"amount": 500, "currency": "SAR", "direction": "owed_to_me", "reason": "dinner"}, "relationships": [{"type": "OWES", "target_type": "Person", "target_name": "Ahmad"}]}, {"entity_type": "Person", "entity_name": "Ahmad", "properties": {}, "relationships": []}]}',
     },
     {
+        "input": "I owe Fahd 800 riyals for the car repair",
+        "output": '{"entities": [{"entity_type": "Debt", "entity_name": "car repair debt", "properties": {"amount": 800, "currency": "SAR", "direction": "i_owe", "reason": "car repair"}, "relationships": [{"type": "OWES", "target_type": "Person", "target_name": "Fahd"}]}, {"entity_type": "Person", "entity_name": "Fahd", "properties": {}, "relationships": []}]}',
+    },
+    {
         "input": "I spent 200 riyals on groceries at Tamimi today",
         "output": '{"entities": [{"entity_type": "Expense", "entity_name": "groceries", "properties": {"amount": 200, "currency": "SAR", "category": "groceries"}, "relationships": [{"type": "PAID_AT", "target_type": "Company", "target_name": "Tamimi"}]}, {"entity_type": "Company", "entity_name": "Tamimi", "properties": {"industry": "retail"}, "relationships": []}]}',
     },
@@ -68,7 +72,15 @@ Respond with ONLY the contextualized chunk in this format:
 
 
 def build_extract(text: str) -> list[dict]:
-    messages = [{"role": "system", "content": EXTRACT_SYSTEM}]
+    from datetime import datetime, timedelta, timezone
+    from app.config import get_settings as _gs
+    riyadh_tz = timezone(timedelta(hours=_gs().timezone_offset_hours))
+    now = datetime.now(riyadh_tz)
+    today = now.strftime("%Y-%m-%d")
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    date_hint = f"\n\nToday's date: {today}. Tomorrow: {tomorrow}. Use these to resolve relative dates like 'بكرة', 'tomorrow', 'next week', etc."
+
+    messages = [{"role": "system", "content": EXTRACT_SYSTEM + date_hint}]
     for ex in EXTRACT_EXAMPLES:
         messages.append({"role": "user", "content": ex["input"]})
         messages.append({"role": "assistant", "content": ex["output"]})

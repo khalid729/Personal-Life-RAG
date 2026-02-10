@@ -1,7 +1,8 @@
 import calendar
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
+from dateutil.relativedelta import relativedelta
 from falkordb.asyncio import FalkorDB
 from redis.asyncio import BlockingConnectionPool
 
@@ -80,7 +81,18 @@ class GraphService:
         )
 
     # --- Debt ---
+    @staticmethod
+    def _normalize_direction(direction: str) -> str:
+        """Normalize debt direction to canonical values: 'i_owe' or 'owed_to_me'."""
+        d = direction.lower().strip()
+        if d in ("owed_by_me", "i_owe", "i owe", "i_owe_them", "owed_to_other"):
+            return "i_owe"
+        if d in ("owed_to_me", "they_owe", "they owe me", "they_owe_me"):
+            return "owed_to_me"
+        return d
+
     async def upsert_debt(self, person_name: str, amount: float, direction: str, **props) -> None:
+        direction = self._normalize_direction(direction)
         q = """
         MERGE (p:Person {name: $person_name})
         ON CREATE SET p.created_at = $now
@@ -147,6 +159,53 @@ class GraphService:
             return {"error": f"No reminder found matching '{title}'"}
         return {"title": rows[0][0], "status": rows[0][1]}
 
+    async def advance_recurring_reminder(self, title: str, recurrence: str) -> dict:
+        """Advance a recurring reminder to its next due date."""
+        q_find = """
+        MATCH (r:Reminder)
+        WHERE toLower(r.title) CONTAINS toLower($title)
+          AND r.status = 'pending'
+        RETURN r.title, r.due_date
+        LIMIT 1
+        """
+        rows = await self.query(q_find, {"title": title})
+        if not rows:
+            return {"error": f"No pending reminder found matching '{title}'"}
+
+        r_title, due_date_str = rows[0][0], rows[0][1]
+        if not due_date_str:
+            return {"error": f"Reminder '{r_title}' has no due_date to advance"}
+
+        # Parse current due date
+        try:
+            current_due = datetime.fromisoformat(due_date_str)
+        except (ValueError, TypeError):
+            current_due = datetime.fromisoformat(due_date_str[:19])
+
+        # Calculate next due date based on recurrence
+        rec = recurrence.lower().strip()
+        if rec == "daily":
+            next_due = current_due + timedelta(days=1)
+        elif rec == "weekly":
+            next_due = current_due + timedelta(weeks=1)
+        elif rec == "monthly":
+            next_due = current_due + relativedelta(months=1)
+        elif rec == "yearly":
+            next_due = current_due + relativedelta(years=1)
+        else:
+            return {"error": f"Unknown recurrence: {recurrence}"}
+
+        next_due_str = next_due.isoformat()
+        q_update = """
+        MATCH (r:Reminder)
+        WHERE toLower(r.title) CONTAINS toLower($title)
+          AND r.status = 'pending'
+        SET r.due_date = $next_due, r.updated_at = $now
+        """
+        await self.query(q_update, {"title": title, "next_due": next_due_str, "now": _now()})
+
+        return {"title": r_title, "next_due": next_due_str, "recurrence": recurrence}
+
     # --- Task ---
     async def upsert_task(self, title: str, **props) -> None:
         props_str = self._build_set_clause(props, var="t")
@@ -160,11 +219,11 @@ class GraphService:
     # --- Idea ---
     async def create_idea(self, title: str, **props) -> None:
         extra = {k: v for k, v in props.items() if v is not None}
-        sets = ""
+        inline = ""
         if extra:
-            sets = ", " + ", ".join(f"i.{k} = ${k}" for k in extra)
+            inline = ", " + ", ".join(f"{k}: ${k}" for k in extra)
         q = f"""
-        CREATE (i:Idea {{title: $title, created_at: $now{sets}}})
+        CREATE (i:Idea {{title: $title, created_at: $now{inline}}})
         """
         await self._graph.query(q, params={"title": title, "now": _now(), **extra})
 
@@ -213,6 +272,16 @@ class GraphService:
                 "now": _now(),
             },
         )
+
+    async def find_file_by_hash(self, file_hash: str) -> dict | None:
+        """Check if a file with this hash already exists in the graph."""
+        q = "MATCH (f:File {file_hash: $hash}) RETURN f"
+        rows = await self.query(q, {"hash": file_hash})
+        if rows and rows[0]:
+            node = rows[0][0]
+            props = node.properties if hasattr(node, "properties") else {}
+            return {"file_type": props.get("file_type"), "properties": props}
+        return None
 
     # --- Relationships ---
     async def create_relationship(
@@ -969,11 +1038,21 @@ class GraphService:
             logger.warning("Idea similarity detection failed: %s", e)
 
     async def _create_generic(self, label: str, key_field: str, value: str, **props) -> None:
-        extra = {k: v for k, v in props.items() if v is not None}
-        sets = ""
+        extra = {}
+        for k, v in props.items():
+            if v is None:
+                continue
+            # FalkorDB only accepts primitives or arrays of primitives
+            if isinstance(v, dict):
+                extra[k] = str(v)
+            elif isinstance(v, list) and v and isinstance(v[0], dict):
+                extra[k] = [str(i) for i in v]
+            else:
+                extra[k] = v
+        inline = ""
         if extra:
-            sets = ", " + ", ".join(f"n.{k} = ${k}" for k in extra)
-        q = f"CREATE (n:{label} {{{key_field}: $value, created_at: $now{sets}}})"
+            inline = ", " + ", ".join(f"{k}: ${k}" for k in extra)
+        q = f"CREATE (n:{label} {{{key_field}: $value, created_at: $now{inline}}})"
         await self._graph.query(q, params={"value": value, "now": _now(), **extra})
 
     def _build_set_clause(self, props: dict, var: str = "p") -> str:

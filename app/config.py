@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     whisperx_model: str = "large-v3-turbo"
     whisperx_compute_type: str = "float16"
     whisperx_batch_size: int = 16
+    whisperx_language: str = "ar"
 
     # Agentic RAG
     agentic_max_retries: int = 1
@@ -54,6 +55,26 @@ class Settings(BaseSettings):
     confirmation_ttl_seconds: int = 300
     daily_summary_interval: int = 10
     core_memory_interval: int = 20
+
+    # Telegram (Phase 5)
+    telegram_bot_token: str = ""
+    tg_chat_id: str = ""
+
+    # MCP (Phase 5)
+    mcp_port: int = 8600
+
+    # Timezone
+    timezone_offset_hours: int = 3  # Asia/Riyadh UTC+3
+
+    # Proactive System (Phase 6)
+    proactive_enabled: bool = True
+    proactive_morning_hour: int = 7
+    proactive_noon_hour: int = 13
+    proactive_evening_hour: int = 21
+    proactive_reminder_check_minutes: int = 30
+    proactive_alert_check_hours: int = 6
+    proactive_stalled_days: int = 14
+    proactive_old_debt_days: int = 30
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

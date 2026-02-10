@@ -62,6 +62,42 @@
 - [x] REST endpoints: /projects/, /projects/update, /tasks/, /knowledge/
 - [x] `_build_set_clause` bug fix (variable name mismatch)
 
+### Phase 5 — Interfaces (Telegram + Open WebUI + MCP)
+- [x] Telegram Bot (aiogram 3.x, polling, text/voice/photo/document)
+- [x] Telegram commands: /start, /plan, /debts, /reminders, /projects, /tasks, /report
+- [x] Telegram auth (TG_CHAT_ID single-user), message splitting (4096 char limit)
+- [x] Inline keyboard for confirmation flow (yes/no buttons)
+- [x] Open WebUI tools file (8 tools: chat, search, financial, debts, reminders, projects, tasks, daily plan)
+- [x] MCP server (FastMCP, SSE on port 8600, 12 tools)
+- [x] MCP tools: chat, search, create_reminder, record_expense, financial report, debts, reminders, projects, tasks, knowledge, daily plan, ingest text
+- [x] Startup scripts: start_telegram.sh, start_mcp.sh
+- [x] Config: telegram_bot_token, tg_chat_id, mcp_port in Settings + .env
+
+### Phase 5 — Bug Fixes & Improvements (Testing)
+- [x] **Photo Arabic replies**: تحليل الصور يمر عبر `/chat/` لترجمة كاملة بالعربي (بدل labels إنجليزية)
+- [x] **Caption context**: كابشن المستخدم يُمرر لـ Vision prompt للتركيز على المحتوى المهم
+- [x] **Concise summaries**: prompt محسّن يطلب 2-3 أسطر بدون وصف الخلفية والإضاءة
+- [x] **File dedup**: فحص SHA256 hash قبل المعالجة — يتخطى الملفات المكررة
+- [x] **FalkorDB CREATE syntax**: إصلاح `_create_generic` و `create_idea` — `{k}: ${k}` بدل `n.{k} = ${k}`
+- [x] **FalkorDB primitive types**: تحويل dict→str و list[dict]→list[str] قبل التخزين
+- [x] **WhisperX variable scope**: تهيئة `model=None` و `audio=None` قبل try/finally
+- [x] **PyTorch 2.6 weights_only**: patch `torch.load` لمعالجة `weights_only=None` → `False` (لـ omegaconf checkpoints)
+- [x] **ffmpeg dependency**: إضافة ffmpeg كمتطلب نظام لـ WhisperX
+- [x] **WhisperX Arabic**: تحديد `language="ar"` لتحسين دقة التعرف على الكلام
+- [x] **Voice = chat**: الصوت يُحوّل لنص فقط عبر `/ingest/file` ثم يُرسل لـ `/chat/` للرد (بدون تخزين مكرر)
+- [x] **System prompt date/time**: إضافة التاريخ والوقت الحالي (توقيت الرياض UTC+3) للـ system prompt
+- [x] **Extract prompt date**: إضافة التاريخ لـ extract prompt لحل التواريخ النسبية ("بكرة" → التاريخ الصحيح)
+- [x] **Timezone config**: `timezone_offset_hours` في Settings (default 3 = Asia/Riyadh)
+- [x] **Debt direction normalization**: `_normalize_direction()` يحول `owed_by_me`/`owed_to_other` → `i_owe` (الـ LLM يولد قيم غير متسقة)
+- [x] **Extract prompt "I owe" example**: مثال لتعليم الـ LLM يستخدم `i_owe` بدل اختراع قيم
+- [x] **Bot error handler**: `@router.error()` يرسل رسالة خطأ للمستخدم عند أي exception
+
+### Phase 5 — Testing Results (46/48 passed)
+- [x] Telegram Bot: 20/20 (أوامر، نصوص عربي/إنجليزي، صور، صوت، PDF، ملفات غير مدعومة)
+- [x] MCP Server: 14/14 (12 tool + startup + registration)
+- [x] Open WebUI: 2/4 (syntax + instantiation OK — اختبار مباشر يحتاج Docker)
+- [x] اختبارات عامة: 10/10 (تواريخ، sessions، timeouts، errors، splitting)
+
 ---
 
 ## Remaining / Future Ideas
