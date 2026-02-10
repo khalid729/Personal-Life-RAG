@@ -10,6 +10,7 @@ Types:
 - project_file: wireframes, architecture diagrams, code screenshots, project plans
 - price_list: menus, catalogs, price sheets, product listings with prices
 - business_card: business cards, contact cards
+- inventory_item: product photos, electronic components, cables, tools, stored items, possessions, gadgets
 
 Respond with ONLY a JSON object:
 {"file_type": "<type>", "confidence": <0.0-1.0>, "brief_description": "<1 sentence description>"}"""

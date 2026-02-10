@@ -146,6 +146,30 @@
 - [ ] Knowledge graph visualization
 - [ ] Import from external sources (Notion, Obsidian)
 
+### Phase 7 — Personal Inventory System (جرد الأغراض الشخصية)
+
+#### 7a — Core Inventory
+- [ ] كيانات `Item` + `Location` في FalkorDB (هرمي: مبنى > غرفة > رف > كرتون)
+- [ ] تصوير الغرض عبر تلقرام → Vision يحلل (اسم، ماركة، مواصفات، فئة، حالة)
+- [ ] تخزين الكمية والمكان بالعربي ("السطح، الرف الثاني، الكرتون الأزرق")
+- [ ] بحث المخزون: "وين الـ X؟" / "عندي X؟" / "كم كيبل USB عندي؟"
+- [ ] أمر `/inventory` في تلقرام (عرض، بحث، إحصائيات)
+- [ ] REST endpoints: `/inventory/items`, `/inventory/locations`, `/inventory/search`
+- [ ] Smart router keywords: مخزون/جرد/وين/عندي → inventory route
+
+#### 7b — Smart Inventory
+- [ ] بحث بالصورة (تصور شي → يطلع لك المشابه من المخزون عبر vector similarity)
+- [ ] تنبيه قبل الشراء: "عندك 2 من هذا الشي بالفعل" (ربط مع المحادثة)
+- [ ] فئات تلقائية (إلكترونيات، كيابل، أدوات، قطع غيار، إلخ)
+- [ ] نقل الأغراض بين المواقع ("نقلت الطابعة من السطح للمكتب")
+- [ ] تحديث الكمية ("استخدمت 2 من البطاريات")
+
+#### 7c — Advanced Inventory
+- [ ] QR/Barcode على الكراتين → scan = محتويات الكرتون
+- [ ] "كم غرض عندي ما استخدمته من سنة؟" (تتبع آخر استخدام)
+- [ ] تقرير جرد شامل (بالفئة، بالمكان، بالقيمة)
+- [ ] اكتشاف التكرار (أغراض متشابهة في أماكن مختلفة)
+
 ### General Improvements
 - [ ] Streaming responses (SSE)
 - [ ] WebSocket real-time updates

@@ -32,8 +32,10 @@ def is_confirmation(text: str) -> str | None:
 # --- Action vs Query detection (zero-latency heuristic) ---
 
 ACTION_PATTERNS = re.compile(
-    r"(صرفت|دفعت|سددت|سدد|رجع|سجل|ذكرني|أضف|ضيف|حط|اشتريت|"
-    r"spent|paid|record|add|bought|create|register|remind me|set reminder)",
+    r"(صرفت|دفعت|سددت|سدد|رجع|سجل|ذكرني|أضف|ضيف|حط|اشتريت|عندي |شريت|"
+    r"استخدمت|ضاع|خلص|عطيت|رميت|انكسر|"
+    r"spent|paid|record|add|bought|create|register|remind me|set reminder|i have|stored|"
+    r"used|gave away|lost|broke)",
     re.IGNORECASE,
 )
 
@@ -49,6 +51,7 @@ SIDE_EFFECT_ROUTES = {
     "graph_debt_payment",
     "graph_reminder",
     "graph_reminder_action",
+    "graph_inventory",
 }
 
 # Deterministic route→intent mapping (no heuristic needed)
@@ -81,6 +84,8 @@ _ACTION_LABELS = {
     "Debt": "دين",
     "DebtPayment": "سداد دين",
     "Reminder": "تذكير",
+    "Item": "غرض في المخزون",
+    "ItemUsage": "استخدام غرض",
 }
 
 
@@ -153,6 +158,29 @@ def build_confirmation_message(action_type: str, entities: list[dict]) -> str:
         parts.append("؟")
         return "".join(parts)
 
+    if action_type == "Item":
+        parts = ["تبيني أسجل غرض في المخزون"]
+        if name:
+            parts.append(f": {name}")
+        qty = props.get("quantity", 1)
+        if qty and qty > 1:
+            parts.append(f" ({qty} حبة)")
+        loc = props.get("location", "")
+        if loc:
+            parts.append(f" في {loc}")
+        parts.append("؟")
+        return "".join(parts)
+
+    if action_type == "ItemUsage":
+        parts = ["تبيني أنقص من المخزون"]
+        if name:
+            parts.append(f": {name}")
+        qty = props.get("quantity_used", 1)
+        if qty:
+            parts.append(f" ({qty} حبة)")
+        parts.append("؟")
+        return "".join(parts)
+
     return f"تبيني أسجل {label}: {name}؟"
 
 
@@ -165,6 +193,8 @@ Action requirements:
 - Debt: needs person (required) and amount (required)
 - DebtPayment: needs person (required) and amount (required)
 - Reminder: needs title/description (required)
+- Item: needs name (required), location is helpful but optional
+- ItemUsage: needs item name (required) and quantity_used (default 1)
 
 Respond in JSON:
 {

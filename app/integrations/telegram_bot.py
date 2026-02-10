@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -46,6 +47,11 @@ FILE_TIMEOUT = 120.0
 TG_MAX_LEN = 4096
 
 router = Router()
+
+# Pending location updates for inventory items (module-level, single-process bot)
+# {session_id: {"item_name": str, "created_at": float}}
+_pending_locations: dict[str, dict] = {}
+_PENDING_LOCATION_TTL = 300  # 5 minutes
 
 
 # --- Helpers ---
@@ -115,6 +121,14 @@ _AR_LABELS = {
     "website": "الموقع",
     "address": "العنوان",
     "other": "أخرى",
+    # Inventory item
+    "item_name": "اسم الغرض",
+    "quantity_visible": "الكمية المرئية",
+    "condition": "الحالة",
+    "brand": "الماركة",
+    "model": "الموديل",
+    "specifications": "المواصفات",
+    "estimated_value": "القيمة التقديرية",
 }
 
 _AR_FILE_TYPES = {
@@ -126,6 +140,7 @@ _AR_FILE_TYPES = {
     "project_file": "ملف مشروع",
     "price_list": "قائمة أسعار",
     "business_card": "كرت شخصي",
+    "inventory_item": "غرض/منتج",
 }
 
 _AR_STEPS = {
@@ -220,7 +235,8 @@ async def cmd_start(message: Message):
         "/reminders — التذكيرات\n"
         "/projects — المشاريع\n"
         "/tasks — المهام\n"
-        "/report — التقرير المالي"
+        "/report — التقرير المالي\n"
+        "/inventory — المخزون والأغراض"
     )
 
 
@@ -294,6 +310,33 @@ async def cmd_report(message: Message):
         lines.append(f"• {cat['category']}: {cat['total']} ({cat['percentage']}%)")
     if not data.get("by_category"):
         lines.append("لا توجد مصاريف هذا الشهر.")
+    await send_reply(message, "\n".join(lines))
+
+
+@router.message(Command("inventory"))
+async def cmd_inventory(message: Message):
+    if not authorized(message):
+        return
+    data = await api_get("/inventory/summary")
+    total_items = data.get("total_items", 0)
+    total_qty = data.get("total_quantity", 0)
+    lines = [
+        f"📦 المخزون",
+        f"إجمالي الأغراض: {total_items} (الكمية: {total_qty})",
+        "",
+    ]
+    by_cat = data.get("by_category", [])
+    if by_cat:
+        lines.append("حسب الفئة:")
+        for c in by_cat:
+            lines.append(f"  • {c['category']}: {c['count']} أغراض ({c['quantity']} حبة)")
+    by_loc = data.get("by_location", [])
+    if by_loc:
+        lines.append("\nحسب المكان:")
+        for loc in by_loc:
+            lines.append(f"  • {loc['location']}: {loc['count']} أغراض")
+    if not by_cat and not by_loc:
+        lines.append("لا توجد أغراض مسجلة.")
     await send_reply(message, "\n".join(lines))
 
 
@@ -407,8 +450,17 @@ async def handle_photo(message: Message):
         f"{context_line}"
     )
     sid = session_id(message.from_user.id)
+    # Skip fact extraction when auto_item already handled the item creation
+    skip_facts = bool(result.get("auto_item"))
     try:
-        summary_result = await chat_api(summary_prompt, sid)
+        summary_result = await api_post(
+            "/chat/",
+            json={
+                "message": summary_prompt,
+                "session_id": sid,
+                "skip_fact_extraction": skip_facts,
+            },
+        )
         ar_summary = summary_result.get("reply", "")
     except Exception:
         ar_summary = ""
@@ -435,6 +487,18 @@ async def handle_photo(message: Message):
     if result.get("auto_expense"):
         exp = result["auto_expense"]
         reply_parts.append(f"💰 مصروف تلقائي: {exp.get('amount', 0)} ريال — {exp.get('vendor', '')}")
+
+    if result.get("auto_item"):
+        item = result["auto_item"]
+        reply_parts.append(f"📦 تم تسجيل: {item.get('name', '')} (الكمية: {item.get('quantity', 1)})")
+        # If inventory_item created WITHOUT location (no caption), ask user
+        if not (message.caption or "").strip() and not item.get("location"):
+            sid = session_id(message.from_user.id)
+            _pending_locations[sid] = {
+                "item_name": item.get("name", ""),
+                "created_at": time.monotonic(),
+            }
+            reply_parts.append("📍 وين حاطه؟ (أرسل المكان، مثلاً: السطح > الرف الثاني)")
 
     reply_parts.append(
         f"✅ تم الحفظ: {result.get('chunks_stored', 0)} أجزاء، "
@@ -487,6 +551,30 @@ async def handle_text(message: Message):
     if not authorized(message):
         return
     sid = session_id(message.from_user.id)
+
+    # Check for pending location update (from captionless inventory photo)
+    if sid in _pending_locations:
+        pending = _pending_locations[sid]
+        age = time.monotonic() - pending["created_at"]
+        if age <= _PENDING_LOCATION_TTL:
+            _pending_locations.pop(sid)
+            location = message.text.strip()
+            item_name = pending["item_name"]
+            try:
+                await api_post(
+                    f"/inventory/item/{item_name}/location",
+                    json={"location": location},
+                    timeout=CHAT_TIMEOUT,
+                )
+                await message.answer(f"📍 تم تحديث مكان {item_name}: {location}")
+            except Exception as e:
+                logger.error("Failed to update item location: %s", e)
+                await message.answer("❌ ما قدرت أحدث المكان، حاول مرة ثانية.")
+            return
+        else:
+            # Expired — remove and proceed normally
+            _pending_locations.pop(sid)
+
     result = await chat_api(message.text, sid)
 
     keyboard = None

@@ -154,6 +154,28 @@ class FileService:
                     logger.warning("Auto-expense creation failed: %s", e)
                     steps.append(f"auto_expense_error:{e}")
 
+        # Auto-create item from inventory_item photo
+        auto_item = None
+        if file_type == "inventory_item":
+            item_name = analysis.get("item_name", "")
+            if item_name:
+                try:
+                    # User caption = location (e.g. "السطح > الرف الثاني")
+                    location = user_context.strip() if user_context else None
+                    auto_item = await self.retrieval.graph.upsert_item(
+                        name=item_name,
+                        brand=analysis.get("brand"),
+                        description=analysis.get("description"),
+                        category=analysis.get("category"),
+                        condition=analysis.get("condition"),
+                        quantity=analysis.get("quantity_visible", 1),
+                        file_hash=file_hash,
+                        location=location,
+                    )
+                    steps.append(f"auto_item:{item_name}")
+                except Exception as e:
+                    logger.warning("Auto-item creation failed: %s", e)
+
         return {
             "status": "ok",
             "filename": filename,
@@ -164,6 +186,7 @@ class FileService:
             "facts_extracted": ingest_result["facts_extracted"],
             "processing_steps": steps,
             "auto_expense": auto_expense,
+            "auto_item": auto_item,
         }
 
     # ========================
@@ -410,6 +433,27 @@ class FileService:
             parts.append(f"Photo description: {desc}")
             if tags:
                 parts.append(f"Tags: {', '.join(tags)}")
+        elif file_type == "inventory_item":
+            item_name = analysis.get("item_name", "")
+            brand = analysis.get("brand", "")
+            category = analysis.get("category", "")
+            condition = analysis.get("condition", "")
+            desc = analysis.get("description", "")
+            qty = analysis.get("quantity_visible", 1)
+            parts.append(f"Inventory item: {item_name}")
+            if brand:
+                parts.append(f"Brand: {brand}")
+            if category:
+                parts.append(f"Category: {category}")
+            if condition:
+                parts.append(f"Condition: {condition}")
+            if qty and qty > 1:
+                parts.append(f"Quantity: {qty}")
+            if desc:
+                parts.append(f"Description: {desc}")
+            specs = analysis.get("specifications", [])
+            if specs:
+                parts.append(f"Specs: {', '.join(str(s) for s in specs)}")
         elif file_type == "official_document":
             doc_type = analysis.get("document_type", "")
             title = analysis.get("title", "")

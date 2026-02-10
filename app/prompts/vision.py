@@ -76,6 +76,20 @@ Return a JSON object:
   "address": "address or null",
   "other": "any other info"
 }""",
+    "inventory_item": """Identify this item/product and extract all useful details.
+Return a JSON object:
+{
+  "item_name": "descriptive name of the item",
+  "brand": "brand/manufacturer or null",
+  "model": "model number or null",
+  "description": "detailed description including color, size, distinguishing features",
+  "category": "electronics/cables/tools/parts/accessories/household/other",
+  "condition": "new/used/damaged/unknown",
+  "estimated_value": null,
+  "quantity_visible": 1,
+  "specifications": ["spec1", "spec2"],
+  "notes": "any other relevant info"
+}""",
 }
 
 VISION_ANALYSIS_SYSTEM = """You are a visual analysis assistant for a personal life management system.

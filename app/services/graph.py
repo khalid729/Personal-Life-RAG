@@ -1,5 +1,6 @@
 import calendar
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from dateutil.relativedelta import relativedelta
@@ -90,6 +91,36 @@ class GraphService:
         if d in ("owed_to_me", "they_owe", "they owe me", "they_owe_me"):
             return "owed_to_me"
         return d
+
+    # --- Location normalization ---
+    _LOCATION_ALIASES: dict[str, str | None] = {
+        "bedroom": "غرفة النوم",
+        "kitchen": "المطبخ",
+        "bathroom": "الحمام",
+        "living room": "الصالة",
+        "garage": "الكراج",
+        "roof": "السطح",
+        "storage": "المخزن",
+        "office": "المكتب",
+    }
+
+    @staticmethod
+    def _normalize_location(path: str) -> str | None:
+        """Normalize location path to consistent form."""
+        if not path:
+            return None
+        path = path.strip()
+        if not path:
+            return None
+        # Check alias map (English → Arabic normalization)
+        lower = path.lower()
+        if lower in GraphService._LOCATION_ALIASES:
+            return GraphService._LOCATION_ALIASES[lower]
+        # Normalize separator spacing: "السطح  >الرف" → "السطح > الرف"
+        path = re.sub(r'\s*>\s*', ' > ', path)
+        # Collapse multiple spaces
+        path = re.sub(r'\s+', ' ', path)
+        return path.strip() or None
 
     async def upsert_debt(self, person_name: str, amount: float, direction: str, **props) -> None:
         direction = self._normalize_direction(direction)
@@ -324,6 +355,7 @@ class GraphService:
                     "Tag": lambda n, **p: self.upsert_tag(n),
                     "Reminder": lambda n, **p: self.create_reminder(n, **p),
                     "Knowledge": lambda n, **p: self._create_generic("Knowledge", "title", n, **p),
+                    "Item": lambda n, **p: self.upsert_item(n, **p),
                 }.get(etype)
 
                 if etype == "DebtPayment":
@@ -340,6 +372,15 @@ class GraphService:
                             count += 1
                         else:
                             logger.warning("DebtPayment failed: %s", result["error"])
+                    continue  # Skip relationship creation for pseudo-entity
+
+                if etype == "ItemUsage":
+                    qty_used = props.get("quantity_used", 1)
+                    result = await self.adjust_item_quantity(ename, -abs(int(qty_used)))
+                    if "error" not in result:
+                        count += 1
+                    else:
+                        logger.warning("ItemUsage failed: %s", result["error"])
                     continue  # Skip relationship creation for pseudo-entity
 
                 if etype == "Expense":
@@ -1036,6 +1077,220 @@ class GraphService:
                         logger.debug("Similar idea link skipped: %s", e)
         except Exception as e:
             logger.warning("Idea similarity detection failed: %s", e)
+
+    # --- Inventory ---
+    async def upsert_item(self, name: str, **props) -> dict:
+        """Create or update an inventory Item node. If location provided, link to Location node."""
+        location = props.pop("location", None)
+        if location:
+            location = self._normalize_location(location)
+        file_hash = props.pop("file_hash", None)
+        quantity = props.pop("quantity", 1)
+        if quantity is None:
+            quantity = 1
+
+        # Filter None values and sanitize for FalkorDB
+        filtered = {}
+        for k, v in props.items():
+            if v is None:
+                continue
+            if isinstance(v, dict):
+                filtered[k] = str(v)
+            elif isinstance(v, list) and v and isinstance(v[0], dict):
+                filtered[k] = [str(i) for i in v]
+            else:
+                filtered[k] = v
+
+        props_set = ", ".join(f"i.{k} = ${k}" for k in filtered)
+        on_create_extra = f", {props_set}" if props_set else ""
+        on_match_extra = f", {props_set}" if props_set else ""
+
+        q = f"""
+        MERGE (i:Item {{name: $name}})
+        ON CREATE SET i.created_at = $now, i.quantity = $quantity, i.status = 'active'{on_create_extra}
+        ON MATCH SET i.updated_at = $now, i.quantity = i.quantity + $quantity{on_match_extra}
+        RETURN i.name, i.quantity, i.status
+        """
+        rows = await self.query(q, {"name": name, "now": _now(), "quantity": quantity, **filtered})
+
+        result = {"name": name, "quantity": quantity, "status": "active"}
+        if rows:
+            result = {"name": rows[0][0], "quantity": rows[0][1], "status": rows[0][2] or "active"}
+
+        # Link to Location
+        if location:
+            await self.upsert_location(location)
+            q_loc = """
+            MATCH (i:Item {name: $name})
+            MATCH (l:Location {path: $location})
+            MERGE (i)-[:STORED_IN]->(l)
+            """
+            await self.query(q_loc, {"name": name, "location": location})
+            result["location"] = location
+
+        # Link to File if file_hash provided
+        if file_hash:
+            try:
+                q_file = """
+                MATCH (i:Item {name: $name})
+                MATCH (f:File {file_hash: $fh})
+                MERGE (i)-[:FROM_PHOTO]->(f)
+                """
+                await self.query(q_file, {"name": name, "fh": file_hash})
+            except Exception as e:
+                logger.debug("Item-File link skipped: %s", e)
+
+        return result
+
+    async def upsert_location(self, path: str) -> None:
+        """Create a Location node if it doesn't exist."""
+        q = "MERGE (l:Location {path: $path}) ON CREATE SET l.created_at = $now"
+        await self.query(q, {"path": path, "now": _now()})
+
+    async def query_inventory(self, search: str | None = None, category: str | None = None) -> str:
+        """Query inventory items, optionally filtered by search text or category."""
+        conditions = ["i.status IN ['active', null]"]
+        params: dict = {}
+
+        if search:
+            conditions.append("(toLower(i.name) CONTAINS $search OR toLower(i.description) CONTAINS $search)")
+            params["search"] = search.lower()
+        if category:
+            conditions.append("toLower(i.category) = $category")
+            params["category"] = category.lower()
+
+        where = " AND ".join(conditions)
+        q = f"""
+        MATCH (i:Item)
+        WHERE {where}
+        OPTIONAL MATCH (i)-[:STORED_IN]->(l:Location)
+        RETURN i.name, i.quantity, i.category, i.condition, i.brand, i.description, l.path
+        ORDER BY i.name
+        LIMIT 50
+        """
+        rows = await self.query(q, params)
+
+        if not rows:
+            label = f" matching '{search}'" if search else ""
+            return f"No inventory items found{label}."
+
+        parts = ["Inventory items:"]
+        for r in rows:
+            name, qty, cat, cond, brand, desc, loc = r
+            line = f"  - {name}"
+            if qty and qty > 1:
+                line += f" (x{int(qty)})"
+            if brand:
+                line += f" [{brand}]"
+            if cat:
+                line += f" ({cat})"
+            if cond and cond != "unknown":
+                line += f" — {cond}"
+            if loc:
+                line += f" @ {loc}"
+            parts.append(line)
+        return "\n".join(parts)
+
+    async def query_inventory_summary(self) -> dict:
+        """Returns inventory totals by category and location."""
+        # Total items + quantity
+        q_total = """
+        MATCH (i:Item)
+        WHERE i.status IN ['active', null]
+        RETURN count(i) as total_items, sum(i.quantity) as total_quantity
+        """
+        total_rows = await self.query(q_total)
+        total_items = total_rows[0][0] if total_rows else 0
+        total_quantity = int(total_rows[0][1]) if total_rows else 0
+
+        # By category
+        q_cat = """
+        MATCH (i:Item)
+        WHERE i.status IN ['active', null]
+        RETURN coalesce(i.category, 'uncategorized') as cat, count(i) as cnt, sum(i.quantity) as qty
+        ORDER BY qty DESC
+        """
+        cat_rows = await self.query(q_cat)
+        by_category = [
+            {"category": r[0], "count": r[1], "quantity": int(r[2])}
+            for r in (cat_rows or [])
+        ]
+
+        # By location
+        q_loc = """
+        MATCH (i:Item)-[:STORED_IN]->(l:Location)
+        WHERE i.status IN ['active', null]
+        RETURN l.path, count(i) as cnt
+        ORDER BY cnt DESC
+        """
+        loc_rows = await self.query(q_loc)
+        by_location = [
+            {"location": r[0], "count": r[1]}
+            for r in (loc_rows or [])
+        ]
+
+        return {
+            "total_items": total_items,
+            "total_quantity": total_quantity,
+            "by_category": by_category,
+            "by_location": by_location,
+        }
+
+    async def update_item(self, name: str, **props) -> dict:
+        """Update an existing Item. Handles location changes by re-linking."""
+        location = props.pop("location", None)
+        if location:
+            location = self._normalize_location(location)
+
+        # Build SET clause for non-None props
+        filtered = {k: v for k, v in props.items() if v is not None}
+        filtered["updated_at"] = _now()
+        sets = ", ".join(f"i.{k} = ${k}" for k in filtered)
+        q = f"""
+        MATCH (i:Item {{name: $name}})
+        SET {sets}
+        RETURN i.name, i.quantity, i.status
+        """
+        rows = await self.query(q, {"name": name, **filtered})
+        if not rows:
+            return {"error": f"Item '{name}' not found"}
+
+        result = {"name": rows[0][0], "quantity": rows[0][1], "status": rows[0][2]}
+
+        if location:
+            # Delete old STORED_IN and create new
+            q_del = """
+            MATCH (i:Item {name: $name})-[r:STORED_IN]->()
+            DELETE r
+            """
+            await self.query(q_del, {"name": name})
+            await self.upsert_location(location)
+            q_loc = """
+            MATCH (i:Item {name: $name})
+            MATCH (l:Location {path: $location})
+            MERGE (i)-[:STORED_IN]->(l)
+            """
+            await self.query(q_loc, {"name": name, "location": location})
+            result["location"] = location
+
+        return result
+
+    async def adjust_item_quantity(self, name: str, delta: int) -> dict:
+        """Adjust item quantity by delta (negative = reduce). Clamp at 0."""
+        q = """
+        MATCH (i:Item)
+        WHERE toLower(i.name) CONTAINS toLower($name)
+        SET i.quantity = CASE
+            WHEN i.quantity + $delta < 0 THEN 0
+            ELSE i.quantity + $delta
+        END,
+        i.updated_at = $now
+        RETURN i.name, i.quantity, i.status
+        """
+        rows = await self.query(q, {"name": name, "delta": delta, "now": _now()})
+        if not rows:
+            return {"error": f"Item '{name}' not found"}
+        return {"name": rows[0][0], "quantity": int(rows[0][1]), "status": rows[0][2]}
 
     async def _create_generic(self, label: str, key_field: str, value: str, **props) -> None:
         extra = {}

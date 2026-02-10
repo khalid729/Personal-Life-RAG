@@ -78,6 +78,7 @@ class FileType(str, Enum):
     BUSINESS_CARD = "business_card"
     PDF_DOCUMENT = "pdf_document"
     AUDIO_RECORDING = "audio_recording"
+    INVENTORY_ITEM = "inventory_item"
 
 
 # --- Entity Schemas ---
@@ -280,6 +281,7 @@ class Tag(TagBase):
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
+    skip_fact_extraction: bool = False
 
 
 class PendingAction(BaseModel):
@@ -324,6 +326,7 @@ class FileUploadResponse(BaseModel):
     facts_extracted: int = 0
     processing_steps: list[str] = []
     auto_expense: Optional[dict] = None
+    auto_item: Optional[dict] = None
 
 
 class SearchRequest(BaseModel):
@@ -399,3 +402,23 @@ class ProjectUpdateRequest(BaseModel):
     status: Optional[str] = None
     description: Optional[str] = None
     priority: Optional[int] = None
+
+
+# --- Inventory ---
+
+class InventoryItemRequest(BaseModel):
+    name: str
+    quantity: int = 1
+    location: Optional[str] = None
+    category: Optional[str] = None
+    condition: Optional[str] = None
+    brand: Optional[str] = None
+    description: Optional[str] = None
+
+
+class InventoryLocationUpdate(BaseModel):
+    location: str
+
+
+class InventoryQuantityUpdate(BaseModel):
+    quantity: int

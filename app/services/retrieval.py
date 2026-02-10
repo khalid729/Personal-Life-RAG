@@ -129,6 +129,16 @@ TASK_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+INVENTORY_USAGE_KEYWORDS = re.compile(
+    r"(استخدمت|ضاع|خلص|عطيت|انكسر|رميت|used .+ (cable|item|tool|بطارية|كيبل)|gave away|lost|broke)",
+    re.IGNORECASE,
+)
+
+INVENTORY_KEYWORDS = re.compile(
+    r"(مخزون|جرد|أغراضي|حوائجي|وين ال|فين ال|عندي |inventory|items|stock|where is|do i have|how many .+ do i)",
+    re.IGNORECASE,
+)
+
 
 def smart_route(text: str) -> str:
     """Route query to the best source based on keywords.
@@ -162,6 +172,10 @@ def smart_route(text: str) -> str:
         return "graph_person"
     if TASK_KEYWORDS.search(text):
         return "graph_task"
+    if INVENTORY_USAGE_KEYWORDS.search(text):
+        return "graph_inventory"
+    if INVENTORY_KEYWORDS.search(text):
+        return "graph_inventory"
     return "llm_classify"
 
 
@@ -361,7 +375,11 @@ class RetrievalService:
 
             if action_type:
                 # Check clarification — does the message have enough info?
-                clarification = await self.llm.check_clarification(query_en, action_type)
+                # Skip if extraction already found named entities (extraction success = sufficient info)
+                if entities and entities[0].get("entity_name"):
+                    clarification = {"complete": True, "missing_fields": []}
+                else:
+                    clarification = await self.llm.check_clarification(query_en, action_type)
                 if not clarification.get("complete", True) or not entities:
                     # Missing info — ask for it (no pending stored)
                     question = clarification.get("clarification_question_ar", "ممكن توضح أكثر؟")
@@ -500,7 +518,7 @@ class RetrievalService:
         """Map extracted entity types to action type string."""
         for entity in entities:
             etype = entity.get("entity_type", "")
-            if etype in ("Expense", "Debt", "DebtPayment", "Reminder"):
+            if etype in ("Expense", "Debt", "DebtPayment", "Reminder", "Item", "ItemUsage"):
                 return etype
         # Fallback from route
         route_map = {
@@ -508,6 +526,7 @@ class RetrievalService:
             "graph_debt_payment": "DebtPayment",
             "graph_reminder": "Reminder",
             "graph_reminder_action": "Reminder",
+            "graph_inventory": "Item",
         }
         return route_map.get(route)
 
@@ -560,6 +579,8 @@ class RetrievalService:
                     "Expense": "المصروف",
                     "Debt": "الدين",
                     "Reminder": "التذكير",
+                    "Item": "الغرض",
+                    "ItemUsage": "استخدام الغرض",
                 }
                 label = labels.get(action_type, "العملية")
                 return f"تم تسجيل {label} بنجاح."
@@ -675,6 +696,8 @@ class RetrievalService:
             return await self.graph.search_nodes(query_en, limit=5)
         elif route == "graph_task":
             return await self.graph.query_active_tasks()
+        elif route == "graph_inventory":
+            return await self.graph.query_inventory(query_en)
         return ""
 
     @staticmethod
@@ -711,6 +734,7 @@ class RetrievalService:
             "graph_reminder", "graph_reminder_action",
             "graph_daily_plan", "graph_knowledge",
             "graph_project", "graph_person", "graph_task",
+            "graph_inventory",
         }
         if hint and hint in valid and hint != original:
             return hint
