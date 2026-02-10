@@ -526,12 +526,22 @@ class RetrievalService:
             if query_facts.get("entities"):
                 await self.graph.upsert_from_facts(query_facts)
 
-            # Also extract from combined exchange for relationship context
+            # Also extract from combined exchange for relationship context,
+            # but skip DebtPayment to avoid double-applying payments
+            query_entity_types = {
+                e.get("entity_type") for e in query_facts.get("entities", [])
+            }
             combined = f"User said: {query_ar}\nAssistant replied: {reply_ar}"
             combined_en = await self.llm.translate_to_english(combined)
             combined_facts = await self.llm.extract_facts(combined_en)
             if combined_facts.get("entities"):
-                await self.graph.upsert_from_facts(combined_facts)
+                # Filter out entity types already handled by query extraction
+                combined_facts["entities"] = [
+                    e for e in combined_facts["entities"]
+                    if e.get("entity_type") not in query_entity_types
+                ]
+                if combined_facts["entities"]:
+                    await self.graph.upsert_from_facts(combined_facts)
 
             # Store the exchange as a vector for future retrieval
             await self.vector.upsert_chunks(
