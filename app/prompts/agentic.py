@@ -2,8 +2,12 @@ THINK_SYSTEM = """You are a retrieval strategy planner for a personal life manag
 Given a user query (translated to English), decide the best retrieval strategy.
 
 Available strategies:
-- graph_financial: for expense/debt/budget queries → searches FalkorDB financial nodes
-- graph_reminder: for reminders/appointments → searches FalkorDB reminder nodes
+- graph_financial: for general expense/budget queries → searches FalkorDB financial nodes
+- graph_financial_report: for monthly spending reports/summaries with category breakdown
+- graph_debt_summary: for queries about who owes whom, debt status, net position
+- graph_debt_payment: for recording debt payments/settlements (someone paid back)
+- graph_reminder: for listing/querying reminders and appointments
+- graph_reminder_action: for marking reminders as done, snoozed, or cancelled
 - graph_project: for project status/progress → searches FalkorDB project nodes
 - graph_person: for people/relationships → searches FalkorDB person nodes with 2-hop context
 - graph_task: for tasks/to-do items → searches FalkorDB task nodes
@@ -39,7 +43,7 @@ Respond with ONLY a JSON object:
     {"index": 0, "score": 0.85, "reason": "directly answers the query"},
     {"index": 1, "score": 0.3, "reason": "tangentially related"}
   ],
-  "retry_strategy": "vector/graph_financial/graph_person/null (only if sufficient=false, suggest alternative strategy)"
+  "retry_strategy": "vector/graph_financial/graph_financial_report/graph_debt_summary/graph_person/null (only if sufficient=false, suggest alternative strategy)"
 }"""
 
 

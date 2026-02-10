@@ -14,6 +14,7 @@ class DebtDirection(str, Enum):
 
 class DebtStatus(str, Enum):
     OPEN = "open"
+    PARTIAL = "partial"
     PAID = "paid"
 
 
@@ -42,6 +43,16 @@ class ReminderStatus(str, Enum):
 class ReminderType(str, Enum):
     ONE_TIME = "one_time"
     RECURRING = "recurring"
+    PERSISTENT = "persistent"
+    EVENT_BASED = "event_based"
+    FINANCIAL = "financial"
+
+
+class Recurrence(str, Enum):
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+    YEARLY = "yearly"
 
 
 class InputCategory(str, Enum):
@@ -193,6 +204,11 @@ class ReminderBase(BaseModel):
     due_date: Optional[dt.datetime] = None
     status: ReminderStatus = ReminderStatus.PENDING
     reminder_type: ReminderType = ReminderType.ONE_TIME
+    priority: Optional[int] = None
+    recurrence: Optional[Recurrence] = None
+    snooze_count: int = 0
+    trigger_event: Optional[str] = None
+    linked_entity: Optional[str] = None
 
 
 class ReminderCreate(ReminderBase):
@@ -295,6 +311,7 @@ class FileUploadResponse(BaseModel):
     chunks_stored: int = 0
     facts_extracted: int = 0
     processing_steps: list[str] = []
+    auto_expense: Optional[dict] = None
 
 
 class SearchRequest(BaseModel):
@@ -320,3 +337,46 @@ class ExtractedFact(BaseModel):
     entity_name: str
     properties: dict = {}
     relationships: list[dict] = []
+
+
+# --- Financial / Reminder Request/Response ---
+
+class FinancialReportRequest(BaseModel):
+    month: Optional[int] = None
+    year: Optional[int] = None
+    compare: bool = False
+
+
+class CategorySummary(BaseModel):
+    category: str
+    total: float
+    count: int
+    percentage: float
+
+
+class MonthlyReport(BaseModel):
+    month: int
+    year: int
+    total: float
+    currency: str = "SAR"
+    by_category: list[CategorySummary] = []
+    comparison: Optional[dict] = None
+
+
+class DebtSummaryResponse(BaseModel):
+    total_i_owe: float
+    total_owed_to_me: float
+    net_position: float
+    debts: list[dict] = []
+
+
+class DebtPaymentRequest(BaseModel):
+    person: str
+    amount: float
+    direction: Optional[str] = None
+
+
+class ReminderActionRequest(BaseModel):
+    title: str
+    action: str  # "done", "snooze", "cancel"
+    snooze_until: Optional[dt.datetime] = None

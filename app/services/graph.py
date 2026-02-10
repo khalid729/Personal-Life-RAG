@@ -1,3 +1,4 @@
+import calendar
 import logging
 from datetime import datetime
 
@@ -95,6 +96,9 @@ class GraphService:
     # --- Reminder ---
     async def create_reminder(self, title: str, **props) -> None:
         extra = {k: v for k, v in props.items() if v is not None}
+        # Ensure snooze_count defaults to 0
+        if "snooze_count" not in extra:
+            extra["snooze_count"] = 0
         sets = ""
         if extra:
             sets = ", " + ", ".join(f"r.{k} = ${k}" for k in extra)
@@ -102,6 +106,40 @@ class GraphService:
         CREATE (r:Reminder {{title: $title, status: 'pending', created_at: $now{sets}}})
         """
         await self._graph.query(q, params={"title": title, "now": _now(), **extra})
+
+    async def update_reminder_status(
+        self, title: str, action: str, snooze_until: str | None = None
+    ) -> dict:
+        """Mark reminder done/snoozed/cancelled. Returns updated info."""
+        if action == "done":
+            q = """
+            MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($title)
+            SET r.status = 'done', r.completed_at = $now
+            RETURN r.title, r.status
+            """
+            rows = await self.query(q, {"title": title, "now": _now()})
+        elif action == "snooze":
+            q = """
+            MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($title)
+            SET r.status = 'snoozed',
+                r.snooze_count = coalesce(r.snooze_count, 0) + 1,
+                r.snoozed_until = $snooze_until
+            RETURN r.title, r.status, r.snooze_count
+            """
+            rows = await self.query(q, {"title": title, "snooze_until": snooze_until or ""})
+        elif action == "cancel":
+            q = """
+            MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($title)
+            SET r.status = 'cancelled', r.cancelled_at = $now
+            RETURN r.title, r.status
+            """
+            rows = await self.query(q, {"title": title, "now": _now()})
+        else:
+            return {"error": f"Unknown action: {action}"}
+
+        if not rows:
+            return {"error": f"No reminder found matching '{title}'"}
+        return {"title": rows[0][0], "status": rows[0][1]}
 
     # --- Task ---
     async def upsert_task(self, title: str, **props) -> None:
@@ -213,6 +251,22 @@ class GraphService:
                     "Knowledge": lambda n, **p: self._create_generic("Knowledge", "title", n, **p),
                 }.get(etype)
 
+                if etype == "DebtPayment":
+                    person = ""
+                    for r in rels:
+                        if r.get("target_type") == "Person":
+                            person = r.get("target_name", "")
+                            break
+                    amount = props.pop("amount", 0)
+                    direction = props.pop("direction", None)
+                    if person and amount > 0:
+                        result = await self.record_debt_payment(person, amount, direction)
+                        if "error" not in result:
+                            count += 1
+                        else:
+                            logger.warning("DebtPayment failed: %s", result["error"])
+                    continue  # Skip relationship creation for pseudo-entity
+
                 if etype == "Expense":
                     amount = props.pop("amount", 0)
                     await self.create_expense(ename, amount, **props)
@@ -274,37 +328,396 @@ class GraphService:
         rows = await self.query(q, {"name": name})
         return self._format_graph_context(rows)
 
-    async def query_financial_summary(self) -> str:
+    async def query_financial_summary(self, detailed: bool = False) -> str:
         parts = []
+        now = datetime.utcnow()
+        month_start = f"{now.year}-{now.month:02d}-01"
+        _, last_day = calendar.monthrange(now.year, now.month)
+        month_end = f"{now.year}-{now.month:02d}-{last_day:02d}"
+
+        # Monthly total + category breakdown
+        q_monthly = """
+        MATCH (e:Expense)
+        WHERE e.date >= $start AND e.date <= $end
+        RETURN e.category, sum(e.amount) as total, count(e) as cnt
+        ORDER BY total DESC
+        """
+        rows = await self.query(q_monthly, {"start": month_start, "end": month_end})
+        grand_total = sum(r[1] for r in rows) if rows else 0
+        if rows:
+            parts.append(f"This month ({now.strftime('%B %Y')}): {grand_total:.0f} SAR total")
+            for r in rows:
+                cat = r[0] or "uncategorized"
+                pct = (r[1] / grand_total * 100) if grand_total else 0
+                parts.append(f"  - {cat}: {r[1]:.0f} SAR ({r[2]} items, {pct:.0f}%)")
+        else:
+            parts.append(f"No expenses recorded for {now.strftime('%B %Y')}.")
+
         # Recent expenses
-        q1 = "MATCH (e:Expense) RETURN e.description, e.amount, e.category, e.created_at ORDER BY e.created_at DESC LIMIT 20"
+        q1 = "MATCH (e:Expense) RETURN e.description, e.amount, e.category, e.created_at ORDER BY e.created_at DESC LIMIT 10"
         rows = await self.query(q1)
         if rows:
-            parts.append("Recent expenses:")
+            parts.append("\nRecent expenses:")
             for r in rows:
                 parts.append(f"  - {r[0]}: {r[1]} SAR ({r[2] or 'uncategorized'})")
 
-        # Open debts
-        q2 = "MATCH (d:Debt {status: 'open'})-[:INVOLVES]->(p:Person) RETURN p.name, d.amount, d.direction"
+        # Open/partial debts
+        q2 = """
+        MATCH (d:Debt)-[:INVOLVES]->(p:Person)
+        WHERE d.status IN ['open', 'partial']
+        RETURN p.name, d.amount, d.direction, d.status, d.original_amount
+        """
         rows = await self.query(q2)
         if rows:
-            parts.append("Open debts:")
+            parts.append("\nOpen debts:")
             for r in rows:
                 direction = "they owe me" if r[2] == "owed_to_me" else "I owe them"
-                parts.append(f"  - {r[0]}: {r[1]} SAR ({direction})")
+                status_tag = f" [partial, originally {r[4]}]" if r[3] == "partial" and r[4] else ""
+                parts.append(f"  - {r[0]}: {r[1]} SAR ({direction}){status_tag}")
+
+        # Spending alerts (if detailed)
+        if detailed:
+            alerts = await self.query_spending_alerts()
+            if alerts:
+                parts.append(f"\n{alerts}")
 
         return "\n".join(parts) if parts else "No financial data found."
 
-    async def query_reminders(self, status: str = "pending") -> str:
-        q = "MATCH (r:Reminder {status: $status}) RETURN r.title, r.due_date, r.description ORDER BY r.due_date LIMIT 20"
-        rows = await self.query(q, {"status": status})
-        if not rows:
-            return "No reminders found."
-        parts = ["Reminders:"]
+    async def query_monthly_report(self, month: int, year: int) -> dict:
+        """Get spending report for a specific month with category breakdown."""
+        _, last_day = calendar.monthrange(year, month)
+        start = f"{year}-{month:02d}-01"
+        end = f"{year}-{month:02d}-{last_day:02d}"
+
+        q = """
+        MATCH (e:Expense)
+        WHERE e.date >= $start AND e.date <= $end
+        RETURN e.category, sum(e.amount) as total, count(e) as cnt
+        ORDER BY total DESC
+        """
+        rows = await self.query(q, {"start": start, "end": end})
+        grand_total = sum(r[1] for r in rows) if rows else 0
+
+        categories = []
         for r in rows:
-            due = f" (due: {r[1]})" if r[1] else ""
-            parts.append(f"  - {r[0]}{due}")
-        return "\n".join(parts)
+            pct = (r[1] / grand_total * 100) if grand_total else 0
+            categories.append({
+                "category": r[0] or "uncategorized",
+                "total": r[1],
+                "count": r[2],
+                "percentage": round(pct, 1),
+            })
+
+        return {
+            "month": month,
+            "year": year,
+            "total": grand_total,
+            "currency": "SAR",
+            "by_category": categories,
+        }
+
+    async def query_month_comparison(self, month: int, year: int) -> dict:
+        """Compare current month spending vs previous month."""
+        current = await self.query_monthly_report(month, year)
+
+        # Previous month
+        prev_month = month - 1 if month > 1 else 12
+        prev_year = year if month > 1 else year - 1
+        previous = await self.query_monthly_report(prev_month, prev_year)
+
+        diff = current["total"] - previous["total"]
+        pct_change = (diff / previous["total"] * 100) if previous["total"] else 0
+
+        current["comparison"] = {
+            "previous_month": prev_month,
+            "previous_year": prev_year,
+            "previous_total": previous["total"],
+            "difference": round(diff, 2),
+            "percentage_change": round(pct_change, 1),
+        }
+        return current
+
+    async def query_spending_alerts(self) -> str:
+        """Flag categories where current month spending > 40% above 3-month avg."""
+        now = datetime.utcnow()
+        _, last_day = calendar.monthrange(now.year, now.month)
+        cur_start = f"{now.year}-{now.month:02d}-01"
+        cur_end = f"{now.year}-{now.month:02d}-{last_day:02d}"
+
+        # 3-month rolling average by category
+        m3, y3 = now.month - 3, now.year
+        if m3 <= 0:
+            m3 += 12
+            y3 -= 1
+        avg_start = f"{y3}-{m3:02d}-01"
+
+        # Previous 3 months (excluding current)
+        prev_end_month = now.month - 1 if now.month > 1 else 12
+        prev_end_year = now.year if now.month > 1 else now.year - 1
+        _, prev_last = calendar.monthrange(prev_end_year, prev_end_month)
+        avg_end = f"{prev_end_year}-{prev_end_month:02d}-{prev_last:02d}"
+
+        q_avg = """
+        MATCH (e:Expense)
+        WHERE e.date >= $start AND e.date <= $end
+        RETURN e.category, sum(e.amount) / 3.0 as monthly_avg
+        """
+        avg_rows = await self.query(q_avg, {"start": avg_start, "end": avg_end})
+        avg_map = {(r[0] or "uncategorized"): r[1] for r in avg_rows} if avg_rows else {}
+
+        q_cur = """
+        MATCH (e:Expense)
+        WHERE e.date >= $start AND e.date <= $end
+        RETURN e.category, sum(e.amount) as total
+        """
+        cur_rows = await self.query(q_cur, {"start": cur_start, "end": cur_end})
+
+        alerts = []
+        for r in cur_rows or []:
+            cat = r[0] or "uncategorized"
+            current_total = r[1]
+            avg = avg_map.get(cat, 0)
+            if avg > 0 and current_total > avg * 1.4:
+                pct_over = ((current_total - avg) / avg * 100)
+                alerts.append(f"  ⚠ {cat}: {current_total:.0f} SAR (+{pct_over:.0f}% above 3-month avg of {avg:.0f})")
+
+        if alerts:
+            return "Spending alerts:\n" + "\n".join(alerts)
+        return ""
+
+    async def query_debt_summary(self) -> dict:
+        """All open/partial debts with totals and net position."""
+        q = """
+        MATCH (d:Debt)-[:INVOLVES]->(p:Person)
+        WHERE d.status IN ['open', 'partial']
+        RETURN p.name, d.amount, d.direction, d.status, d.original_amount, d.reason
+        """
+        rows = await self.query(q)
+
+        total_i_owe = 0.0
+        total_owed_to_me = 0.0
+        debts = []
+
+        for r in rows or []:
+            person, amount, direction, status, orig_amount, reason = r[0], r[1], r[2], r[3], r[4], r[5]
+            if direction == "i_owe":
+                total_i_owe += amount
+            else:
+                total_owed_to_me += amount
+            debts.append({
+                "person": person,
+                "amount": amount,
+                "direction": direction,
+                "status": status,
+                "original_amount": orig_amount,
+                "reason": reason or "",
+            })
+
+        return {
+            "total_i_owe": total_i_owe,
+            "total_owed_to_me": total_owed_to_me,
+            "net_position": total_owed_to_me - total_i_owe,
+            "debts": debts,
+        }
+
+    async def record_debt_payment(
+        self, person: str, amount: float, direction: str | None = None
+    ) -> dict:
+        """Record a debt payment. Finds matching open/partial debt, updates amount/status."""
+        # Find matching debt
+        direction_clause = "AND d.direction = $direction" if direction else ""
+        q_find = f"""
+        MATCH (d:Debt)-[:INVOLVES]->(p:Person)
+        WHERE toLower(p.name) CONTAINS toLower($person)
+          AND d.status IN ['open', 'partial']
+          {direction_clause}
+        RETURN id(d) as debt_id, d.amount, d.direction, p.name, d.original_amount
+        ORDER BY d.amount DESC
+        LIMIT 1
+        """
+        params: dict = {"person": person}
+        if direction:
+            params["direction"] = direction
+        rows = await self.query(q_find, params)
+
+        if not rows:
+            return {"error": f"No open debt found for '{person}'"}
+
+        debt_id, current_amount, debt_dir, person_name, orig_amount = rows[0]
+        if not orig_amount:
+            orig_amount = current_amount
+
+        remaining = current_amount - amount
+        if remaining <= 0:
+            # Fully paid
+            q_update = """
+            MATCH (d:Debt) WHERE id(d) = $debt_id
+            SET d.amount = 0, d.status = 'paid', d.paid_at = $now,
+                d.original_amount = $orig
+            """
+            await self.query(q_update, {"debt_id": debt_id, "now": _now(), "orig": orig_amount})
+            return {
+                "person": person_name,
+                "paid": amount,
+                "remaining": 0,
+                "status": "paid",
+                "direction": debt_dir,
+            }
+        else:
+            # Partial payment
+            q_update = """
+            MATCH (d:Debt) WHERE id(d) = $debt_id
+            SET d.amount = $remaining, d.status = 'partial',
+                d.original_amount = $orig
+            """
+            await self.query(
+                q_update, {"debt_id": debt_id, "remaining": remaining, "orig": orig_amount}
+            )
+            return {
+                "person": person_name,
+                "paid": amount,
+                "remaining": remaining,
+                "status": "partial",
+                "direction": debt_dir,
+            }
+
+    async def create_expense_from_invoice(self, analysis: dict, file_hash: str) -> dict:
+        """Auto-create Expense node from invoice analysis, link to File and vendor."""
+        vendor = analysis.get("vendor", "Unknown")
+        total = analysis.get("total_amount", 0)
+        currency = analysis.get("currency", "SAR")
+        date_str = analysis.get("date", _now()[:10])
+        items = analysis.get("items", [])
+
+        # Guess category from vendor/items
+        item_names = " ".join(i.get("name", "") for i in items)
+        category = self._guess_expense_category(vendor, item_names)
+
+        desc = f"Invoice from {vendor}"
+        if items:
+            desc += f" ({len(items)} items)"
+
+        # Create expense
+        q = """
+        CREATE (e:Expense {
+            description: $desc, amount: $amount, currency: $currency,
+            category: $category, date: $date, vendor: $vendor,
+            source: 'invoice', file_hash: $file_hash, created_at: $now
+        })
+        """
+        await self._graph.query(q, params={
+            "desc": desc, "amount": total, "currency": currency,
+            "category": category, "date": date_str, "vendor": vendor,
+            "file_hash": file_hash, "now": _now(),
+        })
+
+        # Link to File node
+        q_link = """
+        MATCH (e:Expense {file_hash: $fh})
+        MATCH (f:File {file_hash: $fh})
+        MERGE (e)-[:FROM_INVOICE]->(f)
+        """
+        try:
+            await self._graph.query(q_link, params={"fh": file_hash})
+        except Exception as e:
+            logger.debug("Invoice-expense link skipped: %s", e)
+
+        # Upsert vendor as Company
+        await self.upsert_company(vendor)
+        # Link expense to vendor
+        try:
+            q_vendor = """
+            MATCH (e:Expense {file_hash: $fh})
+            MATCH (c:Company {name: $vendor})
+            MERGE (e)-[:PAID_AT]->(c)
+            """
+            await self._graph.query(q_vendor, params={"fh": file_hash, "vendor": vendor})
+        except Exception as e:
+            logger.debug("Expense-vendor link skipped: %s", e)
+
+        return {
+            "description": desc,
+            "amount": total,
+            "currency": currency,
+            "category": category,
+            "vendor": vendor,
+            "date": date_str,
+        }
+
+    @staticmethod
+    def _guess_expense_category(vendor: str, items: str) -> str:
+        """Simple keyword heuristic for expense category."""
+        combined = f"{vendor} {items}".lower()
+        rules = [
+            (["restaurant", "مطعم", "food", "burger", "pizza", "coffee", "كافيه", "starbucks", "mcdonald"], "food"),
+            (["grocery", "بقالة", "tamimi", "panda", "danube", "carrefour", "supermarket"], "groceries"),
+            (["gas", "بنزين", "fuel", "petrol", "station"], "transport"),
+            (["uber", "careem", "taxi"], "transport"),
+            (["pharmacy", "صيدلية", "medicine", "medical", "hospital", "clinic", "doctor"], "health"),
+            (["amazon", "noon", "jarir", "extra", "electronics"], "shopping"),
+            (["stc", "mobily", "zain", "internet", "phone", "telecom"], "telecom"),
+            (["rent", "إيجار", "electricity", "water", "كهرباء", "ماء"], "utilities"),
+            (["school", "university", "course", "training", "book"], "education"),
+        ]
+        for keywords, category in rules:
+            if any(kw in combined for kw in keywords):
+                return category
+        return "general"
+
+    async def query_reminders(
+        self, status: str | None = None, include_overdue: bool = True
+    ) -> str:
+        """Query reminders grouped by overdue/upcoming/snoozed with type/priority info."""
+        now_str = _now()
+        parts = []
+
+        if include_overdue:
+            q_overdue = """
+            MATCH (r:Reminder)
+            WHERE r.status = 'pending' AND r.due_date IS NOT NULL AND r.due_date < $now
+            RETURN r.title, r.due_date, r.reminder_type, r.priority, r.snooze_count
+            ORDER BY r.due_date
+            LIMIT 20
+            """
+            rows = await self.query(q_overdue, {"now": now_str})
+            if rows:
+                parts.append("⚠ Overdue reminders:")
+                for r in rows:
+                    extra = self._format_reminder_tags(r[2], r[3], r[4])
+                    parts.append(f"  - {r[0]} (due: {r[1]}){extra}")
+
+        # Upcoming/pending
+        filter_status = status or "pending"
+        q_upcoming = """
+        MATCH (r:Reminder {status: $status})
+        WHERE r.due_date IS NULL OR r.due_date >= $now
+        RETURN r.title, r.due_date, r.reminder_type, r.priority, r.snooze_count, r.description
+        ORDER BY r.due_date
+        LIMIT 20
+        """
+        rows = await self.query(q_upcoming, {"status": filter_status, "now": now_str})
+        if rows:
+            label = "Snoozed reminders:" if filter_status == "snoozed" else "Upcoming reminders:"
+            parts.append(label)
+            for r in rows:
+                due = f" (due: {r[1]})" if r[1] else ""
+                extra = self._format_reminder_tags(r[2], r[3], r[4])
+                parts.append(f"  - {r[0]}{due}{extra}")
+
+        return "\n".join(parts) if parts else "No reminders found."
+
+    @staticmethod
+    def _format_reminder_tags(
+        reminder_type: str | None, priority: int | None, snooze_count: int | None
+    ) -> str:
+        tags = []
+        if reminder_type and reminder_type != "one_time":
+            tags.append(reminder_type)
+        if priority and priority >= 3:
+            tags.append(f"priority:{priority}")
+        if snooze_count and snooze_count > 0:
+            tags.append(f"snoozed:{snooze_count}x")
+        return f" [{', '.join(tags)}]" if tags else ""
 
     async def search_nodes(self, text: str, limit: int = 10) -> str:
         text_lower = text.lower()

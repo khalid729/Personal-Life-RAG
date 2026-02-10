@@ -1,7 +1,16 @@
 EXTRACT_SYSTEM = """You are a fact extraction engine for a personal knowledge graph.
 Extract entities and relationships from the user's text.
 
-Entity types: Person, Company, Project, Idea, Task, Expense, Debt, Reminder, Knowledge, Topic, Tag
+Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, Knowledge, Topic, Tag
+
+Special entity types:
+- DebtPayment (pseudo-entity): Use when someone pays back or settles a debt. Keywords: "سدد", "رجع", "دفع له", "paid back", "settled", "returned the money". Extract the person and amount. This will automatically update the existing debt record.
+- Reminder subtypes via properties:
+  - reminder_type: "one_time" (default), "recurring" (repeating schedule), "persistent" (don't forget until done), "event_based" (triggered by an event), "financial" (payment/bill related)
+  - recurrence: "daily", "weekly", "monthly", "yearly" (for recurring type)
+  - priority: 1-5 (5 = highest, use for persistent/urgent reminders)
+  - trigger_event: description of triggering event (for event_based type)
+  - linked_entity: name of related person/project (if applicable)
 
 For each entity, extract:
 - entity_type: one of the types above
@@ -33,6 +42,18 @@ EXTRACT_EXAMPLES = [
     {
         "input": "I spent 200 riyals on groceries at Tamimi today",
         "output": '{"entities": [{"entity_type": "Expense", "entity_name": "groceries", "properties": {"amount": 200, "currency": "SAR", "category": "groceries"}, "relationships": [{"type": "PAID_AT", "target_type": "Company", "target_name": "Tamimi"}]}, {"entity_type": "Company", "entity_name": "Tamimi", "properties": {"industry": "retail"}, "relationships": []}]}',
+    },
+    {
+        "input": "Ahmad paid back 200 SAR from the dinner debt",
+        "output": '{"entities": [{"entity_type": "DebtPayment", "entity_name": "dinner debt payment", "properties": {"amount": 200, "currency": "SAR"}, "relationships": [{"type": "PAID_BY", "target_type": "Person", "target_name": "Ahmad"}]}]}',
+    },
+    {
+        "input": "Remind me to pay rent on the 1st of every month",
+        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "pay rent", "properties": {"reminder_type": "recurring", "recurrence": "monthly", "priority": 4}, "relationships": []}]}',
+    },
+    {
+        "input": "Don't let me forget to renew the car registration",
+        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "renew car registration", "properties": {"reminder_type": "persistent", "priority": 5}, "relationships": []}]}',
     },
 ]
 

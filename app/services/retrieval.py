@@ -54,14 +54,45 @@ def chunk_text(text: str, max_tokens: int = 500, overlap_tokens: int = 50) -> li
 
 # --- Smart Router (keyword-based, no LLM call) ---
 
+# --- Finer-grained keyword patterns (checked in specificity order) ---
+
+# Debt payment (most specific financial sub-route)
+DEBT_PAYMENT_KEYWORDS = re.compile(
+    r"(سدد|رجع.?الفلوس|دفع له|دفع لها|رد.?المبلغ|"
+    r"settled|paid back|returned the money|paid him|paid her)",
+    re.IGNORECASE,
+)
+
+# Debt queries
+DEBT_QUERY_KEYWORDS = re.compile(
+    r"(ديون|يطلبني|أطلب|اطلب|يطلبه|مديون|"
+    r"who owe|outstanding|debt summary|owed to me|i owe)",
+    re.IGNORECASE,
+)
+
+# Financial report / monthly summary
+FINANCIAL_REPORT_KEYWORDS = re.compile(
+    r"(ملخص|تقرير|مصاريف الشهر|مصاريف شهر|مقارنة|كم صرفت|"
+    r"report|summary|monthly.*spend|spend.*month|spending.*month|compare.*month|how much.*spend)",
+    re.IGNORECASE,
+)
+
+# General financial (fallback)
 FINANCIAL_KEYWORDS = re.compile(
-    r"(صرفت|دفعت|ديون|مصاريف|فلوس|ريال|حساب|ميزانية|"
-    r"spend|spent|expense|debt|owe|money|budget|salary|cost|paid|payment)",
+    r"(صرفت|دفعت|مصاريف|فلوس|ريال|حساب|ميزانية|"
+    r"spend|spent|expense|money|budget|salary|cost|paid|payment)",
+    re.IGNORECASE,
+)
+
+# Reminder action (done/snooze/cancel)
+REMINDER_ACTION_KEYWORDS = re.compile(
+    r"(خلصت|تم التذكير|تمت المهمة|أجّل|أجلي|الغي التذكير|الغاء|"
+    r"\bdone\b|\bsnooze\b|\bcancel\b|\bcomplete\b|\bfinished\b|\bpostpone\b)",
     re.IGNORECASE,
 )
 
 REMINDER_KEYWORDS = re.compile(
-    r"(ذكرني|موعد|تذكير|تنبيه|alarm|remind|reminder|appointment|schedule|deadline)",
+    r"(ذكرني|موعد|تذكير|تنبيه|لا تنساني|alarm|remind|reminder|appointment|schedule|deadline|don't forget)",
     re.IGNORECASE,
 )
 
@@ -83,13 +114,24 @@ TASK_KEYWORDS = re.compile(
 
 def smart_route(text: str) -> str:
     """Route query to the best source based on keywords.
-    Returns: 'graph_financial', 'graph_reminder', 'graph_project',
-             'graph_person', 'graph_task', 'vector', 'hybrid', 'llm_classify'
+    More specific routes checked first to avoid false matches.
     """
+    # Financial sub-routes (most specific first)
+    if DEBT_PAYMENT_KEYWORDS.search(text):
+        return "graph_debt_payment"
+    if DEBT_QUERY_KEYWORDS.search(text):
+        return "graph_debt_summary"
+    if FINANCIAL_REPORT_KEYWORDS.search(text):
+        return "graph_financial_report"
     if FINANCIAL_KEYWORDS.search(text):
         return "graph_financial"
+
+    # Reminder sub-routes
+    if REMINDER_ACTION_KEYWORDS.search(text) and REMINDER_KEYWORDS.search(text):
+        return "graph_reminder_action"
     if REMINDER_KEYWORDS.search(text):
         return "graph_reminder"
+
     if PROJECT_KEYWORDS.search(text):
         return "graph_project"
     if PERSON_KEYWORDS.search(text):
@@ -385,7 +427,23 @@ class RetrievalService:
         return context_parts, sources
 
     async def _retrieve_from_graph(self, route: str, query_en: str) -> str:
-        if route == "graph_financial":
+        if route == "graph_financial_report":
+            from datetime import datetime
+            now = datetime.utcnow()
+            report = await self.graph.query_monthly_report(now.month, now.year)
+            return self._format_monthly_report(report)
+        elif route == "graph_debt_summary":
+            summary = await self.graph.query_debt_summary()
+            return self._format_debt_summary(summary)
+        elif route == "graph_debt_payment":
+            # Debt payment is handled via post-processing (DebtPayment entity extraction)
+            # For retrieval, show current debt status for context
+            summary = await self.graph.query_debt_summary()
+            return self._format_debt_summary(summary)
+        elif route == "graph_reminder_action":
+            # Show current reminders for context (action handled in post-processing)
+            return await self.graph.query_reminders()
+        elif route == "graph_financial":
             return await self.graph.query_financial_summary()
         elif route == "graph_reminder":
             return await self.graph.query_reminders()
@@ -404,10 +462,38 @@ class RetrievalService:
             return "\n".join(parts)
         return ""
 
+    @staticmethod
+    def _format_debt_summary(summary: dict) -> str:
+        parts = [
+            f"Debt Summary: I owe {summary['total_i_owe']:.0f} SAR, "
+            f"owed to me {summary['total_owed_to_me']:.0f} SAR, "
+            f"net position {summary['net_position']:+.0f} SAR"
+        ]
+        for d in summary.get("debts", []):
+            direction = "they owe me" if d["direction"] == "owed_to_me" else "I owe them"
+            reason = f" ({d['reason']})" if d.get("reason") else ""
+            status_tag = f" [{d['status']}]" if d["status"] != "open" else ""
+            parts.append(f"  - {d['person']}: {d['amount']:.0f} SAR ({direction}){reason}{status_tag}")
+        return "\n".join(parts) if parts else "No debts found."
+
+    @staticmethod
+    def _format_monthly_report(report: dict) -> str:
+        parts = [f"Monthly Report ({report['month']}/{report['year']}): {report['total']:.0f} {report['currency']} total"]
+        for cat in report.get("by_category", []):
+            parts.append(f"  - {cat['category']}: {cat['total']:.0f} SAR ({cat['count']} items, {cat['percentage']}%)")
+        if report.get("comparison"):
+            comp = report["comparison"]
+            parts.append(f"\nComparison vs {comp['previous_month']}/{comp['previous_year']}: "
+                         f"{comp['difference']:+.0f} SAR ({comp['percentage_change']:+.1f}%)")
+        return "\n".join(parts) if parts else "No expenses for this period."
+
     def _parse_retry_hint(self, hint: str | None, original: str) -> str:
         """Parse retry strategy from Reflect step, or flip to opposite."""
         valid = {
-            "vector", "hybrid", "graph_financial", "graph_reminder",
+            "vector", "hybrid",
+            "graph_financial", "graph_financial_report",
+            "graph_debt_summary", "graph_debt_payment",
+            "graph_reminder", "graph_reminder_action",
             "graph_project", "graph_person", "graph_task",
         }
         if hint and hint in valid and hint != original:

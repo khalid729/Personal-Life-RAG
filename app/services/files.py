@@ -121,6 +121,24 @@ class FileService:
         )
         steps.append("graph_node_created")
 
+        # Auto-create expense from invoice
+        auto_expense = None
+        if file_type == "invoice":
+            total_amount = analysis.get("total_amount", 0)
+            try:
+                total_amount = float(total_amount)
+            except (TypeError, ValueError):
+                total_amount = 0
+            if total_amount > 0:
+                try:
+                    auto_expense = await self.retrieval.graph.create_expense_from_invoice(
+                        analysis, file_hash
+                    )
+                    steps.append(f"auto_expense:{auto_expense.get('amount', 0)}SAR")
+                except Exception as e:
+                    logger.warning("Auto-expense creation failed: %s", e)
+                    steps.append(f"auto_expense_error:{e}")
+
         return {
             "status": "ok",
             "filename": filename,
@@ -130,6 +148,7 @@ class FileService:
             "chunks_stored": ingest_result["chunks_stored"],
             "facts_extracted": ingest_result["facts_extracted"],
             "processing_steps": steps,
+            "auto_expense": auto_expense,
         }
 
     # ========================
