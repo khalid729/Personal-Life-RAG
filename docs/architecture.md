@@ -41,9 +41,9 @@ Personal Life RAG is a bilingual (Arabic/English) personal life management syste
 
 ### 2. Graph Service (`app/services/graph.py`)
 - **FalkorDB** (Redis-based graph database) on port 6379
-- Stores structured entities: Person, Company, Project, Task, Idea, Topic, Tag, Expense, Debt, Reminder, Knowledge, File
-- Entity relationships via Cypher queries
-- Dedicated query methods: financial summary/reports, debt management, reminders, daily planner, projects overview, knowledge search, active tasks
+- Stores structured entities: Person, Company, Project, Task, Idea, Topic, Tag, Expense, Debt, Reminder, Knowledge, File, Item, Location
+- Entity relationships via Cypher queries (STORED_IN, FROM_PHOTO, INVOLVES, BELONGS_TO, etc.)
+- Dedicated query methods: financial summary/reports, debt management, reminders, daily planner, projects overview, knowledge search, active tasks, inventory queries, item movement
 - `upsert_from_facts()` — auto-handles all entity types from LLM extraction
 - Idea similarity detection: new ideas get embedded and linked via `SIMILAR_TO` edges
 
@@ -72,6 +72,8 @@ Personal Life RAG is a bilingual (Arabic/English) personal life management syste
 - **Content-addressed dedup**: SHA256 hash check before processing — skips duplicates
 - **Audio = transcription only**: no fact extraction, caller sends transcript to `/chat/` for full processing
 - Auto-expense: invoice images with total > 0 auto-create Expense nodes
+- Auto-item: inventory photos → classify + analyze → `create_item_from_photo()` → upsert Item node + FROM_PHOTO edge
+- Photo similarity: after auto-item, vector search for similar inventory items (score ≥ 0.5)
 
 ### 6. Retrieval Service (`app/services/retrieval.py`)
 - Orchestrates the full Agentic RAG pipeline (see [Pipeline](#agentic-rag-pipeline))
@@ -138,7 +140,10 @@ Zero-latency keyword-based routing, checked in specificity order:
 | 9 | `graph_project` | مشروع، project، progress |
 | 10 | `graph_person` | مين، who، person |
 | 11 | `graph_task` | مهمة، مهام، task، todo |
-| 12 | `llm_classify` | fallback to LLM classification |
+| 12 | `graph_inventory` (move) | نقلت، حركت، حطيته في، moved، relocated |
+| 13 | `graph_inventory` (usage) | استخدمت، ضاع، خلص، عطيت، انكسر |
+| 14 | `graph_inventory` (query) | مخزون، أغراضي، وين ال، inventory |
+| 15 | `llm_classify` | fallback to LLM classification |
 
 ## Data Flow: Ingestion
 
@@ -191,6 +196,14 @@ All settings are in `app/config.py` via Pydantic `BaseSettings` (overridable via
 | `tg_chat_id` | `""` | Authorized Telegram user ID |
 | `mcp_port` | 8600 | MCP server port |
 | `timezone_offset_hours` | 3 | User timezone offset (UTC+3 = Riyadh) |
+| `proactive_enabled` | True | Enable/disable proactive scheduler |
+| `proactive_morning_hour` | 7 | Morning summary local hour |
+| `proactive_noon_hour` | 13 | Noon check-in local hour |
+| `proactive_evening_hour` | 21 | Evening summary local hour |
+| `proactive_reminder_interval_min` | 30 | Reminder check interval (minutes) |
+| `proactive_alert_interval_hours` | 6 | Smart alerts interval (hours) |
+| `proactive_stalled_days` | 14 | Days threshold for stalled projects |
+| `proactive_old_debt_days` | 30 | Days threshold for old debts |
 
 ## Interfaces (Phase 5)
 
@@ -242,3 +255,48 @@ Three client interfaces provide access from mobile, browser, and Claude Desktop 
 - Standalone process using FastMCP (SSE transport) on port 8600
 - Async `httpx` client to RAG API
 - 12 tools: chat, search, create_reminder, record_expense, get_financial_report, get_debts, get_reminders, get_projects, get_tasks, get_knowledge, daily_plan, ingest_text
+
+## Proactive System (Phase 6)
+
+APScheduler runs inside the Telegram bot process with 5 scheduled jobs:
+
+| Job | Schedule | Description |
+|-----|----------|-------------|
+| Morning Summary | Cron 07:00 | Daily plan + spending alerts |
+| Noon Check-in | Cron 13:00 | Overdue reminders (skips if empty) |
+| Evening Summary | Cron 21:00 | Completed today + tomorrow's reminders |
+| Reminder Check | Every 30 min | Due reminders → send + advance recurring |
+| Smart Alerts | Every 6 hours | Stalled projects + old debts (skips if empty) |
+
+Jobs call 7 REST endpoints under `/proactive/*` on the FastAPI server. Local hours are converted to UTC for CronTrigger.
+
+## Inventory System (Phase 7)
+
+```
+Photo (Telegram)
+      |
+      v
+[File Classify] -- inventory_item? --> [Vision Analyze (inventory)]
+      |                                         |
+      v                                         v
+[Other types...]                  [create_item_from_photo()]
+                                          |
+                                    +-----+-----+
+                                    |           |
+                                    v           v
+                              [upsert_item]  [Qdrant embed]
+                              (FalkorDB)     (source_type=file_inventory_item)
+                                    |
+                                    v
+                              [Similar items search]
+                              (vector, score ≥ 0.5)
+```
+
+Features:
+- **Item/Location nodes** in FalkorDB with hierarchical locations (building > room > shelf > box)
+- **Location normalization**: English→Arabic aliases, `>` separator, space collapsing
+- **Category normalization**: `_CATEGORY_ALIASES` maps English/Arabic variants to canonical Arabic
+- **ItemUsage pseudo-entity**: "استخدمت/ضاع/عطيت" → quantity reduction (clamped at 0)
+- **ItemMove pseudo-entity**: "نقلت/حركت" → delete old STORED_IN, create new
+- **Purchase alert**: confirmed Expense → `find_similar_items()` → "⚠️ عندك في المخزون"
+- **Photo similarity**: vector search after auto-item for similar existing items

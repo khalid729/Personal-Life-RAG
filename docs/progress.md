@@ -119,61 +119,80 @@
 - [x] Graph/Config: 3/3 (advance_recurring_reminder, relativedelta, config settings)
 - [x] Regression: 10/10 (all existing endpoints unaffected)
 
+### Phase 7a — Core Inventory System
+- [x] كيانات `Item` + `Location` في FalkorDB (هرمي: مبنى > غرفة > رف > كرتون)
+- [x] تصوير الغرض عبر تلقرام → Vision يحلل (اسم، ماركة، مواصفات، فئة، حالة)
+- [x] Auto-item creation from photos (`create_item_from_photo()` in files.py)
+- [x] تخزين الكمية والمكان بالعربي ("السطح > الرف الثاني > الكرتون الأزرق")
+- [x] Location normalization (`_normalize_location()`) — English→Arabic aliases, `>` separator, space collapsing
+- [x] بحث المخزون: "وين الـ X؟" / "عندي X؟" / "كم كيبل USB عندي؟"
+- [x] أمر `/inventory` في تلقرام (عرض، بحث، إحصائيات)
+- [x] REST endpoints: GET `/inventory/`, `/inventory/summary`, POST `/inventory/item`, PUT `/inventory/item/{name}/location`, PUT `/inventory/item/{name}/quantity`
+- [x] Smart router keywords: مخزون/أغراضي/وين ال/inventory → `graph_inventory`
+- [x] `inventory_item` type added to file_classify + vision prompts
+- [x] File dedup enhancement: duplicate photo + caption → enriches query with item name
+- [x] `find_item_by_file_hash()` + GET `/inventory/by-file/{hash}` — lookup via FROM_PHOTO relationship
+
+### Phase 7b — Inventory Usage + Interactions
+- [x] ItemUsage pseudo-entity in extract prompt ("استخدمت/ضاع/عطيت" → quantity reduction)
+- [x] `adjust_item_quantity(name, -delta)` — clamps at 0
+- [x] INVENTORY_USAGE_KEYWORDS checked before INVENTORY_KEYWORDS in smart_route
+- [x] Clarification skip: extraction found entities → skip clarification LLM
+- [x] Bot asks "وين حاطه؟" on captionless inventory photos — pending location with 5-min TTL
+- [x] `upsert_item` always returns existing location even when no new location passed
+
+### Phase 7c — Smart Inventory
+- [x] ItemMove pseudo-entity: "نقلت/حركت/حطيته في/moved/relocated" → `move_item()` deletes old STORED_IN, creates new
+- [x] INVENTORY_MOVE_KEYWORDS checked before INVENTORY_USAGE_KEYWORDS in smart_route
+- [x] Confirmation message: "تبيني أنقل {name} من {from} إلى {to}؟"
+- [x] Purchase duplicate alert: on confirmed Expense, `find_similar_items()` checks inventory → appends "⚠️ تنبيه: عندك في المخزون: ..."
+- [x] Photo similarity search: after auto_item creation, vector search `source_type="file_inventory_item"` (score ≥ 0.5, top 3)
+- [x] Photo search mode: duplicate photo with search keywords → POST `/inventory/search-similar` → shows matches
+- [x] REST: POST `/inventory/search-similar` (vector search with score ≥ 0.4)
+- [x] Category normalization: `_normalize_category()` — `_CATEGORY_ALIASES` dict maps English/Arabic variants to canonical Arabic
+
+### Phase 7 — Testing Results (4/4 manual tests passed)
+- [x] Item movement: confirmation + execution → STORED_IN updated
+- [x] Purchase duplicate alert: confirmed expense → inventory warning shown
+- [x] Search similar items: vector search returns scored results
+- [x] Category normalization: "cables" → "إلكترونيات"
+
 ---
 
-## Remaining / Future Ideas
+## Remaining Phases
 
-### GraphRAG Enhancements
+### Phase 8 — Smart Knowledge + Entity Resolution
+- [ ] Entity resolution / dedup (merge "Mohammed" / "Mohamed" / "محمد" via vector similarity)
+- [ ] Auto-tag knowledge entries by category
+- [ ] Smart Tags with vector dedup (tag normalization before creation)
+- [ ] Multi-hop graph traversal in retrieval (beyond 2-hop)
 - [ ] Community detection (auto-cluster related entities)
-- [ ] Multi-hop graph traversal in retrieval (not just 2-hop)
 - [ ] Graph-based ranking (PageRank on entities for importance scoring)
-- [ ] Entity resolution / dedup (merge "Mohammed" / "Mohamed" / "محمد")
 
-### Daily Planner (ADHD Mode)
-- [ ] Time-blocking suggestions based on task priorities
+### Phase 9 — Advanced Inventory
+- [ ] QR/Barcode scanning → contents of box/container
+- [ ] Last-use tracking ("كم غرض عندي ما استخدمته من سنة؟")
+- [ ] Comprehensive inventory report (by category, location, value)
+- [ ] Duplicate detection across locations (similar items in different places)
+
+### Phase 10 — Productivity Enhancements
+- [ ] Time-blocking suggestions based on task priorities (ADHD Mode)
 - [ ] Energy-level awareness (morning vs evening tasks)
 - [ ] Pomodoro-style breakdowns for large tasks
-
-### Project Management
-- [ ] Gantt-style timeline view
 - [ ] Auto-link tasks to projects via LLM context
 - [ ] Sprint/milestone tracking
 - [ ] Progress percentage calculation
 
-### Knowledge System
-- [ ] Auto-tag knowledge entries by category
-- [ ] Spaced repetition reminders for review
+### Phase 11 — Infrastructure + Quality
+- [ ] Streaming responses (SSE from vLLM → FastAPI → client)
+- [ ] Conversation summarization for long sessions
+- [ ] Backup/export (graph + vector snapshots)
+- [ ] Arabic NER improvement (custom patterns for Saudi names/places)
 - [ ] Knowledge graph visualization
 - [ ] Import from external sources (Notion, Obsidian)
 
-### Phase 7 — Personal Inventory System (جرد الأغراض الشخصية)
-
-#### 7a — Core Inventory
-- [ ] كيانات `Item` + `Location` في FalkorDB (هرمي: مبنى > غرفة > رف > كرتون)
-- [ ] تصوير الغرض عبر تلقرام → Vision يحلل (اسم، ماركة، مواصفات، فئة، حالة)
-- [ ] تخزين الكمية والمكان بالعربي ("السطح، الرف الثاني، الكرتون الأزرق")
-- [ ] بحث المخزون: "وين الـ X؟" / "عندي X؟" / "كم كيبل USB عندي؟"
-- [ ] أمر `/inventory` في تلقرام (عرض، بحث، إحصائيات)
-- [ ] REST endpoints: `/inventory/items`, `/inventory/locations`, `/inventory/search`
-- [ ] Smart router keywords: مخزون/جرد/وين/عندي → inventory route
-
-#### 7b — Smart Inventory
-- [ ] بحث بالصورة (تصور شي → يطلع لك المشابه من المخزون عبر vector similarity)
-- [ ] تنبيه قبل الشراء: "عندك 2 من هذا الشي بالفعل" (ربط مع المحادثة)
-- [ ] فئات تلقائية (إلكترونيات، كيابل، أدوات، قطع غيار، إلخ)
-- [ ] نقل الأغراض بين المواقع ("نقلت الطابعة من السطح للمكتب")
-- [ ] تحديث الكمية ("استخدمت 2 من البطاريات")
-
-#### 7c — Advanced Inventory
-- [ ] QR/Barcode على الكراتين → scan = محتويات الكرتون
-- [ ] "كم غرض عندي ما استخدمته من سنة؟" (تتبع آخر استخدام)
-- [ ] تقرير جرد شامل (بالفئة، بالمكان، بالقيمة)
-- [ ] اكتشاف التكرار (أغراض متشابهة في أماكن مختلفة)
-
-### General Improvements
-- [ ] Streaming responses (SSE)
+### Future Ideas
 - [ ] WebSocket real-time updates
 - [ ] User authentication (multi-user support)
-- [ ] Backup/export (graph + vector snapshots)
-- [ ] Arabic NER improvement (custom patterns for Saudi names/places)
-- [ ] Conversation summarization for long sessions
+- [ ] Gantt-style timeline view for projects
+- [ ] Spaced repetition reminders for knowledge review

@@ -37,6 +37,8 @@
 | `aiofiles` | >= 24.1.0 | Async file I/O |
 | `aiogram` | >= 3.15.0 | Telegram Bot framework (async, aiogram 3.x) |
 | `fastmcp` | >= 2.0.0 | MCP server framework (SSE transport) |
+| `apscheduler` | >= 3.10.0 | Scheduled jobs (proactive notifications) |
+| `python-dateutil` | >= 2.9.0 | Recurring reminder date advancement (relativedelta) |
 
 ## Why These Choices
 

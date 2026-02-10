@@ -14,14 +14,14 @@ Personal_Rag/
 │   │   │                        #   clarification, core memory extraction, daily summarization
 │   │   ├── graph.py             # FalkorDB — entity CRUD, financial reports, debt management,
 │   │   │                        #   reminders, daily planner, projects overview, knowledge queries,
-│   │   │                        #   active tasks, idea similarity, generic search
+│   │   │                        #   active tasks, idea similarity, inventory (items, locations, movement)
 │   │   ├── vector.py            # Qdrant — BGE-M3 embedding, chunk upsert/search with filtering
 │   │   ├── memory.py            # Redis — 3-layer memory (working/daily/core), pending actions,
 │   │   │                        #   message counter, context builders
 │   │   ├── retrieval.py         # Agentic RAG pipeline — smart router, ingestion, retrieval
 │   │   │                        #   (think/act/reflect/retry), confirmation flow, post-processing
 │   │   └── files.py             # File processing — images (vision), PDFs (pymupdf4llm),
-│   │                            #   audio (WhisperX), auto-expense from invoices
+│   │                            #   audio (WhisperX), auto-expense, auto-item from photos
 │   │
 │   ├── routers/
 │   │   ├── chat.py              # POST /chat/ — main conversational endpoint
@@ -32,12 +32,14 @@ Personal_Rag/
 │   │   ├── reminders.py         # GET /reminders/ + POST /reminders/action
 │   │   ├── projects.py          # GET /projects/ + POST /projects/update
 │   │   ├── tasks.py             # GET /tasks/
-│   │   └── knowledge.py         # GET /knowledge/
+│   │   ├── knowledge.py         # GET /knowledge/
+│   │   ├── inventory.py         # GET/POST /inventory/* (items, summary, location, quantity, search-similar)
+│   │   └── proactive.py         # GET/POST /proactive/* (morning, noon, evening, reminders, alerts)
 │   │
 │   ├── prompts/
 │   │   ├── translate.py         # Arabic<>English translation prompts
 │   │   ├── classify.py          # Input category classification prompt
-│   │   ├── extract.py           # Fact/entity extraction prompt (incl. DebtPayment pseudo-entity)
+│   │   ├── extract.py           # Fact/entity extraction prompt (incl. DebtPayment, ItemUsage, ItemMove)
 │   │   ├── file_classify.py     # Image file type classification prompt
 │   │   ├── vision.py            # Type-specific image analysis prompts (invoice, document, etc.)
 │   │   ├── agentic.py           # Think + Reflect prompts for agentic RAG pipeline

@@ -148,6 +148,43 @@
 | Phase 6 — Fire Tests | 3 | 3 | 0 |
 | Phase 6 — Graph/Config | 3 | 3 | 0 |
 | Phase 6 — Regression | 10 | 10 | 0 |
-| **الإجمالي** | **75** | **73** | **2** |
+| Phase 7 — Core Inventory | 8 | 8 | 0 |
+| Phase 7 — Usage/Interactions | 3 | 3 | 0 |
+| Phase 7 — Smart Inventory | 4 | 4 | 0 |
+| **الإجمالي** | **90** | **88** | **2** |
 
 الاختبارين الباقيين يحتاجون Open WebUI Docker container شغال.
+
+---
+
+## Phase 7 — Inventory System
+
+### Core Inventory (7a)
+- [x] تصوير غرض → تصنيف `inventory_item` → تحليل + إنشاء Item تلقائي
+- [x] `/inventory` — عرض الأغراض في تلقرام
+- [x] REST: GET `/inventory/` + `/inventory/summary`
+- [x] REST: POST `/inventory/item` (create/update)
+- [x] REST: PUT `/inventory/item/{name}/location` + `/inventory/item/{name}/quantity`
+- [x] Location normalization (English→Arabic, `>` separator)
+- [x] File dedup: صورة مكررة + caption → enriches query
+- [x] Smart router: "وين ال X" / "مخزون" → `graph_inventory`
+
+### Usage + Interactions (7b)
+- [x] ItemUsage: "استخدمت 2 بطاريات" → quantity - 2 (clamped at 0)
+- [x] Bot asks "وين حاطه؟" on captionless inventory photos
+- [x] Clarification skip: extraction found entities → skip clarification LLM
+
+### Smart Inventory (7c)
+- [x] ItemMove: "نقلت الطابعة من السطح للمكتب" → confirmation → STORED_IN updated
+- [x] Purchase alert: confirmed expense → "⚠️ عندك في المخزون: ..."
+- [x] POST `/inventory/search-similar` → vector search (score ≥ 0.4)
+- [x] Category normalization: "cables" → "إلكترونيات"
+
+### ملخص Phase 7
+
+| المكون | الاختبارات | ناجحة |
+|--------|-----------|-------|
+| Core Inventory (7a) | 8 | 8 |
+| Usage + Interactions (7b) | 3 | 3 |
+| Smart Inventory (7c) | 4 | 4 |
+| **الإجمالي** | **15** | **15** |

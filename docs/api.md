@@ -238,6 +238,189 @@ Search knowledge entries.
 
 ---
 
+## Inventory
+
+### GET /inventory/
+List all inventory items, with optional search and category filter.
+
+**Parameters:** `search` (string, optional), `category` (string, optional)
+
+**Response:**
+```json
+{
+  "items": "Items:\n  - USB-C cable (5 حبة) [إلكترونيات] — السطح > الرف الثاني\n  ..."
+}
+```
+
+### GET /inventory/summary
+Inventory statistics (total items, by category, by location).
+
+**Response:**
+```json
+{
+  "total_items": 42,
+  "total_quantity": 156,
+  "by_category": [{"category": "إلكترونيات", "count": 15, "quantity": 48}],
+  "by_location": [{"location": "السطح > الرف الثاني", "count": 8}]
+}
+```
+
+### POST /inventory/item
+Create or update an inventory item.
+
+**Request:**
+```json
+{
+  "name": "USB-C cable",
+  "quantity": 5,
+  "location": "السطح > الرف الثاني",
+  "category": "cables",
+  "condition": "new",
+  "brand": "Anker",
+  "description": "2m USB-C to USB-C cable"
+}
+```
+Note: Categories are auto-normalized (e.g. "cables" → "إلكترونيات").
+
+### GET /inventory/by-file/{file_hash}
+Find inventory item linked to a file by SHA256 hash.
+
+**Response:**
+```json
+{
+  "name": "USB-C cable",
+  "quantity": 5,
+  "location": "السطح > الرف الثاني"
+}
+```
+
+### PUT /inventory/item/{name}/location
+Update an item's storage location.
+
+**Request:**
+```json
+{"location": "المكتب > الدرج الأول"}
+```
+
+### PUT /inventory/item/{name}/quantity
+Update an item's quantity.
+
+**Request:**
+```json
+{"quantity": 3}
+```
+
+### POST /inventory/search-similar
+Search for similar inventory items by text description (vector similarity).
+
+**Request:**
+```json
+{"description": "USB cable for charging"}
+```
+
+**Response:**
+```json
+{
+  "results": [
+    {"text": "USB-C cable - Anker 2m...", "score": 0.72, "metadata": {...}}
+  ]
+}
+```
+
+---
+
+## Proactive System
+
+Endpoints called by the scheduled jobs in the Telegram bot. Used for morning summaries, noon check-ins, evening summaries, and smart alerts.
+
+### GET /proactive/morning-summary
+Daily plan + spending alerts for morning notification.
+
+**Response:**
+```json
+{
+  "daily_plan": "...",
+  "spending_alerts": "..."
+}
+```
+
+### GET /proactive/noon-checkin
+Overdue reminders for noon check-in.
+
+**Response:**
+```json
+{
+  "overdue_reminders": [
+    {"title": "pay rent", "due_date": "2026-02-10T00:00:00", "reminder_type": "financial", "priority": "high", "description": "..."}
+  ]
+}
+```
+
+### GET /proactive/evening-summary
+Tasks/reminders completed today + tomorrow's reminders.
+
+**Response:**
+```json
+{
+  "completed_today": ["pay rent", "buy groceries"],
+  "tomorrow_reminders": [
+    {"title": "meeting", "due_date": "2026-02-12T09:00:00", "reminder_type": "one_time", "priority": "medium"}
+  ]
+}
+```
+
+### GET /proactive/due-reminders
+All reminders that are past due (for reminder check job).
+
+**Response:**
+```json
+{
+  "due_reminders": [
+    {"title": "...", "due_date": "...", "reminder_type": "...", "priority": "...", "description": "...", "recurrence": "monthly"}
+  ]
+}
+```
+
+### POST /proactive/advance-reminder
+Advance a recurring reminder to its next due date.
+
+**Request:**
+```json
+{"title": "renew template", "recurrence": "monthly"}
+```
+
+### GET /proactive/stalled-projects
+Active projects with no task updates in N days.
+
+**Parameters:** `days` (int, default 14)
+
+**Response:**
+```json
+{
+  "stalled_projects": [
+    {"name": "...", "status": "active", "last_activity": "...", "task_count": 3}
+  ],
+  "days_threshold": 14
+}
+```
+
+### GET /proactive/old-debts
+Debts I owe that are older than N days.
+
+**Parameters:** `days` (int, default 30)
+
+**Response:**
+```json
+{
+  "old_debts": [
+    {"person": "Mohammed", "amount": 500, "reason": "lunch", "created_at": "...", "status": "open"}
+  ],
+  "days_threshold": 30
+}
+```
+
+---
+
 ## Health
 
 ### GET /health
@@ -260,6 +443,7 @@ The Telegram bot runs as a separate process and calls the RAG API. Auth: only re
 | `/projects` | Projects overview | `GET /projects/` |
 | `/tasks` | Tasks list | `GET /tasks/` |
 | `/report` | Monthly financial report | `GET /financial/report` |
+| `/inventory` | Inventory items list | `GET /inventory/` |
 
 ### Message Types
 - **Text** → `POST /chat/` → Arabic reply
