@@ -1,4 +1,4 @@
-# قائمة الاختبارات — Phase 5 Interfaces
+# قائمة الاختبارات — Phase 5 Interfaces + Phase 6 Proactive System
 
 ## Telegram Bot
 
@@ -81,6 +81,50 @@
 
 ---
 
+## Phase 6 — Proactive System
+
+### REST Endpoints (`/proactive/*`)
+- [x] `/proactive/morning-summary` — يرجع خطة اليوم + تنبيهات المصاريف (967 حرف، 10 تذكيرات + 4 مهام + ديون)
+- [x] `/proactive/noon-checkin` — التذكيرات المتأخرة (10 تذكيرات متأخرة)
+- [x] `/proactive/evening-summary` — المنجزات + تذكيرات بكرة (2 منجزة، 7 تذكيرات بكرة)
+- [x] `/proactive/due-reminders` — التذكيرات المستحقة مع حقل recurrence (10 تذكيرات، 1 متكرر شهري)
+- [x] `/proactive/advance-reminder` — تقديم تذكير متكرر للموعد التالي ("renew template" 2026-02-11 → 2026-03-11)
+- [x] `/proactive/stalled-projects?days=14` — المشاريع المتوقفة (0 حالياً)
+- [x] `/proactive/old-debts?days=30` — الديون القديمة (0 حالياً)
+
+### Scheduler (APScheduler في Telegram Bot)
+- [x] البوت يشتغل مع الـ scheduler بدون أخطاء
+- [x] 5 jobs مسجلة: morning, noon, evening, reminders (30 دقيقة), alerts (6 ساعات)
+- [x] Log message: "Scheduler started with 5 jobs (morning=7:00, noon=13:00, evening=21:00 local)"
+- [x] تحويل الساعات المحلية لـ UTC صحيح (`(local_hour - tz_offset) % 24`)
+
+### Fire Tests (إرسال فعلي عبر Telegram)
+- [x] Morning summary — وصلت رسالة تلقرام بخطة اليوم كاملة
+- [x] Evening summary — وصلت رسالة بالمنجزات + تذكيرات بكرة
+- [x] Smart alerts — تخطى الإرسال بشكل صحيح (ما في مشاريع متوقفة أو ديون قديمة)
+
+### Graph Service
+- [x] `advance_recurring_reminder()` — يحسب الموعد التالي صحيح (daily/weekly/monthly/yearly)
+- [x] `dateutil.relativedelta` — يشتغل للشهري والسنوي
+
+### Config
+- [x] 8 إعدادات `proactive_*` في config.py
+- [x] `proactive_enabled` — تفعيل/تعطيل الـ scheduler
+
+### Regression (الـ endpoints القديمة ما تأثرت)
+- [x] `/health` — OK
+- [x] `/chat/` — OK (رد بالعربي)
+- [x] `/search/` — OK
+- [x] `/reminders/` — OK
+- [x] `/financial/report` — OK
+- [x] `/financial/debts` — OK
+- [x] `/financial/alerts` — OK
+- [x] `/projects/` — OK
+- [x] `/tasks/` — OK
+- [x] `/knowledge/` — OK
+
+---
+
 ## باقات أُصلحت أثناء الاختبارات
 
 - [x] **Debt direction mismatch**: LLM يرجع `owed_by_me` بس الكود يتوقع `i_owe` — أضفنا `_normalize_direction()` في graph.py
@@ -99,6 +143,11 @@
 | MCP Server | 14 | 14 | 0 |
 | Open WebUI | 4 | 2 | 2 (يحتاج Docker) |
 | عام | 10 | 10 | 0 |
-| **الإجمالي** | **48** | **46** | **2** |
+| Phase 6 — Proactive Endpoints | 7 | 7 | 0 |
+| Phase 6 — Scheduler | 4 | 4 | 0 |
+| Phase 6 — Fire Tests | 3 | 3 | 0 |
+| Phase 6 — Graph/Config | 3 | 3 | 0 |
+| Phase 6 — Regression | 10 | 10 | 0 |
+| **الإجمالي** | **75** | **73** | **2** |
 
 الاختبارين الباقيين يحتاجون Open WebUI Docker container شغال.
