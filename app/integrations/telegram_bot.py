@@ -428,10 +428,49 @@ async def handle_photo(message: Message):
         data={"context": context, "tags": "", "topic": ""},
     )
 
-    # Handle duplicate files
+    # Handle duplicate files — still useful if user has a question or wants to update
     if result.get("status") == "duplicate":
-        file_type_ar = _AR_FILE_TYPES.get(result.get("file_type", ""), result.get("file_type", ""))
-        await message.answer(f"📁 الملف موجود مسبقاً ({file_type_ar}) — ما يحتاج يتخزن مرة ثانية.")
+        file_type = result.get("file_type", "")
+        file_type_ar = _AR_FILE_TYPES.get(file_type, file_type)
+        sid = session_id(message.from_user.id)
+        if context:
+            # User has a caption/question — enrich with item name if inventory
+            query = context
+            if file_type == "inventory_item":
+                file_hash = result.get("file_hash", "")
+                if file_hash:
+                    try:
+                        item_data = await api_get(f"/inventory/by-file/{file_hash}")
+                        item_name = item_data.get("name", "")
+                        if item_name:
+                            query = f"بخصوص {item_name}: {context}"
+                    except Exception:
+                        pass
+            chat_result = await chat_api(query, sid)
+            keyboard = None
+            if chat_result.get("pending_confirmation"):
+                keyboard = confirmation_keyboard()
+            await send_reply(message, chat_result["reply"], keyboard=keyboard)
+        elif file_type == "inventory_item":
+            # Inventory item re-sent without caption — find linked item, ask for location
+            file_hash = result.get("file_hash", "")
+            item_name = ""
+            if file_hash:
+                try:
+                    item_data = await api_get(f"/inventory/by-file/{file_hash}")
+                    item_name = item_data.get("name", "")
+                except Exception:
+                    pass
+            if item_name:
+                _pending_locations[sid] = {
+                    "item_name": item_name,
+                    "created_at": time.monotonic(),
+                }
+                await message.answer(f"📦 {item_name} موجود مسبقاً.\n📍 وين حاطه؟ (أرسل المكان، مثلاً: السطح > الرف الثاني)")
+            else:
+                await message.answer(f"📁 الملف موجود مسبقاً ({file_type_ar}).")
+        else:
+            await message.answer(f"📁 الملف موجود مسبقاً ({file_type_ar}).")
         return
 
     file_type = result.get("file_type", "unknown")

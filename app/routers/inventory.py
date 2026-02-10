@@ -39,6 +39,13 @@ async def create_or_update_item(req: InventoryItemRequest, request: Request):
     return result
 
 
+@router.get("/by-file/{file_hash}")
+async def get_item_by_file(file_hash: str, request: Request):
+    """Find inventory item linked to a file by hash."""
+    graph = request.app.state.retrieval.graph
+    return await graph.find_item_by_file_hash(file_hash)
+
+
 @router.put("/item/{name}/location")
 async def update_item_location(name: str, req: InventoryLocationUpdate, request: Request):
     graph = request.app.state.retrieval.graph

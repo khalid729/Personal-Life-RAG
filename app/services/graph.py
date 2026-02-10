@@ -1275,6 +1275,24 @@ class GraphService:
 
         return result
 
+    async def find_item_by_file_hash(self, file_hash: str) -> dict:
+        """Find an Item linked to a File node via FROM_PHOTO relationship."""
+        q = """
+        MATCH (i:Item)-[:FROM_PHOTO]->(f:File {file_hash: $fh})
+        OPTIONAL MATCH (i)-[:STORED_IN]->(l:Location)
+        RETURN i.name, i.quantity, i.status, l.path
+        LIMIT 1
+        """
+        rows = await self.query(q, {"fh": file_hash})
+        if not rows:
+            return {}
+        return {
+            "name": rows[0][0],
+            "quantity": rows[0][1],
+            "status": rows[0][2],
+            "location": rows[0][3],
+        }
+
     async def adjust_item_quantity(self, name: str, delta: int) -> dict:
         """Adjust item quantity by delta (negative = reduce). Clamp at 0."""
         q = """
