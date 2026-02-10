@@ -104,6 +104,16 @@ REMINDER_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+DAILY_PLAN_KEYWORDS = re.compile(
+    r"(رتب.*يومي|خطة اليوم|خطط.*يومي|يومي ايش|plan my day|daily plan|today.?s plan|what.?s on)",
+    re.IGNORECASE,
+)
+
+KNOWLEDGE_KEYWORDS = re.compile(
+    r"(معلومة|احفظ.?لي|أعرف عن|اعرف عن|وش أعرف|knowledge|what do I know|info about)",
+    re.IGNORECASE,
+)
+
 PROJECT_KEYWORDS = re.compile(
     r"(مشروع|تقدم|مرحلة|project|progress|milestone|sprint|status)",
     re.IGNORECASE,
@@ -139,6 +149,12 @@ def smart_route(text: str) -> str:
         return "graph_reminder_action"
     if REMINDER_KEYWORDS.search(text):
         return "graph_reminder"
+
+    # Daily plan + Knowledge
+    if DAILY_PLAN_KEYWORDS.search(text):
+        return "graph_daily_plan"
+    if KNOWLEDGE_KEYWORDS.search(text):
+        return "graph_knowledge"
 
     if PROJECT_KEYWORDS.search(text):
         return "graph_project"
@@ -646,19 +662,19 @@ class RetrievalService:
             return await self.graph.query_financial_summary()
         elif route == "graph_reminder":
             return await self.graph.query_reminders()
+        elif route == "graph_daily_plan":
+            return await self.graph.query_daily_plan()
+        elif route == "graph_knowledge":
+            return await self.graph.query_knowledge(query_en)
         elif route == "graph_project":
-            return await self.graph.search_nodes(query_en, limit=3)
+            ctx = await self.graph.query_projects_overview()
+            if not ctx or "No projects found" in ctx:
+                ctx = await self.graph.search_nodes(query_en, limit=3)
+            return ctx
         elif route == "graph_person":
             return await self.graph.search_nodes(query_en, limit=5)
         elif route == "graph_task":
-            q = "MATCH (t:Task) WHERE t.status <> 'done' RETURN t.title, t.status, t.due_date, t.priority ORDER BY t.priority DESC LIMIT 20"
-            rows = await self.graph.query(q)
-            if not rows:
-                return "No active tasks found."
-            parts = ["Active tasks:"]
-            for r in rows:
-                parts.append(f"  - {r[0]} [{r[1]}]")
-            return "\n".join(parts)
+            return await self.graph.query_active_tasks()
         return ""
 
     @staticmethod
@@ -693,6 +709,7 @@ class RetrievalService:
             "graph_financial", "graph_financial_report",
             "graph_debt_summary", "graph_debt_payment",
             "graph_reminder", "graph_reminder_action",
+            "graph_daily_plan", "graph_knowledge",
             "graph_project", "graph_person", "graph_task",
         }
         if hint and hint in valid and hint != original:

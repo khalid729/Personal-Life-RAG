@@ -11,6 +11,8 @@ Available strategies:
 - graph_project: for project status/progress → searches FalkorDB project nodes
 - graph_person: for people/relationships → searches FalkorDB person nodes with 2-hop context
 - graph_task: for tasks/to-do items → searches FalkorDB task nodes
+- graph_daily_plan: for daily planning, what to do today, prioritizing the day → aggregates reminders + tasks + debts
+- graph_knowledge: for stored knowledge/facts, "what do I know about X" → searches FalkorDB Knowledge nodes
 - vector: for knowledge/semantic search → searches Qdrant vector store
 - hybrid: for queries needing both structured + semantic results → both graph + vector
 
@@ -43,7 +45,7 @@ Respond with ONLY a JSON object:
     {"index": 0, "score": 0.85, "reason": "directly answers the query"},
     {"index": 1, "score": 0.3, "reason": "tangentially related"}
   ],
-  "retry_strategy": "vector/graph_financial/graph_financial_report/graph_debt_summary/graph_person/null (only if sufficient=false, suggest alternative strategy)"
+  "retry_strategy": "vector/graph_financial/graph_financial_report/graph_debt_summary/graph_person/graph_daily_plan/graph_knowledge/null (only if sufficient=false, suggest alternative strategy)"
 }"""
 
 

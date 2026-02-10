@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import chat, files, financial, ingest, reminders, search
+from app.routers import chat, files, financial, ingest, knowledge, projects, reminders, search, tasks
 from app.services.files import FileService
 from app.services.graph import GraphService
 from app.services.llm import LLMService
@@ -40,6 +40,8 @@ async def lifespan(app: FastAPI):
 
     await memory.start()
     logger.info("Memory service ready")
+
+    graph.set_vector_service(vector)
 
     retrieval = RetrievalService(llm, graph, vector, memory)
     app.state.retrieval = retrieval
@@ -80,6 +82,9 @@ app.include_router(files.router)
 app.include_router(search.router)
 app.include_router(financial.router)
 app.include_router(reminders.router)
+app.include_router(projects.router)
+app.include_router(tasks.router)
+app.include_router(knowledge.router)
 
 
 @app.get("/health")

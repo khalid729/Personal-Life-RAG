@@ -17,6 +17,11 @@ class GraphService:
         self._db: FalkorDB | None = None
         self._pool: BlockingConnectionPool | None = None
         self._graph = None
+        self._vector_service = None
+
+    def set_vector_service(self, vector_service) -> None:
+        """Allow graph service to use vector for idea similarity detection."""
+        self._vector_service = vector_service
 
     async def start(self):
         self._pool = BlockingConnectionPool(
@@ -144,7 +149,7 @@ class GraphService:
 
     # --- Task ---
     async def upsert_task(self, title: str, **props) -> None:
-        props_str = self._build_set_clause(props)
+        props_str = self._build_set_clause(props, var="t")
         q = f"""
         MERGE (t:Task {{title: $title}})
         ON CREATE SET t.status = 'todo', t.created_at = $now {props_str}
@@ -165,7 +170,7 @@ class GraphService:
 
     # --- Company ---
     async def upsert_company(self, name: str, **props) -> None:
-        props_str = self._build_set_clause(props)
+        props_str = self._build_set_clause(props, var="c")
         q = f"""
         MERGE (c:Company {{name: $name}})
         ON CREATE SET c.created_at = $now {props_str}
@@ -174,7 +179,7 @@ class GraphService:
 
     # --- Topic ---
     async def upsert_topic(self, name: str, **props) -> None:
-        props_str = self._build_set_clause(props)
+        props_str = self._build_set_clause(props, var="t")
         q = f"""
         MERGE (t:Topic {{name: $name}})
         ON CREATE SET t.created_at = $now {props_str}
@@ -272,6 +277,11 @@ class GraphService:
                     amount = props.pop("amount", 0)
                     await self.create_expense(ename, amount, **props)
                     count += 1
+                elif etype == "Idea" and handler:
+                    await handler(ename, **props)
+                    count += 1
+                    # Idea similarity: embed + find similar ideas
+                    await self._detect_similar_ideas(ename, props.get("description", ""))
                 elif etype == "Debt":
                     person = ""
                     for r in rels:
@@ -749,6 +759,166 @@ class GraphService:
             tags.append(f"snoozed:{snooze_count}x")
         return f" [{', '.join(tags)}]" if tags else ""
 
+    # --- Daily Planner ---
+    async def query_daily_plan(self) -> str:
+        """Aggregate today's actionable items: overdue/today reminders, active tasks, debts I owe."""
+        now_str = _now()
+        today = now_str[:10]  # YYYY-MM-DD
+        today_eod = today + "T23:59:59"
+        parts = []
+
+        # 1. Overdue + today's reminders
+        q_reminders = """
+        MATCH (r:Reminder)
+        WHERE r.status = 'pending'
+          AND r.due_date IS NOT NULL
+          AND r.due_date <= $eod
+        RETURN r.title, r.due_date, r.reminder_type, r.priority
+        ORDER BY r.due_date
+        LIMIT 20
+        """
+        rows = await self.query(q_reminders, {"eod": today_eod})
+        if rows:
+            parts.append("Reminders (overdue + today):")
+            for r in rows:
+                due = f" (due: {r[1]})" if r[1] else ""
+                priority_tag = f" [priority:{r[3]}]" if r[3] and r[3] >= 3 else ""
+                parts.append(f"  - {r[0]}{due}{priority_tag}")
+
+        # 2. Active tasks sorted by priority
+        q_tasks = """
+        MATCH (t:Task)
+        WHERE t.status IN ['todo', 'in_progress']
+        OPTIONAL MATCH (t)-[:BELONGS_TO]->(p:Project)
+        RETURN t.title, t.status, t.due_date, t.priority, p.name
+        ORDER BY t.priority DESC, t.due_date
+        LIMIT 20
+        """
+        rows = await self.query(q_tasks)
+        if rows:
+            parts.append("\nActive tasks:")
+            for r in rows:
+                status_tag = f" [{r[1]}]" if r[1] != "todo" else ""
+                due = f" (due: {r[2]})" if r[2] else ""
+                project = f" @ {r[4]}" if r[4] else ""
+                parts.append(f"  - {r[0]}{status_tag}{due}{project}")
+
+        # 3. Outstanding debts (I owe)
+        q_debts = """
+        MATCH (d:Debt)-[:INVOLVES]->(p:Person)
+        WHERE d.status IN ['open', 'partial'] AND d.direction = 'i_owe'
+        RETURN p.name, d.amount, d.reason
+        ORDER BY d.amount DESC
+        LIMIT 10
+        """
+        rows = await self.query(q_debts)
+        if rows:
+            parts.append("\nDebts I owe:")
+            for r in rows:
+                reason = f" ({r[2]})" if r[2] else ""
+                parts.append(f"  - {r[0]}: {r[1]:.0f} SAR{reason}")
+
+        return "\n".join(parts) if parts else "No actionable items for today."
+
+    # --- Projects Overview ---
+    async def query_projects_overview(self, status_filter: str | None = None) -> str:
+        """Projects with their linked tasks and progress."""
+        filter_clause = "WHERE p.status = $status" if status_filter else ""
+        q = f"""
+        MATCH (p:Project)
+        {filter_clause}
+        OPTIONAL MATCH (t:Task)-[:BELONGS_TO]->(p)
+        RETURN p.name, p.status, p.description, p.priority,
+               count(t) as total_tasks,
+               sum(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as done_tasks
+        ORDER BY p.priority DESC, p.name
+        LIMIT 30
+        """
+        params = {"status": status_filter} if status_filter else {}
+        rows = await self.query(q, params)
+        if not rows:
+            label = f" with status '{status_filter}'" if status_filter else ""
+            return f"No projects found{label}."
+
+        parts = ["Projects:"]
+        for r in rows:
+            name, status, desc, priority, total, done = r
+            progress = f" ({done}/{total} tasks done)" if total and total > 0 else ""
+            priority_tag = f" [priority:{priority}]" if priority else ""
+            status_tag = f" [{status}]" if status else ""
+            parts.append(f"  - {name}{status_tag}{priority_tag}{progress}")
+            if desc:
+                parts.append(f"    {desc[:100]}")
+        return "\n".join(parts)
+
+    # --- Knowledge ---
+    async def query_knowledge(self, topic: str | None = None) -> str:
+        """Query Knowledge nodes, optionally filtering by topic."""
+        if topic:
+            q = """
+            MATCH (k:Knowledge)
+            WHERE toLower(k.title) CONTAINS toLower($topic)
+               OR toLower(k.content) CONTAINS toLower($topic)
+               OR toLower(k.category) CONTAINS toLower($topic)
+            RETURN k.title, k.content, k.category, k.source
+            LIMIT 20
+            """
+            rows = await self.query(q, {"topic": topic})
+        else:
+            q = """
+            MATCH (k:Knowledge)
+            RETURN k.title, k.content, k.category, k.source
+            ORDER BY k.created_at DESC
+            LIMIT 20
+            """
+            rows = await self.query(q)
+
+        if not rows:
+            label = f" about '{topic}'" if topic else ""
+            return f"No knowledge entries found{label}."
+
+        parts = ["Knowledge:"]
+        for r in rows:
+            title, content, category, source = r
+            cat_tag = f" [{category}]" if category else ""
+            src_tag = f" (source: {source})" if source else ""
+            parts.append(f"  - {title}{cat_tag}{src_tag}")
+            if content:
+                preview = content[:150] + "..." if len(content) > 150 else content
+                parts.append(f"    {preview}")
+        return "\n".join(parts)
+
+    # --- Active Tasks ---
+    async def query_active_tasks(self, status_filter: str | None = None) -> str:
+        """Tasks with optional status filter and project links."""
+        if status_filter:
+            filter_clause = "WHERE t.status = $status"
+        else:
+            filter_clause = "WHERE t.status IN ['todo', 'in_progress']"
+        q = f"""
+        MATCH (t:Task)
+        {filter_clause}
+        OPTIONAL MATCH (t)-[:BELONGS_TO]->(p:Project)
+        RETURN t.title, t.status, t.due_date, t.priority, p.name
+        ORDER BY t.priority DESC, t.due_date
+        LIMIT 30
+        """
+        params = {"status": status_filter} if status_filter else {}
+        rows = await self.query(q, params)
+        if not rows:
+            label = f" with status '{status_filter}'" if status_filter else ""
+            return f"No active tasks found{label}."
+
+        parts = ["Tasks:"]
+        for r in rows:
+            title, status, due_date, priority, project = r
+            status_tag = f" [{status}]"
+            due = f" (due: {due_date})" if due_date else ""
+            proj = f" @ {project}" if project else ""
+            prio = f" [priority:{priority}]" if priority else ""
+            parts.append(f"  - {title}{status_tag}{prio}{due}{proj}")
+        return "\n".join(parts)
+
     async def search_nodes(self, text: str, limit: int = 10) -> str:
         text_lower = text.lower()
         q = """
@@ -767,6 +937,37 @@ class GraphService:
             parts.append(f"  [{r[0]}] {r[1]}")
         return "\n".join(parts)
 
+    async def _detect_similar_ideas(self, title: str, description: str = "") -> None:
+        """Embed idea text into Qdrant and create SIMILAR_TO edges for similar ideas."""
+        if not self._vector_service:
+            return
+        try:
+            idea_text = f"{title}. {description}" if description else title
+            # Upsert the idea into the vector store with entity_type metadata
+            await self._vector_service.upsert_chunks(
+                [idea_text],
+                [{"source_type": "entity", "entity_type": "Idea", "entity_name": title}],
+            )
+            # Search for similar ideas (exclude exact match by checking title)
+            results = await self._vector_service.search(
+                idea_text, limit=5, entity_type="Idea"
+            )
+            for r in results:
+                other_title = r["metadata"].get("entity_name", "")
+                score = r["score"]
+                if other_title and other_title != title and score >= 0.7:
+                    try:
+                        await self.create_relationship(
+                            "Idea", "title", title,
+                            "SIMILAR_TO",
+                            "Idea", "title", other_title,
+                        )
+                        logger.info("Linked similar ideas: '%s' <-> '%s' (%.2f)", title, other_title, score)
+                    except Exception as e:
+                        logger.debug("Similar idea link skipped: %s", e)
+        except Exception as e:
+            logger.warning("Idea similarity detection failed: %s", e)
+
     async def _create_generic(self, label: str, key_field: str, value: str, **props) -> None:
         extra = {k: v for k, v in props.items() if v is not None}
         sets = ""
@@ -775,12 +976,11 @@ class GraphService:
         q = f"CREATE (n:{label} {{{key_field}: $value, created_at: $now{sets}}})"
         await self._graph.query(q, params={"value": value, "now": _now(), **extra})
 
-    def _build_set_clause(self, props: dict) -> str:
+    def _build_set_clause(self, props: dict, var: str = "p") -> str:
         filtered = {k: v for k, v in props.items() if v is not None}
         if not filtered:
             return ""
-        parts = [f", n.{k} = ${k}" for k in filtered]
-        return "".join(parts).replace("n.", "p.", 1) if len(parts) == 1 else "".join(parts)
+        return ", " + ", ".join(f"{var}.{k} = ${k}" for k in filtered)
 
     def _format_graph_context(self, rows: list) -> str:
         if not rows:

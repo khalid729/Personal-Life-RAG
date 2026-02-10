@@ -392,3 +392,10 @@ class ReminderActionRequest(BaseModel):
     title: str
     action: str  # "done", "snooze", "cancel"
     snooze_until: Optional[dt.datetime] = None
+
+
+class ProjectUpdateRequest(BaseModel):
+    name: str
+    status: Optional[str] = None
+    description: Optional[str] = None
+    priority: Optional[int] = None
