@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     proactive_stalled_days: int = 14
     proactive_old_debt_days: int = 30
 
+    # Entity Resolution (Phase 8)
+    entity_resolution_enabled: bool = True
+    entity_resolution_person_threshold: float = 0.85
+    entity_resolution_default_threshold: float = 0.80
+    graph_max_hops: int = 3
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

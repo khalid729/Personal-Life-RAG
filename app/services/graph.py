@@ -25,6 +25,58 @@ class GraphService:
         """Allow graph service to use vector for idea similarity detection."""
         self._vector_service = vector_service
 
+    async def resolve_entity_name(self, name: str, entity_type: str, label_key: str = "name") -> str:
+        """Resolve entity name via vector similarity. Returns canonical name or original."""
+        if not self._vector_service or not name or not settings.entity_resolution_enabled:
+            return name
+        if entity_type in ("Expense", "Debt", "Reminder", "Item", "Idea", "Tag"):
+            return name
+
+        thresholds = {
+            "Person": settings.entity_resolution_person_threshold,
+        }
+        threshold = thresholds.get(entity_type, settings.entity_resolution_default_threshold)
+
+        try:
+            results = await self._vector_service.search(
+                name, limit=3, entity_type=entity_type
+            )
+            for r in results:
+                other_name = r["metadata"].get("entity_name", "")
+                score = r["score"]
+                if other_name and other_name.lower() != name.lower() and score >= threshold:
+                    logger.info(
+                        "Entity resolved: '%s' -> '%s' (%s, score=%.2f)",
+                        name, other_name, entity_type, score,
+                    )
+                    await self._store_alias(entity_type, label_key, other_name, name)
+                    return other_name
+
+            # No match — register name for future resolution
+            await self._vector_service.upsert_chunks(
+                [name],
+                [{"source_type": "entity", "entity_type": entity_type, "entity_name": name}],
+            )
+        except Exception as e:
+            logger.debug("Entity resolution failed for '%s': %s", name, e)
+
+        return name
+
+    async def _store_alias(self, label: str, key_field: str, canonical: str, alias: str) -> None:
+        """Store alias on existing entity node's name_aliases list."""
+        try:
+            q = f"""
+            MATCH (n:{label} {{{key_field}: $canonical}})
+            SET n.name_aliases = CASE
+                WHEN n.name_aliases IS NULL THEN [$alias]
+                WHEN NOT $alias IN n.name_aliases THEN n.name_aliases + [$alias]
+                ELSE n.name_aliases
+            END
+            """
+            await self.query(q, {"canonical": canonical, "alias": alias})
+        except Exception as e:
+            logger.debug("Alias storage skipped: %s", e)
+
     async def start(self):
         self._pool = BlockingConnectionPool(
             host=settings.falkordb_host,
@@ -47,6 +99,7 @@ class GraphService:
 
     # --- Person ---
     async def upsert_person(self, name: str, **props) -> None:
+        name = await self.resolve_entity_name(name, "Person")
         props_str = self._build_set_clause(props)
         q = f"""
         MERGE (p:Person {{name: $name}})
@@ -57,6 +110,7 @@ class GraphService:
 
     # --- Project ---
     async def upsert_project(self, name: str, **props) -> None:
+        name = await self.resolve_entity_name(name, "Project")
         props_str = self._build_set_clause(props)
         q = f"""
         MERGE (p:Project {{name: $name}})
@@ -306,6 +360,7 @@ class GraphService:
 
     # --- Company ---
     async def upsert_company(self, name: str, **props) -> None:
+        name = await self.resolve_entity_name(name, "Company")
         props_str = self._build_set_clause(props, var="c")
         q = f"""
         MERGE (c:Company {{name: $name}})
@@ -315,6 +370,7 @@ class GraphService:
 
     # --- Topic ---
     async def upsert_topic(self, name: str, **props) -> None:
+        name = await self.resolve_entity_name(name, "Topic")
         props_str = self._build_set_clause(props, var="t")
         q = f"""
         MERGE (t:Topic {{name: $name}})
@@ -323,9 +379,66 @@ class GraphService:
         await self._graph.query(q, params={"name": name, "now": _now(), **props})
 
     # --- Tag ---
-    async def upsert_tag(self, name: str) -> None:
+    _TAG_ALIASES: dict[str, str] = {
+        "programming": "برمجة", "coding": "برمجة", "code": "برمجة",
+        "finance": "مالية", "money": "مالية",
+        "health": "صحة", "medical": "صحة",
+        "work": "عمل", "job": "عمل",
+        "home": "منزل", "house": "منزل",
+        "food": "طعام", "cooking": "طبخ",
+        "travel": "سفر",
+        "education": "تعليم", "learning": "تعليم",
+        "shopping": "تسوق",
+        "car": "سيارة", "auto": "سيارة",
+        "tech": "تقنية", "technology": "تقنية",
+    }
+
+    @staticmethod
+    def _normalize_tag(tag: str) -> str:
+        if not tag:
+            return ""
+        t = tag.strip().lower()
+        return GraphService._TAG_ALIASES.get(t, t)
+
+    async def upsert_tag(self, name: str) -> str:
+        """Normalize, resolve, and create/merge a tag. Returns canonical name."""
+        name = self._normalize_tag(name)
+        if not name:
+            return ""
+        # Vector-based dedup
+        if self._vector_service and settings.entity_resolution_enabled:
+            try:
+                results = await self._vector_service.search(name, limit=3, entity_type="Tag")
+                for r in results:
+                    other = r["metadata"].get("entity_name", "")
+                    if other and other.lower() != name.lower() and r["score"] >= 0.85:
+                        logger.info("Tag resolved: '%s' -> '%s' (%.2f)", name, other, r["score"])
+                        name = other
+                        break
+                else:
+                    await self._vector_service.upsert_chunks(
+                        [name],
+                        [{"source_type": "entity", "entity_type": "Tag", "entity_name": name}],
+                    )
+            except Exception as e:
+                logger.debug("Tag resolution failed: %s", e)
         q = "MERGE (t:Tag {name: $name}) ON CREATE SET t.created_at = $now"
         await self._graph.query(q, params={"name": name, "now": _now()})
+        return name
+
+    async def tag_entity(self, entity_label: str, entity_key: str, entity_value: str, tag_name: str) -> None:
+        """Create TAGGED_WITH relationship between an entity and a tag."""
+        tag_name = await self.upsert_tag(tag_name)
+        if not tag_name:
+            return
+        try:
+            await self.create_relationship(
+                entity_label, entity_key, entity_value,
+                "TAGGED_WITH",
+                "Tag", "name", tag_name,
+            )
+        except Exception as e:
+            logger.debug("Tag link skipped: %s", e)
 
     # --- File ---
     async def upsert_file_node(
@@ -463,12 +576,26 @@ class GraphService:
                     await handler(ename, **props)
                     count += 1
 
+                # Auto-tag Knowledge by category
+                if etype == "Knowledge":
+                    cat = props.get("category") or self._guess_knowledge_category(ename, props.get("content", ""))
+                    if cat:
+                        await self.tag_entity("Knowledge", "title", ename, cat)
+
                 # Create relationships
                 for rel in rels:
                     target_type = rel.get("target_type", "")
                     target_name = rel.get("target_name", "")
                     rel_type = rel.get("type", "RELATED_TO")
                     if target_type and target_name and etype not in ("Debt",):
+                        # Resolve target name for entity resolution
+                        if target_type in ("Person", "Company", "Project", "Topic"):
+                            target_name = await self.resolve_entity_name(target_name, target_type)
+                        # Handle Tag targets via TAGGED_WITH
+                        if target_type == "Tag":
+                            key_field = "name" if etype not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
+                            await self.tag_entity(etype, key_field, ename, target_name)
+                            continue
                         key_field = "name" if etype not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
                         target_key = "name" if target_type not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
                         try:
@@ -482,29 +609,44 @@ class GraphService:
         return count
 
     # --- GraphRAG queries ---
-    async def query_person_context(self, name: str) -> str:
-        q = """
-        MATCH (p:Person {name: $name})
-        OPTIONAL MATCH (p)-[r1]-(n1)
+    async def query_entity_context(self, label: str, key_field: str, value: str) -> str:
+        """Multi-hop context with configurable depth."""
+        max_hops = settings.graph_max_hops
+        if max_hops <= 2:
+            q = f"""
+            MATCH (root:{label} {{{key_field}: $value}})
+            OPTIONAL MATCH (root)-[r1]-(n1)
+            OPTIONAL MATCH (n1)-[r2]-(n2)
+            WHERE n2 <> root
+            RETURN root, type(r1), labels(n1)[0], n1,
+                   type(r2), labels(n2)[0], n2
+            LIMIT 50
+            """
+            rows = await self.query(q, {"value": value})
+            return self._format_graph_context(rows)
+
+        # 3-hop: unrestricted hop 1-2, selective hop 3
+        q = f"""
+        MATCH (root:{label} {{{key_field}: $value}})
+        OPTIONAL MATCH (root)-[r1]-(n1)
         OPTIONAL MATCH (n1)-[r2]-(n2)
-        RETURN p, type(r1) as rel1, labels(n1)[0] as label1, n1,
-               type(r2) as rel2, labels(n2)[0] as label2, n2
-        LIMIT 50
+        WHERE n2 <> root
+        OPTIONAL MATCH (n2)-[r3]-(n3)
+        WHERE n3 <> root AND n3 <> n1
+          AND type(r3) IN ['BELONGS_TO','INVOLVES','WORKS_AT','RELATED_TO','TAGGED_WITH','STORED_IN','SIMILAR_TO']
+        RETURN root, type(r1), labels(n1)[0], n1,
+               type(r2), labels(n2)[0], n2,
+               type(r3), labels(n3)[0], n3
+        LIMIT 80
         """
-        rows = await self.query(q, {"name": name})
-        return self._format_graph_context(rows)
+        rows = await self.query(q, {"value": value})
+        return self._format_graph_context_3hop(rows)
+
+    async def query_person_context(self, name: str) -> str:
+        return await self.query_entity_context("Person", "name", name)
 
     async def query_project_context(self, name: str) -> str:
-        q = """
-        MATCH (p:Project {name: $name})
-        OPTIONAL MATCH (p)-[r1]-(n1)
-        OPTIONAL MATCH (n1)-[r2]-(n2)
-        RETURN p, type(r1) as rel1, labels(n1)[0] as label1, n1,
-               type(r2) as rel2, labels(n2)[0] as label2, n2
-        LIMIT 50
-        """
-        rows = await self.query(q, {"name": name})
-        return self._format_graph_context(rows)
+        return await self.query_entity_context("Project", "name", name)
 
     async def query_financial_summary(self, detailed: bool = False) -> str:
         parts = []
@@ -870,6 +1012,26 @@ class GraphService:
             if any(kw in combined for kw in keywords):
                 return category
         return "general"
+
+    @staticmethod
+    def _guess_knowledge_category(title: str, content: str = "") -> str:
+        """Keyword heuristic for knowledge category."""
+        combined = f"{title} {content}".lower()
+        rules = [
+            (["python", "code", "api", "bug", "git", "docker", "server", "database", "sql", "linux"], "تقنية"),
+            (["recipe", "cook", "food", "طبخ", "أكل", "وصفة"], "طبخ"),
+            (["health", "medicine", "doctor", "صحة", "دواء", "علاج"], "صحة"),
+            (["car", "engine", "سيارة", "محرك", "صيانة", "oil change"], "سيارة"),
+            (["money", "invest", "stock", "bank", "فلوس", "استثمار", "بنك"], "مالية"),
+            (["islam", "quran", "hadith", "prayer", "قرآن", "حديث", "صلاة", "دعاء"], "دين"),
+            (["travel", "flight", "hotel", "visa", "سفر", "فندق", "تأشيرة"], "سفر"),
+            (["work", "meeting", "شغل", "وظيفة", "اجتماع"], "عمل"),
+            (["home", "plumbing", "electric", "بيت", "سباكة", "كهرباء"], "منزل"),
+        ]
+        for keywords, category in rules:
+            if any(kw in combined for kw in keywords):
+                return category
+        return "عام"
 
     async def query_reminders(
         self, status: str | None = None, include_overdue: bool = True
@@ -1428,6 +1590,11 @@ class GraphService:
         return [{"name": r[0], "quantity": int(r[1] or 0), "location": r[2]} for r in (rows or [])]
 
     async def _create_generic(self, label: str, key_field: str, value: str, **props) -> None:
+        if label in ("Knowledge", "Topic"):
+            value = await self.resolve_entity_name(value, label, key_field)
+        if label == "Knowledge" and not props.get("category"):
+            content = props.get("content", "")
+            props["category"] = self._guess_knowledge_category(value, content)
         extra = {}
         for k, v in props.items():
             if v is None:
@@ -1480,6 +1647,35 @@ class GraphService:
                     seen.add(line)
                     parts.append(line)
         return "\n".join(parts[:20])
+
+    def _format_graph_context_3hop(self, rows: list) -> str:
+        """Format 3-hop graph context (10 columns per row)."""
+        if not rows:
+            return ""
+        seen = set()
+        parts = []
+        for row in rows:
+            desc_parts = []
+            if row[0] and hasattr(row[0], "properties"):
+                desc_parts.append(str(row[0].properties))
+            if row[1] and row[3]:
+                n1 = row[3]
+                n1_name = n1.properties.get("name", n1.properties.get("title", "")) if hasattr(n1, "properties") else str(n1)
+                desc_parts.append(f"-[{row[1]}]-> [{row[2]}] {n1_name}")
+            if row[4] and row[6]:
+                n2 = row[6]
+                n2_name = n2.properties.get("name", n2.properties.get("title", "")) if hasattr(n2, "properties") else str(n2)
+                desc_parts.append(f"-[{row[4]}]-> [{row[5]}] {n2_name}")
+            if len(row) > 7 and row[7] and row[9]:
+                n3 = row[9]
+                n3_name = n3.properties.get("name", n3.properties.get("title", "")) if hasattr(n3, "properties") else str(n3)
+                desc_parts.append(f"-[{row[7]}]-> [{row[8]}] {n3_name}")
+            if desc_parts:
+                line = " ".join(desc_parts)
+                if line not in seen:
+                    seen.add(line)
+                    parts.append(line)
+        return "\n".join(parts[:30])
 
 
 def _now() -> str:

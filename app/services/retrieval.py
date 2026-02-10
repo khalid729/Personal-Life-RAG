@@ -715,7 +715,10 @@ class RetrievalService:
                 ctx = await self.graph.search_nodes(query_en, limit=3)
             return ctx
         elif route == "graph_person":
-            return await self.graph.search_nodes(query_en, limit=5)
+            ctx = await self.graph.query_person_context(query_en)
+            if not ctx:
+                ctx = await self.graph.search_nodes(query_en, limit=5)
+            return ctx
         elif route == "graph_task":
             return await self.graph.query_active_tasks()
         elif route == "graph_inventory":
