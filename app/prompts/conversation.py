@@ -46,6 +46,13 @@ QUERY_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Patterns that indicate a DELETE/REMOVE/CANCEL intent (confirmation required)
+DELETE_PATTERNS = re.compile(
+    r"(احذف|حذف|امحي|امسح|شيل|ازل|الغي|الغاء|كنسل|فك|"
+    r"delete|remove|cancel|erase|clear|drop|wipe)",
+    re.IGNORECASE,
+)
+
 # Routes that always create side-effects
 SIDE_EFFECT_ROUTES = {
     "graph_financial",
@@ -76,6 +83,12 @@ def is_action_intent(text: str, route: str) -> bool:
     # Both patterns matched: default to query (safer — don't create side effects)
     # Neither matched: default to not action
     return False
+
+
+def is_delete_intent(text: str) -> bool:
+    """Check if the user message expresses a delete/remove/cancel intent.
+    Only these actions require confirmation; all other side-effects execute directly."""
+    return bool(DELETE_PATTERNS.search(text))
 
 
 # --- Confirmation message builder ---

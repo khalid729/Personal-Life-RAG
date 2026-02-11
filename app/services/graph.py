@@ -337,6 +337,181 @@ class GraphService:
 
         return {"title": r_title, "next_due": next_due_str, "recurrence": recurrence}
 
+    async def delete_reminder(self, title: str) -> dict:
+        """Delete a reminder by title (fuzzy match). Returns deleted title or error."""
+        q = """
+        MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($title)
+        WITH r, r.title AS t
+        DETACH DELETE r
+        RETURN t
+        """
+        rows = await self.query(q, {"title": title})
+        if not rows:
+            return {"error": f"No reminder found matching '{title}'"}
+        deleted = [r[0] for r in rows]
+        return {"deleted": deleted, "count": len(deleted)}
+
+    async def delete_reminder_by_id(self, node_id: int) -> dict:
+        """Delete a specific reminder by its internal node ID."""
+        q = """
+        MATCH (r:Reminder) WHERE ID(r) = $nid
+        WITH r, r.title AS t
+        DETACH DELETE r
+        RETURN t
+        """
+        rows = await self.query(q, {"nid": node_id})
+        if not rows:
+            return {"error": f"No reminder found with ID {node_id}"}
+        return {"deleted": rows[0][0], "id": node_id}
+
+    async def update_reminder(
+        self, title: str, new_title: str | None = None,
+        due_date: str | None = None, priority: int | None = None,
+        description: str | None = None, recurrence: str | None = None,
+    ) -> dict:
+        """Update reminder properties by title (fuzzy match)."""
+        sets = []
+        params: dict = {"title": title, "now": _now()}
+        if new_title is not None:
+            sets.append("r.title = $new_title")
+            params["new_title"] = new_title
+        if due_date is not None:
+            sets.append("r.due_date = $due_date")
+            params["due_date"] = due_date
+        if priority is not None:
+            sets.append("r.priority = $priority")
+            params["priority"] = priority
+        if description is not None:
+            sets.append("r.description = $description")
+            params["description"] = description
+        if recurrence is not None:
+            sets.append("r.recurrence = $recurrence")
+            params["recurrence"] = recurrence
+        if not sets:
+            return {"error": "No fields to update"}
+        sets.append("r.updated_at = $now")
+        q = f"""
+        MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($title)
+        SET {', '.join(sets)}
+        RETURN r.title, r.status, r.due_date
+        """
+        rows = await self.query(q, params)
+        if not rows:
+            return {"error": f"No reminder found matching '{title}'"}
+        return {"title": rows[0][0], "status": rows[0][1], "due_date": rows[0][2]}
+
+    async def merge_duplicate_reminders(self) -> dict:
+        """Find and merge duplicate reminders. Keeps the one with earliest due_date or lowest ID.
+        Returns list of merge groups and total removed count."""
+        # Step 1: Find all pending/snoozed reminders
+        q_all = """
+        MATCH (r:Reminder)
+        WHERE r.status IN ['pending', 'snoozed']
+        RETURN ID(r) AS id, r.title, r.due_date, r.priority, r.reminder_type,
+               r.recurrence, r.status, r.snooze_count, r.description
+        ORDER BY r.title
+        """
+        rows = await self.query(q_all, {})
+        if not rows:
+            return {"merged_groups": [], "total_removed": 0}
+
+        # Step 2: Group by normalized title (lowercase, stripped)
+        from collections import defaultdict
+        groups: dict[str, list] = defaultdict(list)
+        for row in rows:
+            nid, title = row[0], row[1]
+            key = title.strip().lower()
+            groups[key].append({
+                "id": nid, "title": title, "due_date": row[2],
+                "priority": row[3], "reminder_type": row[4],
+                "recurrence": row[5], "status": row[6],
+                "snooze_count": row[7], "description": row[8],
+            })
+
+        merged_groups = []
+        total_removed = 0
+
+        for key, items in groups.items():
+            if len(items) < 2:
+                continue
+            # Keep the one with: pending > snoozed, earliest due_date, then lowest ID
+            def sort_key(item):
+                status_rank = 0 if item["status"] == "pending" else 1
+                due = item["due_date"] or "9999"
+                return (status_rank, due, item["id"])
+            items.sort(key=sort_key)
+            keep = items[0]
+            remove = items[1:]
+
+            # Merge best properties into keeper
+            best_priority = keep.get("priority") or 0
+            best_recurrence = keep.get("recurrence")
+            best_description = keep.get("description")
+            for item in remove:
+                if (item.get("priority") or 0) > best_priority:
+                    best_priority = item["priority"]
+                if not best_recurrence and item.get("recurrence"):
+                    best_recurrence = item["recurrence"]
+                if not best_description and item.get("description"):
+                    best_description = item["description"]
+
+            # Update keeper with best properties
+            update_sets = ["r.updated_at = $now"]
+            update_params: dict = {"kid": keep["id"], "now": _now()}
+            if best_priority and best_priority != (keep.get("priority") or 0):
+                update_sets.append("r.priority = $priority")
+                update_params["priority"] = best_priority
+            if best_recurrence and best_recurrence != keep.get("recurrence"):
+                update_sets.append("r.recurrence = $recurrence")
+                update_params["recurrence"] = best_recurrence
+            if best_description and best_description != keep.get("description"):
+                update_sets.append("r.description = $description")
+                update_params["description"] = best_description
+
+            q_update = f"""
+            MATCH (r:Reminder) WHERE ID(r) = $kid
+            SET {', '.join(update_sets)}
+            """
+            await self.query(q_update, update_params)
+
+            # Delete duplicates
+            remove_ids = [item["id"] for item in remove]
+            q_delete = """
+            MATCH (r:Reminder) WHERE ID(r) IN $ids
+            DETACH DELETE r
+            """
+            await self.query(q_delete, {"ids": remove_ids})
+
+            merged_groups.append({
+                "kept": keep["title"],
+                "kept_id": keep["id"],
+                "removed_count": len(remove),
+                "removed_ids": remove_ids,
+            })
+            total_removed += len(remove)
+
+        return {"merged_groups": merged_groups, "total_removed": total_removed}
+
+    async def delete_all_reminders(self, status: str | None = None) -> dict:
+        """Delete all reminders, optionally filtered by status. Returns count deleted."""
+        if status:
+            q = """
+            MATCH (r:Reminder {status: $status})
+            WITH r, r.title AS t
+            DETACH DELETE r
+            RETURN t
+            """
+            rows = await self.query(q, {"status": status})
+        else:
+            q = """
+            MATCH (r:Reminder)
+            WITH r, r.title AS t
+            DETACH DELETE r
+            RETURN t
+            """
+            rows = await self.query(q, {})
+        return {"deleted_count": len(rows), "titles": [r[0] for r in rows]}
+
     # --- Task ---
     _ENERGY_ALIASES: dict[str, str] = {
         "high": "high", "عالي": "high", "عالية": "high", "deep": "high", "deep focus": "high",
@@ -1807,6 +1982,7 @@ class GraphService:
     # --- Inventory ---
     async def upsert_item(self, name: str, **props) -> dict:
         """Create or update an inventory Item node. If location provided, link to Location node."""
+        name = await self.resolve_entity_name(name, "Item")
         location = props.pop("location", None)
         if location:
             location = self._normalize_location(location)

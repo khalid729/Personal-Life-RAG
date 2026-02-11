@@ -18,6 +18,7 @@
 | **Qwen3-VL-32B-Instruct** | LLM (text + vision) | 90K context, served via vLLM, supports Arabic |
 | **BAAI/bge-m3** | Text embeddings | 1024-dim, loaded on GPU (~3GB VRAM), multilingual |
 | **WhisperX large-v3-turbo** | Speech-to-text | Loaded on-demand, float16, serialized via asyncio.Lock |
+| **CamelBERT MSA NER** | Arabic NER | `CAMeL-Lab/bert-base-arabic-camelbert-msa-ner`, lazy-loaded, score >= 0.7 |
 
 ## Python Dependencies
 
@@ -40,6 +41,8 @@
 | `apscheduler` | >= 3.10.0 | Scheduled jobs (proactive notifications) |
 | `python-dateutil` | >= 2.9.0 | Recurring reminder date advancement (relativedelta) |
 | `pyzbar` | >= 0.1.9 | QR/barcode scanning from images (requires system `libzbar0`) |
+| `networkx` | >= 3.0 | Graph data structures for visualization |
+| `matplotlib` | >= 3.8 | Server-side PNG graph image generation |
 
 ## Why These Choices
 
@@ -74,6 +77,17 @@
 - Better than vanilla Whisper: word-level timestamps, speaker diarization
 - Loaded on-demand to save GPU memory when not in use
 - Serialized via asyncio.Lock to prevent concurrent GPU access
+
+### CamelBERT NER
+- Specialized Arabic NER model pre-trained on Modern Standard Arabic
+- Used via HuggingFace `transformers` pipeline (no heavy camel-tools dependency)
+- Lazy-loaded in ThreadPoolExecutor to avoid blocking API startup
+- Provides entity hints to guide LLM fact extraction
+
+### networkx + matplotlib
+- networkx: lightweight graph library for building visualizable graph structures
+- matplotlib: server-side PNG rendering (no frontend JavaScript required)
+- Both are well-maintained, standard Python libraries with no complex dependencies
 
 ## Interfaces
 

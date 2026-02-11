@@ -10,25 +10,31 @@ Personal_Rag/
 │   │   └── schemas.py           # Pydantic models: enums, entity schemas, API request/response models
 │   │
 │   ├── services/
-│   │   ├── llm.py               # vLLM client — translate, extract, classify, vision, think/reflect,
-│   │   │                        #   clarification, core memory extraction, daily summarization
+│   │   ├── llm.py               # vLLM client — translate, extract (w/ NER hints), classify, vision,
+│   │   │                        #   think/reflect, clarification, core memory extraction, daily
+│   │   │                        #   summarization, streaming (chat_stream, generate_response_stream),
+│   │   │                        #   conversation summarization
 │   │   ├── graph.py             # FalkorDB — entity CRUD, entity resolution (vector dedup),
 │   │   │                        #   smart tags (normalization + TAGGED_WITH), knowledge auto-categorization,
 │   │   │                        #   multi-hop traversal (3-hop), financial reports, debt management,
 │   │   │                        #   reminders, daily planner, projects overview, knowledge queries,
 │   │   │                        #   active tasks, idea similarity, inventory (items, locations, movement,
-│   │   │                        #   barcode lookup, last-use tracking, reports, duplicate detection)
+│   │   │                        #   barcode lookup, last-use tracking, reports, duplicate detection),
+│   │   │                        #   sprints (CRUD, burndown, velocity), focus sessions, time-blocking
 │   │   ├── vector.py            # Qdrant — BGE-M3 embedding, chunk upsert/search with filtering
 │   │   ├── memory.py            # Redis — 3-layer memory (working/daily/core), pending actions,
-│   │   │                        #   message counter, context builders
+│   │   │                        #   message counter, context builders, conversation compression + summary
 │   │   ├── retrieval.py         # Agentic RAG pipeline — smart router, ingestion, retrieval
-│   │   │                        #   (think/act/reflect/retry), confirmation flow, post-processing
-│   │   └── files.py             # File processing — images (vision), PDFs (pymupdf4llm),
-│   │                            #   audio (WhisperX), auto-expense, auto-item from photos,
-│   │                            #   barcode scanning (pyzbar)
+│   │   │                        #   (think/act/reflect/retry), confirmation flow, post-processing,
+│   │   │                        #   _prepare_context() refactor, streaming, NER integration, auto-compression
+│   │   ├── files.py             # File processing — images (vision), PDFs (pymupdf4llm),
+│   │   │                        #   audio (WhisperX), auto-expense, auto-item from photos,
+│   │   │                        #   barcode scanning (pyzbar)
+│   │   ├── backup.py            # BackupService — graph/vector/redis dump + restore, retention cleanup
+│   │   └── ner.py               # NERService — Arabic NER (CamelBERT), lazy-loaded, entity hints
 │   │
 │   ├── routers/
-│   │   ├── chat.py              # POST /chat/ — main conversational endpoint
+│   │   ├── chat.py              # POST /chat/, /chat/stream (NDJSON), GET /chat/summary
 │   │   ├── ingest.py            # POST /ingest/text — text ingestion
 │   │   ├── files.py             # POST /ingest/file — file upload + processing
 │   │   ├── search.py            # POST /search/ — direct search (vector/graph/auto)
@@ -39,7 +45,10 @@ Personal_Rag/
 │   │   ├── knowledge.py         # GET /knowledge/
 │   │   ├── inventory.py         # GET/POST /inventory/* (items, summary, location, quantity, search-similar,
 │   │   │                        #   report, unused, duplicates, by-barcode)
-│   │   └── proactive.py         # GET/POST /proactive/* (morning, noon, evening, reminders, alerts)
+│   │   ├── proactive.py         # GET/POST /proactive/* (morning, noon, evening, reminders, alerts)
+│   │   ├── productivity.py      # POST/GET /productivity/* (sprints, focus, timeblock)
+│   │   ├── backup.py            # POST /backup/create, GET /backup/list, POST /backup/restore/{ts}
+│   │   └── graph_viz.py         # GET /graph/export, /schema, /stats + POST /graph/image (PNG)
 │   │
 │   ├── prompts/
 │   │   ├── translate.py         # Arabic<>English translation prompts
@@ -48,22 +57,28 @@ Personal_Rag/
 │   │   ├── file_classify.py     # Image file type classification prompt
 │   │   ├── vision.py            # Type-specific image analysis prompts (invoice, document, etc.)
 │   │   ├── agentic.py           # Think + Reflect prompts for agentic RAG pipeline
-│   │   └── conversation.py      # Confirmation, clarification, action detection (Phase 4)
+│   │   └── conversation.py      # Delete detection (is_delete_intent, DELETE_PATTERNS),
+│   │                             #   clarification, action detection (Phase 4)
 │   │
 │   └── integrations/            # External interfaces (Phase 5)
 │       ├── __init__.py
 │       ├── telegram_bot.py      # Telegram bot (aiogram 3.x, standalone process)
-│       └── openwebui_tools.py   # Open WebUI tools file (copy to WebUI Admin)
+│       ├── openwebui_tools.py   # Open WebUI tools file (21 tools v1.5, copy to WebUI Admin)
+│       └── openwebui_filter.py  # Open WebUI filter v1.3 (date/time injection, STATUS rules,
+│                                #   auto file-upload detection, store_document enforcement)
 │
 ├── data/
-│   └── files/                   # Uploaded files (content-addressed: {hash[:2]}/{hash}.{ext})
+│   ├── files/                   # Uploaded files (content-addressed: {hash[:2]}/{hash}.{ext})
+│   └── backups/                 # System backups ({timestamp}/ → graph.json, vector.json, redis.json)
 │
 ├── docs/                        # Documentation
 │   ├── architecture.md          # System architecture and data flow
 │   ├── tech-stack.md            # Tools, models, and dependencies
 │   ├── api.md                   # API endpoint reference
 │   ├── progress.md              # Completed phases and remaining work
-│   └── project-structure.md     # This file
+│   ├── project-structure.md     # This file
+│   ├── testing-checklist.md     # Testing results by phase
+│   └── improvements.md          # Bug fixes and future improvements
 │
 ├── mcp_server.py                # MCP server (FastMCP, SSE on port 8600)
 ├── requirements.txt             # Python dependencies
@@ -92,10 +107,11 @@ After each chat response, `post_process()` runs in a FastAPI `BackgroundTask`:
 - Dedup: combined extraction skips entity types already found in query extraction
 - Periodically triggers daily summaries and core memory extraction
 
-### Confirmation Flow
-Side-effect routes (expense, debt, reminder) go through a confirmation gate:
-1. Extract entities from the query
-2. Check if enough info (clarification if not)
+### Confirmation Flow (Delete-Only)
+Only delete/cancel intents go through a confirmation gate. All other side-effects (adding expenses, reminders, inventory items, debts) execute directly via post-processing.
+
+1. `is_delete_intent()` checks for delete keywords (`DELETE_PATTERNS` in `conversation.py`: احذف, الغي, شيل, امسح, delete, remove, cancel, etc.)
+2. If delete intent detected: `_extract_delete_target()` strips keywords to get the target entity name
 3. Build confirmation message, store pending action in Redis (300s TTL)
-4. User confirms (yes/no) → execute or cancel
+4. User confirms (yes/no) → `_execute_delete_action()` tries Arabic match first, then English translation
 5. Disambiguation if multiple matches (e.g. multiple debts with same person)

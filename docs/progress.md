@@ -38,10 +38,10 @@
 - [x] DebtPayment pseudo-entity in extraction
 - [x] Auto-expense from invoice images
 - [x] Category guessing heuristic (keyword-based, no LLM)
-- [x] REST endpoints: /financial/report, /debts, /debts/payment, /alerts, /reminders/, /reminders/action
+- [x] REST endpoints: /financial/report, /debts, /debts/payment, /alerts, /reminders/, /reminders/action, /reminders/update, /reminders/delete, /reminders/delete-all, /reminders/merge-duplicates
 
 ### Phase 4a — Smarter Conversations
-- [x] Confirmation flow for side-effect routes (financial, debt_payment, reminder)
+- [x] Confirmation flow for side-effect routes ~~(financial, debt_payment, reminder)~~ → **now delete/cancel intents only** (see Reminder Management section)
 - [x] Pending actions in Redis with 300s TTL
 - [x] Action vs Query detection (heuristic pattern matching)
 - [x] Disambiguation for multiple matching debts
@@ -68,8 +68,8 @@
 - [x] Telegram auth (TG_CHAT_ID single-user), message splitting (4096 char limit)
 - [x] Inline keyboard for confirmation flow (yes/no buttons)
 - [x] Open WebUI tools file (8 tools: chat, search, financial, debts, reminders, projects, tasks, daily plan)
-- [x] MCP server (FastMCP, SSE on port 8600, 12 tools)
-- [x] MCP tools: chat, search, create_reminder, record_expense, financial report, debts, reminders, projects, tasks, knowledge, daily plan, ingest text
+- [x] MCP server (FastMCP, SSE on port 8600, 24 tools)
+- [x] MCP tools: chat, search, create_reminder, record_expense, financial report, debts, reminders, delete_reminder, update_reminder, delete_all_reminders, merge_duplicate_reminders, projects, tasks, knowledge, daily plan, ingest text, inventory, inventory report, sprints, focus stats, backup, list backups, graph schema, graph stats
 - [x] Startup scripts: start_telegram.sh, start_mcp.sh
 - [x] Config: telegram_bot_token, tg_chat_id, mcp_port in Settings + .env
 
@@ -211,25 +211,100 @@
 
 ---
 
-## Remaining Phases
-
 ### Phase 10 — Productivity Enhancements
-- [ ] Time-blocking suggestions based on task priorities (ADHD Mode)
-- [ ] Energy-level awareness (morning vs evening tasks)
-- [ ] Pomodoro-style breakdowns for large tasks
-- [ ] Auto-link tasks to projects via LLM context
-- [ ] Sprint/milestone tracking
-- [ ] Progress percentage calculation
+- [x] Task enhancements: `estimated_duration`, `energy_level`, `start_time`, `end_time` fields on Task nodes
+- [x] Energy normalization: `_normalize_energy()` maps aliases (deep/عالي→high, easy/سهل→low, etc.)
+- [x] Sprint CRUD: `create_sprint`, `update_sprint`, `assign_task_to_sprint`, `query_sprint`, `complete_sprint`
+- [x] Sprint velocity: `query_sprint_velocity()` — avg tasks/week across completed sprints
+- [x] Sprint burndown: `query_sprint_burndown()` — ideal vs actual remaining, days passed, progress %
+- [x] Focus sessions: `start_focus_session`, `complete_focus_session`, `query_focus_stats` — FocusSession nodes
+- [x] Time-blocking: `suggest_time_blocks(date, energy_profile)` — peak→high, low→low energy tasks
+- [x] `apply_time_blocks(blocks, date)` — SET start_time/end_time on Task nodes
+- [x] Progress: `query_projects_overview` shows % complete + ETA based on 3-week velocity
+- [x] Auto-link: Task→Project via name substring matching after creation
+- [x] Sprint entity in extract prompt, auto-handled in `upsert_from_facts`
+- [x] REST endpoints: /productivity/sprints/*, /productivity/focus/*, /productivity/timeblock/*
+- [x] Telegram: `/focus` (start/done/stats), `/sprint` (list with progress bars)
+- [x] Morning summary includes time-block suggestions
+- [x] Smart router: sprint/burndown/velocity, focus/pomodoro, time-block, productivity stats routes
+- [x] 6 config settings: `energy_peak_hours`, `energy_low_hours`, `work_day_start/end`, `pomodoro_default_minutes`, `sprint_default_weeks`
 
-### Phase 11 — Infrastructure + Quality
-- [ ] Streaming responses (SSE from vLLM → FastAPI → client)
-- [ ] Conversation summarization for long sessions
-- [ ] Backup/export (graph + vector snapshots)
-- [ ] Arabic NER improvement (custom patterns for Saudi names/places)
-- [ ] Knowledge graph visualization
+### Phase 10 — Testing Results (8/8 passed)
+- [x] Sprint CRUD: create, list, assign task, burndown, velocity
+- [x] Focus sessions: start, complete, stats
+- [x] Time-blocking: suggest, apply
+- [x] Telegram: /focus, /sprint commands
+- [x] Regression: existing endpoints unaffected
+
+### Phase 11 — Infrastructure Enhancements
+- [x] **Backup System**: BackupService with `create_backup()`, `list_backups()`, `restore_backup()`, `cleanup_old_backups()`
+- [x] Graph backup: Cypher MATCH nodes + edges → JSON
+- [x] Qdrant backup: scroll all points in batches of 100 → JSON
+- [x] Redis backup: SCAN + type-specific dump (STRING/LIST/HASH) with TTL preservation → JSON
+- [x] Restore: MERGE nodes/edges, upsert Qdrant points, type-specific Redis SET/RPUSH/HSET
+- [x] Backup retention: auto-cleanup backups older than `backup_retention_days` (default 30)
+- [x] REST endpoints: POST /backup/create, GET /backup/list, POST /backup/restore/{timestamp}
+- [x] Daily backup job in APScheduler at `backup_hour` UTC-adjusted
+- [x] Telegram: `/backup` (create/list), notification on completion
+- [x] **Arabic NER**: NERService with lazy-loaded HuggingFace `transformers` pipeline
+- [x] Model: `CAMeL-Lab/bert-base-arabic-camelbert-msa-ner` (loaded in ThreadPoolExecutor)
+- [x] Entity extraction: score >= 0.7 filter, PER→Person, LOC→Location, ORG→Organization mapping
+- [x] NER hints prepended to extract prompt: `[NER hints: Person: محمد; Location: الرياض]`
+- [x] Integrated in post-processing: runs on `query_ar`, passes hints to `extract_facts()`
+- [x] **Conversation Summarization**: auto-compress at >15 messages, keeps 4 recent
+- [x] Summary stored in Redis (`conversation_summary:{session_id}`, 24h TTL)
+- [x] `summarize_conversation()` in LLM service (Arabic summary, temperature 0.3)
+- [x] On-demand summary: GET /chat/summary
+- [x] Summary included in context building when available
+- [x] **Streaming**: NDJSON streaming for chat responses
+- [x] `chat_stream()` in LLM — parses SSE from vLLM
+- [x] `generate_response_stream()` — same system prompt, yields token chunks
+- [x] `_prepare_context()` refactored from `retrieve_and_respond()` for code reuse
+- [x] `retrieve_and_respond_stream()` yields NDJSON: `{"type":"meta"}`, `{"type":"token","content":"..."}`, `{"type":"done"}`
+- [x] POST /chat/stream endpoint (StreamingResponse, application/x-ndjson)
+- [x] Telegram streaming: `chat_api_stream()` edits placeholder message as tokens arrive
+- [x] **Graph Visualization**: JSON export + server-side PNG generation
+- [x] GET /graph/export (with entity_type/center/hops/limit filters)
+- [x] GET /graph/schema (node labels + relationship types + counts)
+- [x] GET /graph/stats (total nodes/edges, by-type counts)
+- [x] POST /graph/image (PNG via networkx + matplotlib, color by node type)
+- [x] Telegram: `/graph` (schema/type image/ego-graph image)
+- [x] 7 config settings: `backup_enabled`, `backup_hour`, `backup_retention_days`, `backup_dir`, `arabic_ner_enabled`, `arabic_ner_model`, `conversation_compress_threshold`, `conversation_compress_keep_recent`
+- [x] Dependencies: `networkx>=3.0`, `matplotlib>=3.8`
+
+### Reminder Management (Post Phase 11)
+- [x] **Reminder CRUD**: `delete_reminder(title)`, `delete_reminder_by_id(node_id)`, `update_reminder(title, ...)`, `delete_all_reminders(status)`
+- [x] **Merge duplicates**: `merge_duplicate_reminders()` — exact-title dedup, keeps best (pending>snoozed, earliest due_date, lowest ID), merges best properties
+- [x] REST endpoints: POST /reminders/update, /delete, /delete-all, /merge-duplicates (all POST for tool compatibility)
+- [x] Schemas: `ReminderUpdateRequest`, `ReminderDeleteRequest` in models/schemas.py
+- [x] Open WebUI tools: `delete_reminder`, `update_reminder`, `delete_all_reminders`, `merge_duplicate_reminders` (total: 20 tools)
+- [x] MCP tools: same 4 tools (total: 24 tools)
+- [x] **Confirmation flow: delete-only**: Changed from confirming all side-effect routes to confirming only delete/cancel intents. Adding expenses, reminders, inventory items, and debts now execute directly via post-processing without confirmation
+- [x] `is_delete_intent()` in `app/prompts/conversation.py` — detects delete keywords (احذف/الغي/delete/remove/cancel/etc.)
+- [x] `_extract_delete_target()` — strips delete keywords to get the target entity name
+- [x] `_execute_delete_action()` — tries Arabic match first, then English translation for matching reminders
+- [x] `DELETE_PATTERNS` regex added to `conversation.py` for robust delete keyword detection
+- [x] **Anti-lying protocol**: STATUS prefix (ACTION_EXECUTED / PENDING_CONFIRMATION / CONVERSATION) on all chat tool responses
+- [x] **Inventory routing fix**: Added purchase keywords (شريت/اشتريت/جبت/i bought/i got a/i have a), fixed `عندي` word boundary
+- [x] **Item dedup fix**: Added `resolve_entity_name()` to `upsert_item()` — prevents duplicate Item nodes
+- [x] **`store_document` tool**: Open WebUI tool to store PDF/document text via `/ingest/text` — returns extracted entities detail (total: 21 Open WebUI tools, v1.5)
+- [x] `IngestResponse` schema: new `entities: list[dict]` field returns extracted entity details from `/ingest/text`
+- [x] Open WebUI filter (`openwebui_filter.py`, v1.3): inlet filter injecting Arabic date/time + strict behavioral rules + auto file-upload detection via `_has_files()` + mandatory store_document instruction injection + anti-lying STATUS rules
+- [x] MCP `_current_date_context()` helper prepends date to every chat response
+- [x] Duplicate cleanup: 45 reminders → 10 clean unique reminders (9 exact-match merged + 20 near-duplicates removed)
+
+### Phase 11 — Testing Results (all passed)
+- [x] Backup: create (67KB graph, 2.4MB vector, 120KB redis), list, restore (183 nodes, 10 edges, 173 points, 107 keys)
+- [x] NER: Log showed "NER hints: Detected entities: PERS: محمد; Location: الرياض"
+- [x] Summarization: Summary returned Arabic text about conversation content
+- [x] Streaming: NDJSON with meta, token chunks, done — all working
+- [x] Graph Viz: schema (287 nodes, 74 edges), stats, export, PNG image generation verified
+- [x] Regression: regular chat + proactive endpoints still work
+
+---
+
+## Future Ideas
 - [ ] Import from external sources (Notion, Obsidian)
-
-### Future Ideas
 - [ ] WebSocket real-time updates
 - [ ] User authentication (multi-user support)
 - [ ] Gantt-style timeline view for projects

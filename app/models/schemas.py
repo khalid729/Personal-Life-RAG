@@ -360,6 +360,7 @@ class IngestResponse(BaseModel):
     status: str
     chunks_stored: int = 0
     facts_extracted: int = 0
+    entities: list[dict] = []
 
 
 class FileUploadResponse(BaseModel):
@@ -441,6 +442,21 @@ class ReminderActionRequest(BaseModel):
     title: str
     action: str  # "done", "snooze", "cancel"
     snooze_until: Optional[dt.datetime] = None
+
+
+class ReminderUpdateRequest(BaseModel):
+    title: str
+    new_title: Optional[str] = None
+    due_date: Optional[str] = None
+    priority: Optional[int] = None
+    description: Optional[str] = None
+    recurrence: Optional[str] = None
+
+
+class ReminderDeleteRequest(BaseModel):
+    title: Optional[str] = None
+    node_id: Optional[int] = None
+    status: Optional[str] = None  # for bulk delete by status
 
 
 class ProjectUpdateRequest(BaseModel):

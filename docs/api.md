@@ -53,9 +53,17 @@ Ingest text into both vector store and knowledge graph.
 {
   "status": "ok",
   "chunks_stored": 1,
-  "facts_extracted": 2
+  "facts_extracted": 2,
+  "entities": [
+    {"type": "Person", "name": "محمد", "properties": {"company": "STC"}},
+    {"type": "Company", "name": "STC"}
+  ]
 }
 ```
+
+Notes:
+- `entities` contains a list of extracted entities with their types and properties (added in `IngestResponse` schema)
+- Used by the Open WebUI `store_document` tool to show detailed extraction results to the user
 
 ### POST /ingest/file
 Upload and process a file (image/PDF/audio).
@@ -172,6 +180,71 @@ Perform action on a reminder (done/snooze/cancel).
 {
   "title": "pay rent",
   "action": "done"
+}
+```
+
+### POST /reminders/update
+Update reminder properties (title, due_date, priority, description, recurrence).
+
+**Request:**
+```json
+{
+  "title": "pay rent",
+  "new_title": "pay rent and utilities",
+  "due_date": "2026-03-01",
+  "priority": 5
+}
+```
+
+**Response:**
+```json
+{
+  "title": "pay rent and utilities",
+  "status": "pending",
+  "due_date": "2026-03-01"
+}
+```
+
+### POST /reminders/delete
+Delete reminder(s) by title, node ID, or status.
+
+**Request:**
+```json
+{"title": "buy milk"}
+```
+or `{"node_id": 205}` or `{"status": "cancelled"}`
+
+**Response:**
+```json
+{
+  "deleted": ["buy milk"],
+  "count": 1
+}
+```
+
+### POST /reminders/delete-all
+Delete all reminders, optionally filtered by status.
+
+**Parameters:** `status` (string, optional)
+
+**Response:**
+```json
+{
+  "deleted_count": 10,
+  "titles": ["pay rent", "buy milk", "..."]
+}
+```
+
+### POST /reminders/merge-duplicates
+Find and merge duplicate reminders. Keeps one per unique title (best status, earliest due_date, lowest ID).
+
+**Response:**
+```json
+{
+  "merged_groups": [
+    {"kept": "pay rent", "kept_id": 59, "removed_count": 3, "removed_ids": [76, 105, 202]}
+  ],
+  "total_removed": 3
 }
 ```
 
@@ -485,6 +558,217 @@ Debts I owe that are older than N days.
 
 ---
 
+## Productivity
+
+### POST /productivity/sprints/
+Create a new sprint.
+
+**Request:**
+```json
+{
+  "name": "Sprint 1",
+  "start_date": "2026-02-10",
+  "end_date": "2026-02-24",
+  "goal": "Complete authentication module",
+  "project": "Smart Home"
+}
+```
+
+### GET /productivity/sprints/
+List sprints.
+
+**Parameters:** `status` (string, optional) — filter by status (active, completed)
+
+### GET /productivity/sprints/{name}/burndown
+Sprint burndown data (ideal vs actual remaining, progress %).
+
+### POST /productivity/sprints/{name}/complete
+Mark a sprint as completed.
+
+### GET /productivity/sprints/velocity
+Sprint velocity (avg tasks/week across completed sprints).
+
+**Parameters:** `project` (string, optional) — filter by project name
+
+### POST /productivity/sprints/{sprint}/tasks/{task}
+Assign a task to a sprint.
+
+### POST /productivity/focus/start
+Start a focus (pomodoro) session.
+
+**Request:**
+```json
+{
+  "duration_minutes": 25,
+  "task": "Design database schema"
+}
+```
+
+### POST /productivity/focus/complete
+Complete the current focus session.
+
+**Request:**
+```json
+{"completed": true}
+```
+
+### GET /productivity/focus/stats
+Focus session statistics (total sessions, total minutes, avg duration, completion rate).
+
+### POST /productivity/timeblock/suggest
+Suggest time blocks for a date based on task energy levels.
+
+**Request:**
+```json
+{
+  "date": "2026-02-11",
+  "energy_override": null
+}
+```
+
+### POST /productivity/timeblock/apply
+Apply suggested time blocks to tasks.
+
+---
+
+## Backup
+
+### POST /backup/create
+Create a full backup of graph, vector, and Redis data.
+
+**Response:**
+```json
+{
+  "timestamp": "20260211_150000",
+  "path": "data/backups/20260211_150000",
+  "sizes": {"graph": 67000, "vector": 2400000, "redis": 120000},
+  "old_backups_removed": 0
+}
+```
+
+### GET /backup/list
+List available backups.
+
+**Response:**
+```json
+{
+  "backups": [
+    {"timestamp": "20260211_150000", "path": "...", "sizes": {...}}
+  ]
+}
+```
+
+### POST /backup/restore/{timestamp}
+Restore from a specific backup.
+
+**Response:**
+```json
+{
+  "status": "restored",
+  "timestamp": "20260211_150000",
+  "graph": {"nodes_restored": 183, "edges_restored": 10},
+  "vector": {"points_restored": 173},
+  "redis": {"keys_restored": 107}
+}
+```
+
+---
+
+## Chat (Streaming + Summary)
+
+### POST /chat/stream
+Streaming chat response via NDJSON.
+
+**Request:** Same as POST /chat/
+
+**Response:** `application/x-ndjson` stream:
+```
+{"type":"meta","route":"graph_task","sources":["graph"],"agentic_trace":[...]}
+{"type":"token","content":"مهام"}
+{"type":"token","content":"ك "}
+{"type":"token","content":"اليوم:"}
+...
+{"type":"done"}
+```
+
+### GET /chat/summary
+Get or generate conversation summary.
+
+**Parameters:** `session_id` (string, required)
+
+**Response:**
+```json
+{
+  "summary": "ملخص المحادثة: ...",
+  "message_count": 15
+}
+```
+
+---
+
+## Graph Visualization
+
+### GET /graph/export
+Export subgraph as JSON (nodes + edges).
+
+**Parameters:**
+- `entity_type` (string, optional) — filter by node label (e.g. "Person")
+- `center` (string, optional) — ego-graph center node name
+- `hops` (int, default 2) — ego-graph traversal depth (1-5)
+- `limit` (int, default 500) — max nodes (1-5000)
+
+**Response:**
+```json
+{
+  "nodes": [{"id": 1, "label": "محمد", "type": "Person", "properties": {...}}],
+  "edges": [{"source": 1, "target": 2, "type": "WORKS_AT", "properties": {}}]
+}
+```
+
+### GET /graph/schema
+Node labels, relationship types, and counts.
+
+**Response:**
+```json
+{
+  "node_labels": {"Person": 5, "Task": 20, "Project": 3},
+  "relationship_types": {"BELONGS_TO": 15, "INVOLVES": 8},
+  "total_nodes": 287,
+  "total_edges": 74
+}
+```
+
+### GET /graph/stats
+Total nodes, edges, and by-type counts.
+
+**Response:**
+```json
+{
+  "total_nodes": 287,
+  "total_edges": 74,
+  "by_type": {"Person": 5, "Task": 20, "Expense": 45}
+}
+```
+
+### POST /graph/image
+Generate PNG image of the graph.
+
+**Request:**
+```json
+{
+  "entity_type": "Person",
+  "center": "محمد",
+  "hops": 2,
+  "width": 1200,
+  "height": 800,
+  "limit": 500
+}
+```
+
+**Response:** PNG image (`image/png`)
+
+---
+
 ## Health
 
 ### GET /health
@@ -509,9 +793,13 @@ The Telegram bot runs as a separate process and calls the RAG API. Auth: only re
 | `/report` | Monthly financial report | `GET /financial/report` |
 | `/inventory` | Inventory items list | `GET /inventory/` |
 | `/inventory report` | Inventory report (stats) | `GET /inventory/report` |
+| `/focus` | Focus session (start/done/stats) | `POST /productivity/focus/*` |
+| `/sprint` | Sprint list with progress bars | `GET /productivity/sprints/` |
+| `/backup` | Create backup / list backups | `POST /backup/create`, `GET /backup/list` |
+| `/graph` | Graph schema / type image / ego-graph | `GET /graph/schema`, `POST /graph/image` |
 
 ### Message Types
-- **Text** → `POST /chat/` → Arabic reply
+- **Text** → `POST /chat/stream` → NDJSON streaming → edits placeholder message with tokens
 - **Voice** → download .ogg → `POST /ingest/file` → transcription + processing
 - **Photo** → download → `POST /ingest/file` → classification + analysis
 - **Document** → download → `POST /ingest/file` → processing
@@ -521,7 +809,7 @@ The Telegram bot runs as a separate process and calls the RAG API. Auth: only re
 
 ## MCP Server Tools
 
-The MCP server runs on port 8600 (SSE transport) and exposes 12 tools:
+The MCP server runs on port 8600 (SSE transport) and exposes 24 tools:
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -532,8 +820,20 @@ The MCP server runs on port 8600 (SSE transport) and exposes 12 tools:
 | `get_financial_report` | `month`, `year` | Monthly spending report |
 | `get_debts` | — | Debt summary |
 | `get_reminders` | — | Active reminders |
+| `delete_reminder` | `title` | Delete reminder by title |
+| `update_reminder` | `title`, `new_title`, `due_date`, `priority` | Update reminder properties |
+| `delete_all_reminders` | — | Delete all reminders |
+| `merge_duplicate_reminders` | — | Find and merge duplicate reminders |
 | `get_projects` | `status` | Projects overview |
 | `get_tasks` | `status` | Tasks list |
 | `get_knowledge` | `topic` | Knowledge entries |
 | `daily_plan` | — | Today's aggregated plan |
 | `ingest_text` | `text`, `source_type` | Store text in knowledge base |
+| `get_inventory` | `search`, `category` | Inventory items list |
+| `get_inventory_report` | — | Comprehensive inventory report |
+| `get_sprints` | `status` | Sprint list with burndown data |
+| `get_focus_stats` | — | Focus session statistics |
+| `create_backup` | — | Create full system backup |
+| `list_backups` | — | List available backups |
+| `get_graph_schema` | — | Graph node labels + relationship types |
+| `get_graph_stats` | — | Graph node/edge counts by type |

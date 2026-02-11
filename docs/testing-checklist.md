@@ -9,7 +9,8 @@
 
 ### الرسائل النصية
 - [x] إرسال نص عربي → رد عربي من `/chat/`
-- [x] Confirmation flow — أزرار نعم/لا inline keyboard
+- [x] Confirmation flow — أزرار نعم/لا inline keyboard (delete/cancel intents only)
+- [x] Non-delete side-effects execute directly — إضافة مصاريف/تذكيرات/أغراض تنفذ بدون تأكيد
 - [x] إرسال نص إنجليزي → يترجم ويرد عربي ✓ (API test: "What are my reminders?" → رد بالعربي)
 
 ### الصور
@@ -50,8 +51,8 @@
 - [x] `get_projects` — المشاريع ✓
 - [x] `get_tasks` — المهام ✓
 - [x] `get_knowledge` — المعرفة ✓
-- [x] `create_reminder` — إنشاء تذكير ("ذكرني أشتري حليب بكرة" → confirmation)
-- [x] `record_expense` — تسجيل مصروف ("صرفت 35 ريال على قهوة" → confirmation)
+- [x] `create_reminder` — إنشاء تذكير ("ذكرني أشتري حليب بكرة" → ينفذ مباشرة بدون تأكيد)
+- [x] `record_expense` — تسجيل مصروف ("صرفت 35 ريال على قهوة" → ينفذ مباشرة بدون تأكيد)
 - [x] `ingest_text` — حفظ نص (1 chunk + 1 fact)
 - [x] `daily_plan` — خطة اليوم ✓
 
@@ -155,7 +156,13 @@
 | Phase 8 — Smart Tags + Knowledge | 2 | 2 | 0 |
 | Phase 8 — Multi-hop Traversal | 1 | 1 | 0 |
 | Phase 9 — Advanced Inventory | 6 | 6 | 0 |
-| **الإجمالي** | **101** | **99** | **2** |
+| Phase 10 — Productivity | 8 | 8 | 0 |
+| Phase 11 — Infrastructure | 6 | 6 | 0 |
+| Reminder Management | 5 | 5 | 0 |
+| Confirmation Flow (Delete-Only) | 7 | 0 | 7 |
+| store_document Tool | 5 | 0 | 5 |
+| Open WebUI Filter | 8 | 0 | 8 |
+| **الإجمالي** | **140** | **118** | **22** |
 
 الاختبارين الباقيين يحتاجون Open WebUI Docker container شغال.
 
@@ -251,3 +258,127 @@
 | Duplicate Detection | 2 | 2 |
 | Regression | 2 | 2 |
 | **الإجمالي Phase 9** | **10** | **10** |
+
+---
+
+## Phase 10 — Productivity
+
+### Sprints
+- [x] POST `/productivity/sprints/` — إنشاء سبرنت جديد
+- [x] GET `/productivity/sprints/` — عرض السبرنتات
+- [x] POST `/productivity/sprints/{name}/complete` — إكمال سبرنت
+- [x] GET `/productivity/sprints/{name}/burndown` — بيانات Burndown
+- [x] GET `/productivity/sprints/velocity` — متوسط سرعة الإنجاز
+
+### Focus Sessions
+- [x] POST `/productivity/focus/start` — بدء جلسة تركيز
+- [x] POST `/productivity/focus/complete` — إكمال جلسة تركيز
+- [x] GET `/productivity/focus/stats` — إحصائيات التركيز
+
+### Time-Blocking
+- [x] POST `/productivity/timeblock/suggest` — اقتراح جدول زمني
+- [x] POST `/productivity/timeblock/apply` — تطبيق الجدول
+
+### Telegram
+- [x] `/focus` — start/done/stats
+- [x] `/sprint` — عرض السبرنتات مع شريط التقدم
+
+### ملخص Phase 10
+
+| المكون | الاختبارات | ناجحة |
+|--------|-----------|-------|
+| Sprints | 5 | 5 |
+| Focus Sessions | 3 | 3 |
+| Time-Blocking | 2 | 2 |
+| Telegram | 2 | 2 |
+| **الإجمالي Phase 10** | **8** | **8** |
+
+---
+
+## Phase 11 — Infrastructure
+
+### Backup
+- [x] POST `/backup/create` — إنشاء نسخة احتياطية (67KB graph, 2.4MB vector, 120KB redis)
+- [x] GET `/backup/list` — عرض النسخ المتاحة
+- [x] POST `/backup/restore/{timestamp}` — استعادة نسخة (183 nodes, 10 edges, 173 points, 107 keys)
+
+### Arabic NER
+- [x] NER hints تظهر في logs: "Detected entities: PERS: محمد; Location: الرياض"
+
+### Conversation Summarization
+- [x] GET `/chat/summary` — ملخص المحادثة بالعربي
+
+### Streaming
+- [x] POST `/chat/stream` — NDJSON مع meta, token chunks, done
+
+### Graph Visualization
+- [x] GET `/graph/schema` — (287 nodes, 74 edges)
+- [x] GET `/graph/stats` — إحصائيات بالنوع
+- [x] GET `/graph/export` — تصدير JSON
+- [x] POST `/graph/image` — صورة PNG (تم التحقق بصرياً)
+
+### Regression
+- [x] `/chat/` — OK
+- [x] `/proactive/morning-summary` — OK
+
+### ملخص Phase 11
+
+| المكون | الاختبارات | ناجحة |
+|--------|-----------|-------|
+| Backup | 3 | 3 |
+| Arabic NER | 1 | 1 |
+| Summarization | 1 | 1 |
+| Streaming | 1 | 1 |
+| Graph Viz | 4 | 4 |
+| Regression | 2 | 2 |
+| **الإجمالي Phase 11** | **6** | **6** |
+
+---
+
+## إدارة التذكيرات (Reminder Management)
+
+### REST Endpoints
+- [x] POST `/reminders/update` — تحديث تذكير (title + priority → 200 OK)
+- [x] POST `/reminders/delete` — حذف تذكير بالعنوان (→ deleted count)
+- [x] POST `/reminders/delete-all` — حذف جميع التذكيرات
+- [x] POST `/reminders/merge-duplicates` — دمج التكرارات (9 exact-match merged)
+
+### Cleanup
+- [x] دمج التكرارات: 45 تذكير → 10 تذكيرات نظيفة (9 exact + 20 near-duplicate + 1 stale)
+
+### Confirmation Flow (Delete-Only)
+- [ ] `is_delete_intent()` — "احذف تذكير الحليب" → returns True
+- [ ] `is_delete_intent()` — "ذكرني أشتري حليب" → returns False
+- [ ] Delete intent triggers confirmation — "الغي تذكير الاجتماع" → pending action + yes/no buttons
+- [ ] Non-delete intent skips confirmation — "صرفت 50 ريال" → executes directly via post-processing
+- [ ] `_extract_delete_target()` — "احذف تذكير الحليب" → extracts "تذكير الحليب"
+- [ ] `_execute_delete_action()` — Arabic match first, English translation fallback
+- [ ] DELETE_PATTERNS covers: احذف, الغي, شيل, امسح, delete, remove, cancel
+
+### store_document Tool (Open WebUI)
+- [ ] Upload PDF via Open WebUI → store_document called automatically (filter injects instruction)
+- [ ] store_document returns entities list with types and properties
+- [ ] `IngestResponse.entities` field populated with extracted entity details
+- [ ] LLM shows extracted entities to user (e.g. "تم استخراج: شخص: محمد، شركة: STC")
+- [ ] Empty document → returns "لم يتم استخراج حقائق" message
+
+### Open WebUI Filter (`openwebui_filter.py` v1.3)
+- [ ] Date/time injected correctly (Arabic day/month names, Riyadh timezone)
+- [ ] "بكرة" = correct tomorrow's date in system prompt
+- [ ] `_has_files()` detects body-level files
+- [ ] `_has_files()` detects message-level files/images
+- [ ] `_has_files()` detects citation markers (long `<source>` or triple-backtick content)
+- [ ] File upload → mandatory store_document instruction injected
+- [ ] Anti-lying STATUS rules present in system prompt
+- [ ] Non-file request → no store_document instruction injected
+
+### ملخص إدارة التذكيرات
+
+| المكون | الاختبارات | ناجحة |
+|--------|-----------|-------|
+| REST Endpoints | 4 | 4 |
+| Cleanup | 1 | 1 |
+| Confirmation Flow | 7 | 0 |
+| store_document | 5 | 0 |
+| Open WebUI Filter | 8 | 0 |
+| **الإجمالي** | **25** | **5** |

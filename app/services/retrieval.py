@@ -12,6 +12,7 @@ from app.prompts.conversation import (
     build_confirmation_message,
     is_action_intent,
     is_confirmation,
+    is_delete_intent,
 )
 from app.services.graph import GraphService
 from app.services.llm import LLMService
@@ -180,7 +181,7 @@ INVENTORY_UNUSED_KEYWORDS = re.compile(
 )
 
 INVENTORY_KEYWORDS = re.compile(
-    r"(مخزون|جرد|أغراضي|حوائجي|وين ال|فين ال|عندي |inventory|items|stock|where is|do i have|how many .+ do i)",
+    r"(مخزون|جرد|أغراضي|حوائجي|وين ال|فين ال|عندي\b|شريت\b|اشتريت\b|جبت\b|inventory|items|stock|where is|do i have|how many .+ do i|i bought|i got a|i have a)",
     re.IGNORECASE,
 )
 
@@ -289,11 +290,15 @@ class RetrievalService:
         )
         facts_task = self._extract_and_store_facts(text_en)
 
-        chunks_stored, facts_stored = await asyncio.gather(
+        chunks_stored, (facts_stored, entities) = await asyncio.gather(
             enrichment_task, facts_task
         )
 
-        return {"chunks_stored": chunks_stored, "facts_extracted": facts_stored}
+        return {
+            "chunks_stored": chunks_stored,
+            "facts_extracted": facts_stored,
+            "entities": entities,
+        }
 
     async def _enrich_and_store_chunks(
         self,
@@ -326,9 +331,10 @@ class RetrievalService:
 
         return await self.vector.upsert_chunks(enriched, metadata_list)
 
-    async def _extract_and_store_facts(self, text_en: str) -> int:
+    async def _extract_and_store_facts(self, text_en: str) -> tuple[int, list[dict]]:
         facts = await self.llm.extract_facts(text_en)
-        return await self.graph.upsert_from_facts(facts)
+        count = await self.graph.upsert_from_facts(facts)
+        return count, facts.get("entities", [])
 
     # ========================
     # RETRIEVAL PIPELINE (Agentic RAG)
@@ -427,51 +433,32 @@ class RetrievalService:
                 "reasoning": think_result.get("reasoning", ""),
             })
 
-        # --- B. Confirmation creation (side-effect routes only) ---
+        # --- B. Confirmation (DELETE actions only — all other side-effects execute directly) ---
         if (
             settings.confirmation_enabled
-            and route in SIDE_EFFECT_ROUTES
-            and is_action_intent(query_ar, route)
+            and is_delete_intent(query_ar)
         ):
-            facts = await self.llm.extract_facts(query_en)
-            entities = facts.get("entities", [])
-            action_type = self._classify_action_type(entities, route)
-
-            if action_type:
-                if entities and entities[0].get("entity_name"):
-                    clarification = {"complete": True, "missing_fields": []}
-                else:
-                    clarification = await self.llm.check_clarification(query_en, action_type)
-                if not clarification.get("complete", True) or not entities:
-                    question = clarification.get("clarification_question_ar", "ممكن توضح أكثر؟")
-                    return {"early_return": {
-                        "reply": question,
-                        "sources": [],
-                        "route": route,
-                        "query_en": query_en,
-                        "agentic_trace": [{"step": "clarification", "missing": clarification.get("missing_fields", [])}],
-                    }}
-
-                confirm_msg = build_confirmation_message(action_type, entities)
-                pending_action = {
-                    "action_type": action_type,
-                    "extracted_entities": entities,
-                    "query_ar": query_ar,
-                    "query_en": query_en,
-                    "route": route,
-                    "created_at": datetime.utcnow().isoformat(),
-                    "confirmation_message": confirm_msg,
-                }
-                await self.memory.set_pending_action(session_id, pending_action)
-                agentic_trace.append({"step": "confirmation_requested", "action_type": action_type})
-                return {"early_return": {
-                    "reply": confirm_msg,
-                    "sources": [],
-                    "route": route,
-                    "query_en": query_en,
-                    "agentic_trace": agentic_trace,
-                    "pending_confirmation": True,
-                }}
+            target = self._extract_delete_target(query_ar)
+            confirm_msg = f"تبيني أحذف: {target}؟" if target else f"تبيني أنفذ: {query_ar}؟"
+            pending_action = {
+                "action_type": "delete",
+                "query_ar": query_ar,
+                "query_en": query_en,
+                "route": route,
+                "delete_target": target,
+                "created_at": datetime.utcnow().isoformat(),
+                "confirmation_message": confirm_msg,
+            }
+            await self.memory.set_pending_action(session_id, pending_action)
+            agentic_trace.append({"step": "confirmation_requested", "action_type": "delete"})
+            return {"early_return": {
+                "reply": confirm_msg,
+                "sources": [],
+                "route": route,
+                "query_en": query_en,
+                "agentic_trace": agentic_trace,
+                "pending_confirmation": True,
+            }}
 
         # Step 4: ACT — execute retrieval
         context_parts, sources = await self._execute_retrieval_strategy(
@@ -608,7 +595,14 @@ class RetrievalService:
 
         if "early_return" in ctx:
             early = ctx["early_return"]
-            yield _json.dumps({"type": "meta", "route": early.get("route", ""), "sources": early.get("sources", [])}) + "\n"
+            meta = {
+                "type": "meta",
+                "route": early.get("route", ""),
+                "sources": early.get("sources", []),
+            }
+            if early.get("pending_confirmation"):
+                meta["pending_confirmation"] = True
+            yield _json.dumps(meta) + "\n"
             yield _json.dumps({"type": "token", "content": early["reply"]}) + "\n"
             yield _json.dumps({"type": "done"}) + "\n"
             # Fire post-processing
@@ -656,11 +650,32 @@ class RetrievalService:
         }
         return route_map.get(route)
 
+    _DELETE_STRIP_RE = re.compile(
+        r"(احذف|حذف|امحي|امسح|شيل|ازل|الغي|الغاء|كنسل|فك|"
+        r"delete|remove|cancel|erase|clear|drop|wipe)\s*",
+        re.IGNORECASE,
+    )
+    _DELETE_NOUN_RE = re.compile(
+        r"(تذكير|التذكير|المصروف|مصروف|الغرض|غرض|الدين|دين|"
+        r"reminder|expense|item|debt)\s*",
+        re.IGNORECASE,
+    )
+
+    def _extract_delete_target(self, query_ar: str) -> str:
+        """Extract the target name from a delete query by stripping delete keywords."""
+        cleaned = self._DELETE_STRIP_RE.sub("", query_ar)
+        cleaned = self._DELETE_NOUN_RE.sub("", cleaned)
+        return cleaned.strip()
+
     async def _execute_confirmed_action(self, pending: dict, session_id: str) -> str:
         """Execute a previously confirmed action."""
-        entities = pending.get("extracted_entities", [])
         action_type = pending.get("action_type", "")
 
+        # --- Handle delete actions ---
+        if action_type == "delete":
+            return await self._execute_delete_action(pending)
+
+        entities = pending.get("extracted_entities", [])
         if not entities:
             return "ما قدرت أنفذ العملية، حاول مرة ثانية."
 
@@ -756,6 +771,37 @@ class RetrievalService:
 
         status_ar = "مسدد بالكامل" if result["status"] == "paid" else f"باقي {result['remaining']:.0f} ريال"
         return f"تم تسجيل سداد {result['person']} بمبلغ {result['paid']:.0f} ريال. ({status_ar})"
+
+    async def _execute_delete_action(self, pending: dict) -> str:
+        """Execute a confirmed delete action."""
+        target = pending.get("delete_target", "")
+        route = pending.get("route", "")
+        query_ar = pending.get("query_ar", "")
+
+        try:
+            # Translate target to English (reminders stored with English titles)
+            target_en = await self.llm.translate_to_english(target) if target else ""
+
+            # Reminder deletion — try Arabic first, then English
+            if route in ("graph_reminder", "graph_reminder_action"):
+                result = await self.graph.delete_reminder(target or query_ar)
+                deleted = result.get("deleted", [])
+                if not deleted and target_en:
+                    result = await self.graph.delete_reminder(target_en)
+                    deleted = result.get("deleted", [])
+                if deleted:
+                    return f"تم حذف {len(deleted)} تذكير: {', '.join(deleted)}"
+                return "ما لقيت تذكير بهالاسم."
+
+            # Inventory deletion
+            if route == "graph_inventory":
+                return "ما قدرت أحذف الغرض. استخدم أداة الحذف المخصصة."
+
+            # Generic: pass through to LLM
+            return "تم تنفيذ عملية الحذف."
+        except Exception as e:
+            logger.error("Delete action failed: %s", e)
+            return "صار خطأ وأنا أنفذ الحذف، حاول مرة ثانية."
 
     async def _execute_retrieval_strategy(
         self, strategy: str, query_en: str, search_queries: list[str]

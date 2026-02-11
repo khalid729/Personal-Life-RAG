@@ -41,10 +41,12 @@
 
 ---
 
-## 6. Streaming Responses
-**المشكلة**: الرد يأخذ 30+ ثانية بدون أي feedback.
-
-**الحل**: SSE streaming من vLLM → FastAPI → Telegram (إرسال تدريجي).
+## ~~6. Streaming Responses~~ ✅ (Phase 11)
+تم التنفيذ:
+- `chat_stream()` في LLM — يقرأ SSE من vLLM ويرسل token chunks
+- `POST /chat/stream` — NDJSON streaming endpoint
+- Telegram streaming: يعدّل رسالة placeholder كل ثانية مع tokens جديدة
+- `_prepare_context()` — مشتركة بين sync و streaming لإعادة استخدام الكود
 
 ---
 ---

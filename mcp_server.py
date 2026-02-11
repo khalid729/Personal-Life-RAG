@@ -6,6 +6,7 @@ Runs on port 8600, calls RAG API at localhost:8500.
 """
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -20,9 +21,25 @@ settings = get_settings()
 API_BASE = f"http://localhost:{settings.api_port}"
 TIMEOUT = 60.0
 
+_DAY_NAMES = {0: "Monday", 1: "Tuesday", 2: "Wednesday", 3: "Thursday",
+              4: "Friday", 5: "Saturday", 6: "Sunday"}
+
+
+def _current_date_context() -> str:
+    tz = timezone(timedelta(hours=settings.timezone_offset_hours))
+    now = datetime.now(tz)
+    day = _DAY_NAMES.get(now.weekday(), "")
+    return f"Current date: {day}, {now.strftime('%Y-%m-%d %H:%M')} (UTC+{settings.timezone_offset_hours})"
+
+
 mcp = FastMCP(
     "Personal Life RAG",
-    instructions="Personal life management — finances, reminders, projects, tasks, knowledge",
+    instructions=(
+        "Personal life management — finances, reminders, projects, tasks, knowledge, "
+        "inventory, productivity, backup, graph visualization. "
+        "IMPORTANT: When the chat tool returns 'PENDING_CONFIRMATION', the action has NOT been "
+        "executed yet. Do NOT tell the user it was completed. Ask them to confirm with 'نعم' or 'لا'."
+    ),
 )
 
 
@@ -49,15 +66,39 @@ async def chat(message: str, session_id: str = "mcp") -> str:
     """Send a message to the Personal Life RAG system.
     Supports Arabic and English. Use for conversation, recording expenses/debts/reminders, or queries.
 
+    CRITICAL RULES for interpreting the response:
+    - ONLY say an action was completed if the response contains 'STATUS: ACTION_EXECUTED'
+    - If response contains 'STATUS: PENDING_CONFIRMATION' → action NOT done yet, ask user to confirm
+    - If response contains 'STATUS: CONVERSATION' → informational reply only, no data was modified
+    - NEVER claim an action was performed (created/deleted/merged/updated) unless STATUS: ACTION_EXECUTED
+
     Args:
         message: The message to send (Arabic or English).
         session_id: Session ID for conversation continuity. Defaults to 'mcp'.
     """
     result = await api_post("/chat/", json={"message": message, "session_id": session_id})
     reply = result.get("reply", "")
+
+    date_ctx = f"[{_current_date_context()}]\n\n"
+
     if result.get("pending_confirmation"):
-        reply += "\n\n⚠️ Action requires confirmation — send 'نعم' (yes) or 'لا' (no) as the next message."
-    return reply
+        return (
+            date_ctx
+            + "STATUS: PENDING_CONFIRMATION — ACTION NOT YET EXECUTED.\n"
+            "The system is asking for user confirmation. Do NOT tell the user it was completed.\n\n"
+            + reply
+            + "\n\n⚠️ Ask user to confirm: send 'نعم' (yes) or 'لا' (no) via this chat tool."
+        )
+
+    # Check if this was a confirmed action execution
+    agentic_trace = result.get("agentic_trace", [])
+    was_action = any(
+        step.get("step") == "confirmed_action" for step in agentic_trace
+    )
+    if was_action:
+        return date_ctx + f"STATUS: ACTION_EXECUTED — The action was confirmed and executed.\n\n{reply}"
+
+    return date_ctx + f"STATUS: CONVERSATION — Informational reply. No data was modified.\n\n{reply}"
 
 
 @mcp.tool()
@@ -159,6 +200,64 @@ async def get_reminders() -> str:
 
 
 @mcp.tool()
+async def delete_reminder(title: str) -> str:
+    """Delete a reminder by title.
+
+    Args:
+        title: The reminder title or keyword to match.
+    """
+    data = await api_post("/reminders/delete", json={"title": title})
+    if data.get("error"):
+        return f"Error: {data['error']}"
+    deleted = data.get("deleted", [])
+    return f"Deleted {len(deleted)} reminder(s): {', '.join(deleted)}"
+
+
+@mcp.tool()
+async def update_reminder(title: str, new_title: str = "", due_date: str = "", priority: int = 0) -> str:
+    """Update a reminder's properties.
+
+    Args:
+        title: Current reminder title to find.
+        new_title: New title (empty = keep current).
+        due_date: New due date in ISO format (empty = keep current).
+        priority: New priority 1-5 (0 = keep current).
+    """
+    payload: dict = {"title": title}
+    if new_title:
+        payload["new_title"] = new_title
+    if due_date:
+        payload["due_date"] = due_date
+    if priority:
+        payload["priority"] = priority
+    data = await api_post("/reminders/update", json=payload)
+    if data.get("error"):
+        return f"Error: {data['error']}"
+    return f"Updated: {data.get('title', '?')} — Status: {data.get('status', '?')}"
+
+
+@mcp.tool()
+async def delete_all_reminders() -> str:
+    """Delete ALL reminders. Use with caution."""
+    data = await api_post("/reminders/delete-all")
+    return f"Deleted {data.get('deleted_count', 0)} reminders."
+
+
+@mcp.tool()
+async def merge_duplicate_reminders() -> str:
+    """Find and merge duplicate reminders. Keeps one copy per unique title."""
+    data = await api_post("/reminders/merge-duplicates")
+    groups = data.get("merged_groups", [])
+    total = data.get("total_removed", 0)
+    if not groups:
+        return "No duplicates found to merge."
+    lines = [f"Merged duplicates — removed {total} duplicate reminders:\n"]
+    for g in groups:
+        lines.append(f"- {g['kept']} (kept) — removed {g['removed_count']} copies")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 async def get_projects(status: str = "") -> str:
     """Get overview of all projects with task progress.
 
@@ -215,6 +314,143 @@ async def ingest_text(text: str, source_type: str = "note") -> str:
         "tags": [],
     })
     return f"Stored: {result.get('chunks_stored', 0)} chunks, {result.get('facts_extracted', 0)} facts extracted."
+
+
+# --- Inventory (Phase 7-9) ---
+
+
+@mcp.tool()
+async def get_inventory(search: str = "", category: str = "") -> str:
+    """Get inventory items list.
+
+    Args:
+        search: Optional search keyword.
+        category: Optional category filter.
+    """
+    params = {}
+    if search:
+        params["search"] = search
+    if category:
+        params["category"] = category
+    data = await api_get("/inventory/", params=params or None)
+    return data.get("items", "No inventory items.")
+
+
+@mcp.tool()
+async def get_inventory_report() -> str:
+    """Get comprehensive inventory report with statistics by category, location, and condition."""
+    data = await api_get("/inventory/report")
+    lines = [
+        f"Inventory Report",
+        f"Total items: {data.get('total_items', 0)}",
+        f"Total quantity: {data.get('total_quantity', 0)}",
+        "",
+    ]
+    for cat in data.get("by_category", []):
+        lines.append(f"- {cat.get('category', '?')}: {cat.get('items', 0)} items ({cat.get('quantity', 0)} units)")
+    return "\n".join(lines)
+
+
+# --- Productivity (Phase 10) ---
+
+
+@mcp.tool()
+async def get_sprints(status: str = "") -> str:
+    """Get sprints list with progress information.
+
+    Args:
+        status: Optional filter — 'active', 'completed'.
+    """
+    params = {"status": status} if status else None
+    data = await api_get("/productivity/sprints/", params=params)
+    sprints = data.get("sprints", [])
+    if not sprints:
+        return "No sprints found."
+    lines = ["Sprints:\n"]
+    for s in sprints:
+        name = s.get("name", "?")
+        status_val = s.get("status", "?")
+        lines.append(f"- {name} [{status_val}]")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def get_focus_stats() -> str:
+    """Get focus session (pomodoro) statistics — total sessions, minutes, and completion rate."""
+    data = await api_get("/productivity/focus/stats")
+    return (
+        f"Focus Stats\n"
+        f"Sessions: {data.get('total_sessions', 0)}\n"
+        f"Total minutes: {data.get('total_minutes', 0)}\n"
+        f"Avg duration: {data.get('avg_duration', 0)} min\n"
+        f"Completion rate: {data.get('completion_rate', 0)}%"
+    )
+
+
+# --- Backup (Phase 11) ---
+
+
+@mcp.tool()
+async def create_backup() -> str:
+    """Create a full system backup of graph database, vector store, and Redis memory."""
+    data = await api_post("/backup/create")
+    sizes = data.get("sizes", {})
+    return (
+        f"Backup created: {data.get('timestamp', '?')}\n"
+        f"Graph: {sizes.get('graph', 0):,} bytes\n"
+        f"Vector: {sizes.get('vector', 0):,} bytes\n"
+        f"Redis: {sizes.get('redis', 0):,} bytes"
+    )
+
+
+@mcp.tool()
+async def list_backups() -> str:
+    """List all available system backups."""
+    data = await api_get("/backup/list")
+    backups = data.get("backups", [])
+    if not backups:
+        return "No backups available."
+    lines = ["Available backups:\n"]
+    for b in backups:
+        lines.append(f"- {b.get('timestamp', '?')}")
+    return "\n".join(lines)
+
+
+# --- Graph Visualization (Phase 11) ---
+
+
+@mcp.tool()
+async def get_graph_schema() -> str:
+    """Get knowledge graph schema — node labels, relationship types, and counts."""
+    data = await api_get("/graph/schema")
+    lines = [
+        f"Graph Schema",
+        f"Nodes: {data.get('total_nodes', 0)}",
+        f"Edges: {data.get('total_edges', 0)}",
+        "",
+        "Node types:",
+    ]
+    for label, count in data.get("node_labels", {}).items():
+        lines.append(f"- {label}: {count}")
+    lines.append("\nRelationship types:")
+    for rel, count in data.get("relationship_types", {}).items():
+        lines.append(f"- {rel}: {count}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def get_graph_stats() -> str:
+    """Get knowledge graph statistics — total nodes, edges, and counts by type."""
+    data = await api_get("/graph/stats")
+    lines = [
+        f"Graph Stats",
+        f"Total nodes: {data.get('total_nodes', 0)}",
+        f"Total edges: {data.get('total_edges', 0)}",
+        "",
+    ]
+    for node_type, count in data.get("by_type", {}).items():
+        lines.append(f"- {node_type}: {count}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

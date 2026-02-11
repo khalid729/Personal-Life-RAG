@@ -238,8 +238,11 @@ async def chat_api(text: str, sid: str) -> dict:
     return await api_post("/chat/", json={"message": text, "session_id": sid})
 
 
-async def chat_api_stream(text: str, sid: str, message: Message) -> str:
-    """Stream chat response — edit Telegram message as tokens arrive."""
+async def chat_api_stream(text: str, sid: str, message: Message) -> dict:
+    """Stream chat response — edit Telegram message as tokens arrive.
+
+    Returns dict with 'text' (full response) and 'pending_confirmation' (bool).
+    """
     full_text = ""
     last_edit = 0.0
     meta = {}
@@ -281,7 +284,10 @@ async def chat_api_stream(text: str, sid: str, message: Message) -> str:
         if not full_text:
             # Fallback to non-streaming
             result = await chat_api(text, sid)
-            return result.get("reply", "خطأ")
+            return {
+                "text": result.get("reply", "خطأ"),
+                "pending_confirmation": result.get("pending_confirmation", False),
+            }
 
     # Final edit with full text
     if full_text.strip():
@@ -291,7 +297,10 @@ async def chat_api_stream(text: str, sid: str, message: Message) -> str:
         except Exception:
             pass
 
-    return full_text
+    return {
+        "text": full_text,
+        "pending_confirmation": meta.get("pending_confirmation", False),
+    }
 
 
 # --- Commands ---
@@ -983,10 +992,10 @@ async def handle_text(message: Message):
 
     # Use streaming for regular chat
     placeholder = await message.answer("...")
-    reply_text = await chat_api_stream(message.text, sid, placeholder)
+    stream_result = await chat_api_stream(message.text, sid, placeholder)
+    reply_text = stream_result.get("text", "")
+    pending = stream_result.get("pending_confirmation", False)
 
-    # Check if reply was a confirmation prompt (pending_confirmation)
-    # We can't detect this in streaming easily, so just display the result
     if not reply_text.strip():
         try:
             await placeholder.delete()
@@ -998,6 +1007,13 @@ async def handle_text(message: Message):
         if result.get("pending_confirmation"):
             keyboard = confirmation_keyboard()
         await send_reply(message, result["reply"], keyboard=keyboard)
+    elif pending:
+        # Streaming returned a confirmation prompt — add inline keyboard
+        try:
+            await placeholder.edit_reply_markup(reply_markup=confirmation_keyboard())
+        except Exception:
+            # If edit fails, send a new message with keyboard
+            await message.answer("⚠️ تأكيد مطلوب:", reply_markup=confirmation_keyboard())
 
 
 # --- Error handler ---
