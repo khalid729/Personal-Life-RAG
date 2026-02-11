@@ -11,15 +11,21 @@ Return a JSON object:
   "notes": "any additional info"
 }""",
     "official_document": """Extract ALL information from this official document. Be thorough — extract every number, date, name, and detail visible.
+
+CRITICAL — Arabic names:
+Copy every Arabic name EXACTLY as it appears in the document, character by character. Do NOT rearrange, reorder, or modify any part of the name. The document already has the correct order.
+Example: if the document shows "خالد بن ابراهيم بن يوسف المهيدب", write exactly "خالد بن ابراهيم بن يوسف المهيدب".
+
 Return a JSON object:
 {
-  "document_type": "appointment/contract/certificate/form/license/permit/receipt/booking",
+  "document_type": "appointment/contract/certificate/form/license/permit/receipt/booking/family_card",
   "title": "document title or purpose",
-  "text_content": "ALL readable text from the document, transcribed exactly as shown",
+  "text_content": "ALL readable text from the document, transcribed EXACTLY as shown — do NOT reorder any words",
   "dates": {"date": "YYYY-MM-DD", "time": "HH:MM or null", "hijri_date": "if shown or null", "expiry": "YYYY-MM-DD or null"},
   "location": "full location/address if any",
   "reference_numbers": {"booking_number": "if any", "reference_id": "if any", "plate_number": "if any", "id_number": "if any"},
-  "parties": ["person/company names mentioned"],
+  "parties": ["person/company names mentioned — copy EXACTLY as shown"],
+  "members": [{"name": "full name copied EXACTLY as shown in document", "date_of_birth": "YYYY-MM-DD or hijri date as shown", "id_number": "national/iqama ID or null", "role": "father/mother/son/daughter/wife/husband/head_of_family/..."}],
   "summary": "brief summary covering: what, when, where, who, and any reference numbers"
 }""",
     "personal_photo": """Describe this personal photo in detail.

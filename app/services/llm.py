@@ -47,8 +47,9 @@ class LLMService:
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}
-        # Enable thinking for Qwen3
-        body["chat_template_kwargs"] = {"enable_thinking": False}
+        # Qwen3 needs enable_thinking: False; Qwen2.5 doesn't support it
+        if "Qwen3" in settings.vllm_model:
+            body["chat_template_kwargs"] = {"enable_thinking": False}
 
         resp = await self._client.post("/chat/completions", json=body)
         resp.raise_for_status()
@@ -227,8 +228,9 @@ class LLMService:
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": True,
-            "chat_template_kwargs": {"enable_thinking": False},
         }
+        if "Qwen3" in settings.vllm_model:
+            body["chat_template_kwargs"] = {"enable_thinking": False}
         async with self._client.stream("POST", "/chat/completions", json=body) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():

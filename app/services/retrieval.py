@@ -150,7 +150,7 @@ PROJECT_KEYWORDS = re.compile(
 )
 
 PERSON_KEYWORDS = re.compile(
-    r"(مين|القصة مع|تعرف|who|person|contact|relationship|friend|colleague)",
+    r"(مين|القصة مع|تعرف|بناتي|أولادي|عيالي|عائلتي|أبوي|أمي|زوجتي|أخوي|اسم\b.*\b(بنت|ولد|زوج)|who|person|contact|relationship|friend|colleague|family|daughter|son|wife|husband|children)",
     re.IGNORECASE,
 )
 

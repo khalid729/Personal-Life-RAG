@@ -334,29 +334,28 @@ class FileService:
         try:
             import pymupdf
             doc = pymupdf.open(file_path)
-            page_texts = []
 
+            # Render all pages to base64 images first
+            page_images: list[tuple[int, str]] = []
             for page_num in range(min(len(doc), 5)):  # Max 5 pages
                 page = doc[page_num]
-                # Render page to image at 200 DPI
-                pix = page.get_pixmap(dpi=200)
+                pix = page.get_pixmap(dpi=300)
                 img_bytes = pix.tobytes("png")
                 img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                page_images.append((page_num, img_b64))
+            doc.close()
 
-                # Analyze with vision LLM
+            # Analyze all pages in parallel
+            async def _analyze_page(page_num: int, img_b64: str) -> tuple[int, str | None]:
                 analysis = await self.llm.analyze_image(
                     img_b64, "official_document", "image/png", user_context
                 )
-
-                # Extract text from analysis
                 text_parts = []
                 for key in ["text_content", "extracted_text", "content", "description",
                             "brief_description", "details", "summary"]:
                     val = analysis.get(key, "")
                     if val and isinstance(val, str) and len(val) > 10:
                         text_parts.append(val)
-
-                # Also grab all string values from analysis
                 if not text_parts:
                     for k, v in analysis.items():
                         if isinstance(v, str) and len(v) > 20 and k not in ("error", "raw"):
@@ -365,16 +364,21 @@ class FileService:
                             for sk, sv in v.items():
                                 if isinstance(sv, str) and len(sv) > 5:
                                     text_parts.append(f"{sk}: {sv}")
-
                 if text_parts:
-                    page_texts.append(f"[Page {page_num + 1}]\n" + "\n".join(text_parts))
+                    return (page_num, f"[Page {page_num + 1}]\n" + "\n".join(text_parts))
+                return (page_num, None)
 
-            doc.close()
+            results = await asyncio.gather(
+                *[_analyze_page(pn, img) for pn, img in page_images]
+            )
+
+            # Sort by page number and collect non-empty results
+            page_texts = [text for _, text in sorted(results) if text]
 
             if page_texts:
                 combined = "\n\n".join(page_texts)
                 steps.append(f"vision_fallback:{len(page_texts)}pages")
-                logger.info("Vision fallback extracted %d chars from %d pages",
+                logger.info("Vision fallback extracted %d chars from %d pages (parallel)",
                             len(combined), len(page_texts))
                 return combined
 
@@ -577,6 +581,33 @@ class FileService:
             parts.append(f"Document type: {doc_type}, title: {title}")
             if summary:
                 parts.append(f"Summary: {summary}")
+            text_content = analysis.get("text_content", "")
+            if text_content:
+                parts.append(f"Content: {text_content}")
+            dates = analysis.get("dates")
+            if dates and isinstance(dates, dict):
+                date_strs = [f"{k}: {v}" for k, v in dates.items() if v]
+                if date_strs:
+                    parts.append(f"Dates: {', '.join(date_strs)}")
+            ref_nums = analysis.get("reference_numbers")
+            if ref_nums and isinstance(ref_nums, dict):
+                ref_strs = [f"{k}: {v}" for k, v in ref_nums.items() if v]
+                if ref_strs:
+                    parts.append(f"Reference numbers: {', '.join(ref_strs)}")
+            parties = analysis.get("parties")
+            if parties and isinstance(parties, list):
+                parts.append(f"Parties: {', '.join(str(p) for p in parties)}")
+            members = analysis.get("members")
+            if members and isinstance(members, list):
+                for m in members:
+                    m_parts = [m.get("name", "")]
+                    if m.get("role"):
+                        m_parts.append(f"role: {m['role']}")
+                    if m.get("date_of_birth"):
+                        m_parts.append(f"born: {m['date_of_birth']}")
+                    if m.get("id_number"):
+                        m_parts.append(f"ID: {m['id_number']}")
+                    parts.append(f"Member: {', '.join(m_parts)}")
         else:
             # Generic: dump all values as text
             for k, v in analysis.items():

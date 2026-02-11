@@ -1,6 +1,8 @@
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 
 from app.config import get_settings
 from app.models.schemas import FileUploadResponse
@@ -47,3 +49,26 @@ async def upload_file(
     )
 
     return FileUploadResponse(**result)
+
+
+@router.get("/file/{file_hash}")
+async def download_file(request: Request, file_hash: str):
+    graph = request.app.state.graph_service
+    file_info = await graph.find_file_by_hash(file_hash)
+    if not file_info:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    props = file_info.get("properties", {})
+    original_name = props.get("filename", "download")
+
+    storage = Path(settings.file_storage_path) / file_hash[:2]
+    matches = list(storage.glob(f"{file_hash}.*"))
+    if not matches:
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    file_path = matches[0]
+    return FileResponse(
+        path=str(file_path),
+        filename=original_name,
+        media_type="application/octet-stream",
+    )

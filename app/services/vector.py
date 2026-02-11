@@ -98,7 +98,20 @@ class VectorService:
         topic: str | None = None,
     ) -> list[dict]:
         query_vector = self.embed([query])[0]
+        return await self.search_by_vector(
+            query_vector, limit=limit, source_type=source_type,
+            entity_type=entity_type, topic=topic,
+        )
 
+    async def search_by_vector(
+        self,
+        vector: list[float],
+        limit: int = 5,
+        source_type: str | None = None,
+        entity_type: str | None = None,
+        topic: str | None = None,
+    ) -> list[dict]:
+        """Search Qdrant using a pre-computed vector (skips embedding)."""
         filters = []
         if source_type:
             filters.append(FieldCondition(key="source_type", match=MatchValue(value=source_type)))
@@ -111,7 +124,7 @@ class VectorService:
 
         results = await self._client.query_points(
             collection_name=settings.qdrant_collection,
-            query=query_vector,
+            query=vector,
             query_filter=query_filter,
             limit=limit,
             with_payload=True,

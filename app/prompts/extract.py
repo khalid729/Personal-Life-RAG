@@ -5,6 +5,8 @@ Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, 
 
 === Entity details ===
 
+Person: relationship, phone, email, company, notes, date_of_birth (YYYY-MM-DD), id_number
+
 Reminder:
   - reminder_type: "one_time" | "recurring" | "persistent" | "event_based" | "financial"
   - recurrence: "daily" | "weekly" | "monthly" | "yearly" (for recurring type)
@@ -104,6 +106,10 @@ EXTRACT_EXAMPLES = [
     {
         "input": "Create a yearly reminder for the car inspection. The inspection was on 2026-02-11. Remind me 30 days before.",
         "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "yearly car inspection reminder", "properties": {"reminder_type": "recurring", "recurrence": "yearly", "date": "2027-01-12", "time": "09:00", "priority": 4, "linked_entity": "car inspection"}, "relationships": []}]}',
+    },
+    {
+        "input": "Family card members: Father: EXAMPLE_DAD (born 1980-05-15, ID 1055667788). Mother: EXAMPLE_MOM (born 1985-03-20, ID 1099887766). Son: EXAMPLE_SON (born 2010-11-01, ID 1122334455).",
+        "output": '{"entities": [{"entity_type": "Person", "entity_name": "EXAMPLE_DAD", "properties": {"date_of_birth": "1980-05-15", "id_number": "1055667788", "notes": "father"}, "relationships": [{"type": "FAMILY_MEMBER", "target_type": "Person", "target_name": "EXAMPLE_MOM"}, {"type": "FAMILY_MEMBER", "target_type": "Person", "target_name": "EXAMPLE_SON"}]}, {"entity_type": "Person", "entity_name": "EXAMPLE_MOM", "properties": {"date_of_birth": "1985-03-20", "id_number": "1099887766", "notes": "mother"}, "relationships": []}, {"entity_type": "Person", "entity_name": "EXAMPLE_SON", "properties": {"date_of_birth": "2010-11-01", "id_number": "1122334455", "notes": "son"}, "relationships": []}]}',
     },
 ]
 

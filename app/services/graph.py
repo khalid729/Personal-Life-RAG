@@ -1,3 +1,4 @@
+import asyncio
 import calendar
 import logging
 import re
@@ -20,6 +21,7 @@ class GraphService:
         self._pool: BlockingConnectionPool | None = None
         self._graph = None
         self._vector_service = None
+        self._resolution_cache: dict[tuple[str, str], str] = {}
 
     def set_vector_service(self, vector_service) -> None:
         """Allow graph service to use vector for idea similarity detection."""
@@ -31,6 +33,10 @@ class GraphService:
             return name
         if entity_type in ("Expense", "Debt", "Reminder", "Item", "Idea", "Tag"):
             return name
+
+        cache_key = (name, entity_type)
+        if cache_key in self._resolution_cache:
+            return self._resolution_cache[cache_key]
 
         thresholds = {
             "Person": settings.entity_resolution_person_threshold,
@@ -77,6 +83,102 @@ class GraphService:
         except Exception as e:
             logger.debug("Alias storage skipped: %s", e)
 
+    async def resolve_entity_names_batch(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], str]:
+        """Batch-resolve entity names: one GPU embed, parallel Qdrant searches, one batch register."""
+        if not self._vector_service or not settings.entity_resolution_enabled:
+            return {p: p[0] for p in pairs}
+
+        skip_types = {"Expense", "Debt", "Reminder", "Item", "Idea", "Tag"}
+        # Filter to resolvable types, deduplicate, skip already-cached
+        to_resolve: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for name, etype in pairs:
+            key = (name, etype)
+            if etype in skip_types or not name or key in self._resolution_cache or key in seen:
+                continue
+            to_resolve.append(key)
+            seen.add(key)
+
+        if not to_resolve:
+            return {p: self._resolution_cache.get(p, p[0]) for p in pairs}
+
+        # 1. Batch embed all names at once
+        names = [name for name, _ in to_resolve]
+        vectors = self._vector_service.embed(names)
+        logger.info("Batch entity resolution: embedded %d names in one call", len(names))
+
+        # 2. Parallel Qdrant searches
+        thresholds = {"Person": settings.entity_resolution_person_threshold}
+        default_threshold = settings.entity_resolution_default_threshold
+
+        async def _search_one(idx: int) -> tuple[int, list[dict]]:
+            name, etype = to_resolve[idx]
+            results = await self._vector_service.search_by_vector(
+                vectors[idx], limit=3, entity_type=etype,
+            )
+            return idx, results
+
+        search_results = await asyncio.gather(*[_search_one(i) for i in range(len(to_resolve))])
+
+        # 3. Process results: find matches, collect alias tasks and unmatched names
+        alias_tasks = []
+        new_names: list[str] = []
+        new_meta: list[dict] = []
+
+        for idx, results in search_results:
+            name, etype = to_resolve[idx]
+            threshold = thresholds.get(etype, default_threshold)
+            resolved = name  # default: keep original
+
+            for r in results:
+                other_name = r["metadata"].get("entity_name", "")
+                score = r["score"]
+                if other_name and other_name.lower() != name.lower() and score >= threshold:
+                    logger.info(
+                        "Entity resolved (batch): '%s' -> '%s' (%s, score=%.2f)",
+                        name, other_name, etype, score,
+                    )
+                    resolved = other_name
+                    alias_tasks.append(self._store_alias(etype, "name", other_name, name))
+                    break
+
+            self._resolution_cache[(name, etype)] = resolved
+
+            if resolved == name:
+                # No match — register for future resolution
+                new_names.append(name)
+                new_meta.append({"source_type": "entity", "entity_type": etype, "entity_name": name})
+
+        # 4. Parallel alias storage
+        if alias_tasks:
+            await asyncio.gather(*alias_tasks)
+
+        # 5. Batch register unmatched names
+        if new_names:
+            # Build index map for O(1) vector lookup
+            name_to_idx = {to_resolve[i][0]: i for i in range(len(to_resolve))}
+            new_vectors = [vectors[name_to_idx[n]] for n in new_names]
+
+            import uuid
+            from qdrant_client.models import PointStruct
+            points = []
+            for i, (chunk, vec) in enumerate(zip(new_names, new_vectors)):
+                meta = new_meta[i]
+                payload = {
+                    "text": chunk,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    **meta,
+                }
+                points.append(PointStruct(id=str(uuid.uuid4()), vector=vec, payload=payload))
+
+            await self._vector_service._client.upsert(
+                collection_name=settings.qdrant_collection,
+                points=points,
+            )
+            logger.info("Batch registered %d new entity names", len(new_names))
+
+        return {p: self._resolution_cache.get(p, p[0]) for p in pairs}
+
     async def start(self):
         self._pool = BlockingConnectionPool(
             host=settings.falkordb_host,
@@ -100,6 +202,18 @@ class GraphService:
     # --- Person ---
     async def upsert_person(self, name: str, **props) -> None:
         name = await self.resolve_entity_name(name, "Person")
+        # Auto-convert Hijri date_of_birth to Gregorian
+        dob = props.get("date_of_birth", "")
+        if dob:
+            try:
+                y, m, d = map(int, dob.split("-"))
+                if y < 1900:  # Hijri year
+                    from hijri_converter import Hijri
+                    greg = Hijri(y, m, d).to_gregorian()
+                    props["date_of_birth_hijri"] = dob
+                    props["date_of_birth"] = greg.isoformat()
+            except Exception:
+                pass  # keep original
         props_str = self._build_set_clause(props)
         q = f"""
         MERGE (p:Person {{name: $name}})
@@ -1098,165 +1212,183 @@ class GraphService:
 
     # --- Upsert from LLM-extracted facts ---
     async def upsert_from_facts(self, facts: dict) -> int:
-        count = 0
+        # Pre-resolve all entity names in batch (one embed + parallel searches)
+        names_to_resolve: set[tuple[str, str]] = set()
         for entity in facts.get("entities", []):
             etype = entity.get("entity_type", "")
             ename = entity.get("entity_name", "")
-            props = entity.get("properties", {})
-            rels = entity.get("relationships", [])
+            if etype and ename:
+                names_to_resolve.add((ename, etype))
+                for rel in entity.get("relationships", []):
+                    tt = rel.get("target_type", "")
+                    tn = rel.get("target_name", "")
+                    if tt and tn:
+                        names_to_resolve.add((tn, tt))
+        if names_to_resolve:
+            await self.resolve_entity_names_batch(list(names_to_resolve))
 
-            if not etype or not ename:
-                continue
+        count = 0
+        try:
+            for entity in facts.get("entities", []):
+                etype = entity.get("entity_type", "")
+                ename = entity.get("entity_name", "")
+                props = entity.get("properties", {})
+                rels = entity.get("relationships", [])
 
-            try:
-                # Sprint handling
-                if etype == "Sprint":
-                    start_date = props.pop("start_date", None)
-                    end_date = props.pop("end_date", None)
-                    await self.create_sprint(ename, start_date, end_date, **props)
-                    count += 1
-                    # Create relationships for Sprint
+                if not etype or not ename:
+                    continue
+
+                try:
+                    # Sprint handling
+                    if etype == "Sprint":
+                        start_date = props.pop("start_date", None)
+                        end_date = props.pop("end_date", None)
+                        await self.create_sprint(ename, start_date, end_date, **props)
+                        count += 1
+                        # Create relationships for Sprint
+                        for rel in rels:
+                            target_type = rel.get("target_type", "")
+                            target_name = rel.get("target_name", "")
+                            rel_type = rel.get("type", "RELATED_TO")
+                            if target_type and target_name:
+                                if target_type in ("Person", "Company", "Project", "Topic"):
+                                    target_name = await self.resolve_entity_name(target_name, target_type)
+                                target_key = "name" if target_type not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
+                                try:
+                                    await self.create_relationship(
+                                        "Sprint", "name", ename, rel_type, target_type, target_key, target_name
+                                    )
+                                except Exception as e:
+                                    logger.debug("Sprint relationship skipped: %s", e)
+                        continue
+
+                    handler = {
+                        "Person": lambda n, **p: self.upsert_person(n, **p),
+                        "Company": lambda n, **p: self.upsert_company(n, **p),
+                        "Project": lambda n, **p: self.upsert_project(n, **p),
+                        "Task": lambda n, **p: self.upsert_task(n, **p),
+                        "Idea": lambda n, **p: self.create_idea(n, **p),
+                        "Topic": lambda n, **p: self.upsert_topic(n, **p),
+                        "Tag": lambda n, **p: self.upsert_tag(n),
+                        "Reminder": lambda n, **p: self.create_reminder(n, **p),
+                        "Knowledge": lambda n, **p: self._create_generic("Knowledge", "title", n, **p),
+                        "Item": lambda n, **p: self.upsert_item(n, **p),
+                    }.get(etype)
+
+                    if etype == "DebtPayment":
+                        person = ""
+                        for r in rels:
+                            if r.get("target_type") == "Person":
+                                person = r.get("target_name", "")
+                                break
+                        amount = props.pop("amount", 0)
+                        direction = props.pop("direction", None)
+                        if person and amount > 0:
+                            result = await self.record_debt_payment(person, amount, direction)
+                            if "error" not in result:
+                                count += 1
+                            else:
+                                logger.warning("DebtPayment failed: %s", result["error"])
+                        continue  # Skip relationship creation for pseudo-entity
+
+                    if etype == "ItemUsage":
+                        qty_used = props.get("quantity_used", 1)
+                        result = await self.adjust_item_quantity(ename, -abs(int(qty_used)))
+                        if "error" not in result:
+                            count += 1
+                        else:
+                            logger.warning("ItemUsage failed: %s", result["error"])
+                        continue  # Skip relationship creation for pseudo-entity
+
+                    if etype == "ItemMove":
+                        to_loc = props.get("to_location", "")
+                        from_loc = props.get("from_location")
+                        if to_loc:
+                            result = await self.move_item(ename, to_loc, from_loc)
+                            if "error" not in result:
+                                count += 1
+                            else:
+                                logger.warning("ItemMove failed: %s", result["error"])
+                        continue  # Skip relationship creation for pseudo-entity
+
+                    if etype == "Expense":
+                        amount = props.pop("amount", 0)
+                        await self.create_expense(ename, amount, **props)
+                        count += 1
+                    elif etype == "Idea" and handler:
+                        await handler(ename, **props)
+                        count += 1
+                        # Idea similarity: embed + find similar ideas
+                        await self._detect_similar_ideas(ename, props.get("description", ""))
+                    elif etype == "Debt":
+                        person = ""
+                        for r in rels:
+                            if r.get("target_type") == "Person":
+                                person = r.get("target_name", "")
+                                break
+                        amount = props.pop("amount", 0)
+                        direction = props.pop("direction", "i_owe")
+                        await self.upsert_debt(person or ename, amount, direction, **props)
+                        count += 1
+                    elif handler:
+                        await handler(ename, **props)
+                        count += 1
+
+                    # Auto-tag Knowledge by category
+                    if etype == "Knowledge":
+                        cat = props.get("category") or self._guess_knowledge_category(ename, props.get("content", ""))
+                        if cat:
+                            await self.tag_entity("Knowledge", "title", ename, cat)
+
+                    # Auto-link Task to Project: if no BELONGS_TO in rels, search project names
+                    if etype == "Task":
+                        has_project_rel = any(
+                            r.get("target_type") == "Project" or r.get("type") == "BELONGS_TO"
+                            for r in rels
+                        )
+                        if not has_project_rel:
+                            try:
+                                q_projects = "MATCH (p:Project) RETURN p.name"
+                                proj_rows = await self.query(q_projects)
+                                task_lower = ename.lower()
+                                for pr in (proj_rows or []):
+                                    pname = pr[0]
+                                    if pname and pname.lower() in task_lower:
+                                        await self.create_relationship(
+                                            "Task", "title", ename,
+                                            "BELONGS_TO", "Project", "name", pname,
+                                        )
+                                        logger.info("Auto-linked task '%s' to project '%s'", ename, pname)
+                                        break
+                            except Exception as e:
+                                logger.debug("Auto-link task to project skipped: %s", e)
+
+                    # Create relationships
                     for rel in rels:
                         target_type = rel.get("target_type", "")
                         target_name = rel.get("target_name", "")
                         rel_type = rel.get("type", "RELATED_TO")
-                        if target_type and target_name:
+                        if target_type and target_name and etype not in ("Debt",):
+                            # Resolve target name for entity resolution
                             if target_type in ("Person", "Company", "Project", "Topic"):
                                 target_name = await self.resolve_entity_name(target_name, target_type)
+                            # Handle Tag targets via TAGGED_WITH
+                            if target_type == "Tag":
+                                key_field = "name" if etype not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
+                                await self.tag_entity(etype, key_field, ename, target_name)
+                                continue
+                            key_field = "name" if etype not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
                             target_key = "name" if target_type not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
                             try:
                                 await self.create_relationship(
-                                    "Sprint", "name", ename, rel_type, target_type, target_key, target_name
+                                    etype, key_field, ename, rel_type, target_type, target_key, target_name
                                 )
                             except Exception as e:
-                                logger.debug("Sprint relationship skipped: %s", e)
-                    continue
-
-                handler = {
-                    "Person": lambda n, **p: self.upsert_person(n, **p),
-                    "Company": lambda n, **p: self.upsert_company(n, **p),
-                    "Project": lambda n, **p: self.upsert_project(n, **p),
-                    "Task": lambda n, **p: self.upsert_task(n, **p),
-                    "Idea": lambda n, **p: self.create_idea(n, **p),
-                    "Topic": lambda n, **p: self.upsert_topic(n, **p),
-                    "Tag": lambda n, **p: self.upsert_tag(n),
-                    "Reminder": lambda n, **p: self.create_reminder(n, **p),
-                    "Knowledge": lambda n, **p: self._create_generic("Knowledge", "title", n, **p),
-                    "Item": lambda n, **p: self.upsert_item(n, **p),
-                }.get(etype)
-
-                if etype == "DebtPayment":
-                    person = ""
-                    for r in rels:
-                        if r.get("target_type") == "Person":
-                            person = r.get("target_name", "")
-                            break
-                    amount = props.pop("amount", 0)
-                    direction = props.pop("direction", None)
-                    if person and amount > 0:
-                        result = await self.record_debt_payment(person, amount, direction)
-                        if "error" not in result:
-                            count += 1
-                        else:
-                            logger.warning("DebtPayment failed: %s", result["error"])
-                    continue  # Skip relationship creation for pseudo-entity
-
-                if etype == "ItemUsage":
-                    qty_used = props.get("quantity_used", 1)
-                    result = await self.adjust_item_quantity(ename, -abs(int(qty_used)))
-                    if "error" not in result:
-                        count += 1
-                    else:
-                        logger.warning("ItemUsage failed: %s", result["error"])
-                    continue  # Skip relationship creation for pseudo-entity
-
-                if etype == "ItemMove":
-                    to_loc = props.get("to_location", "")
-                    from_loc = props.get("from_location")
-                    if to_loc:
-                        result = await self.move_item(ename, to_loc, from_loc)
-                        if "error" not in result:
-                            count += 1
-                        else:
-                            logger.warning("ItemMove failed: %s", result["error"])
-                    continue  # Skip relationship creation for pseudo-entity
-
-                if etype == "Expense":
-                    amount = props.pop("amount", 0)
-                    await self.create_expense(ename, amount, **props)
-                    count += 1
-                elif etype == "Idea" and handler:
-                    await handler(ename, **props)
-                    count += 1
-                    # Idea similarity: embed + find similar ideas
-                    await self._detect_similar_ideas(ename, props.get("description", ""))
-                elif etype == "Debt":
-                    person = ""
-                    for r in rels:
-                        if r.get("target_type") == "Person":
-                            person = r.get("target_name", "")
-                            break
-                    amount = props.pop("amount", 0)
-                    direction = props.pop("direction", "i_owe")
-                    await self.upsert_debt(person or ename, amount, direction, **props)
-                    count += 1
-                elif handler:
-                    await handler(ename, **props)
-                    count += 1
-
-                # Auto-tag Knowledge by category
-                if etype == "Knowledge":
-                    cat = props.get("category") or self._guess_knowledge_category(ename, props.get("content", ""))
-                    if cat:
-                        await self.tag_entity("Knowledge", "title", ename, cat)
-
-                # Auto-link Task to Project: if no BELONGS_TO in rels, search project names
-                if etype == "Task":
-                    has_project_rel = any(
-                        r.get("target_type") == "Project" or r.get("type") == "BELONGS_TO"
-                        for r in rels
-                    )
-                    if not has_project_rel:
-                        try:
-                            q_projects = "MATCH (p:Project) RETURN p.name"
-                            proj_rows = await self.query(q_projects)
-                            task_lower = ename.lower()
-                            for pr in (proj_rows or []):
-                                pname = pr[0]
-                                if pname and pname.lower() in task_lower:
-                                    await self.create_relationship(
-                                        "Task", "title", ename,
-                                        "BELONGS_TO", "Project", "name", pname,
-                                    )
-                                    logger.info("Auto-linked task '%s' to project '%s'", ename, pname)
-                                    break
-                        except Exception as e:
-                            logger.debug("Auto-link task to project skipped: %s", e)
-
-                # Create relationships
-                for rel in rels:
-                    target_type = rel.get("target_type", "")
-                    target_name = rel.get("target_name", "")
-                    rel_type = rel.get("type", "RELATED_TO")
-                    if target_type and target_name and etype not in ("Debt",):
-                        # Resolve target name for entity resolution
-                        if target_type in ("Person", "Company", "Project", "Topic"):
-                            target_name = await self.resolve_entity_name(target_name, target_type)
-                        # Handle Tag targets via TAGGED_WITH
-                        if target_type == "Tag":
-                            key_field = "name" if etype not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
-                            await self.tag_entity(etype, key_field, ename, target_name)
-                            continue
-                        key_field = "name" if etype not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
-                        target_key = "name" if target_type not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
-                        try:
-                            await self.create_relationship(
-                                etype, key_field, ename, rel_type, target_type, target_key, target_name
-                            )
-                        except Exception as e:
-                            logger.debug("Relationship creation skipped: %s", e)
-            except Exception as e:
-                logger.warning("Failed to upsert entity %s/%s: %s", etype, ename, e)
+                                logger.debug("Relationship creation skipped: %s", e)
+                except Exception as e:
+                    logger.warning("Failed to upsert entity %s/%s: %s", etype, ename, e)
+        finally:
+            self._resolution_cache.clear()
         return count
 
     # --- GraphRAG queries ---
@@ -1293,8 +1425,74 @@ class GraphService:
         rows = await self.query(q, {"value": value})
         return self._format_graph_context_3hop(rows)
 
-    async def query_person_context(self, name: str) -> str:
-        return await self.query_entity_context("Person", "name", name)
+    async def query_person_context(self, query: str) -> str:
+        """Find person by exact name or fuzzy match from query text."""
+        # 1. Try exact match
+        ctx = await self.query_entity_context("Person", "name", query)
+        if ctx:
+            return ctx
+
+        # 2. Extract candidate names: capitalized words (English proper nouns)
+        stop_words = {
+            "how", "old", "is", "my", "the", "what", "who", "when", "where",
+            "about", "tell", "me", "many", "much", "does", "do", "are", "was",
+            "number", "name", "age", "born", "date", "family", "all", "list",
+        }
+        candidates = []
+        for w in query.split():
+            # Strip possessive 's
+            clean = w.rstrip("'s") if w.endswith("'s") or w.endswith("s") else w
+            if not clean:
+                continue
+            if len(clean) > 2 and clean[0].isupper() and clean.isalpha() and clean.lower() not in stop_words:
+                candidates.append(clean)
+        # Also add Arabic tokens (non-ASCII words)
+        candidates += [w for w in query.split() if any(ord(c) > 127 for c in w) and len(w) > 1]
+
+        all_parts = []
+        seen_names = set()
+        for candidate in candidates:
+            rows = await self.query(
+                "MATCH (p:Person) WHERE toLower(p.name) CONTAINS toLower($w) RETURN p.name LIMIT 5",
+                {"w": candidate},
+            )
+            for row in (rows or []):
+                name = row[0]
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                ctx = await self.query_entity_context("Person", "name", name)
+                if ctx:
+                    all_parts.append(ctx)
+        if all_parts:
+            return "\n\n".join(all_parts)
+
+        # 3. No specific name found — return summary of all persons with relationships
+        rows = await self.query(
+            """MATCH (p:Person)
+            OPTIONAL MATCH (p)-[r]->(other:Person)
+            RETURN p, collect(DISTINCT {rel: type(r), target: other.name}) as rels
+            ORDER BY p.name LIMIT 20"""
+        )
+        if not rows:
+            return ""
+        parts = ["Known persons:"]
+        for row in rows:
+            props = self._clean_props(row[0].properties)
+            name = props.pop("name", "?")
+            details = []
+            for k, v in props.items():
+                if v:
+                    details.append(f"{k}: {v}")
+            rels = row[1] if len(row) > 1 else []
+            rel_strs = [f"{r['rel']} → {r['target']}" for r in rels if r.get("target")]
+            line = f"  - {name}"
+            if details:
+                line += f" ({', '.join(details)})"
+            if rel_strs:
+                line += f" [{', '.join(rel_strs)}]"
+            parts.append(line)
+        return "\n".join(parts)
 
     async def query_project_context(self, name: str) -> str:
         return await self.query_entity_context("Project", "name", name)
@@ -2479,8 +2677,13 @@ class GraphService:
         q = f"CREATE (n:{label} {{{key_field}: $value, created_at: $now{inline}}})"
         await self._graph.query(q, params={"value": value, "now": _now(), **extra})
 
+    _INTERNAL_PROPS = {"name_aliases", "created_at", "updated_at", "file_hash", "source"}
+
+    def _clean_props(self, props: dict) -> dict:
+        return {k: v for k, v in props.items() if k not in self._INTERNAL_PROPS}
+
     def _build_set_clause(self, props: dict, var: str = "p") -> str:
-        filtered = {k: v for k, v in props.items() if v is not None}
+        filtered = {k: v for k, v in props.items() if v is not None and v != ""}
         if not filtered:
             return ""
         return ", " + ", ".join(f"{var}.{k} = ${k}" for k in filtered)
@@ -2499,7 +2702,7 @@ class GraphService:
             if row[0]:  # main node
                 node = row[0]
                 if hasattr(node, "properties"):
-                    desc_parts.append(str(node.properties))
+                    desc_parts.append(str(self._clean_props(node.properties)))
             if row[1] and row[3]:  # rel1, n1
                 n1 = row[3]
                 n1_name = n1.properties.get("name", n1.properties.get("title", "")) if hasattr(n1, "properties") else str(n1)
@@ -2524,7 +2727,7 @@ class GraphService:
         for row in rows:
             desc_parts = []
             if row[0] and hasattr(row[0], "properties"):
-                desc_parts.append(str(row[0].properties))
+                desc_parts.append(str(self._clean_props(row[0].properties)))
             if row[1] and row[3]:
                 n1 = row[3]
                 n1_name = n1.properties.get("name", n1.properties.get("title", "")) if hasattr(n1, "properties") else str(n1)
