@@ -30,14 +30,23 @@ class AdvanceReminderRequest(BaseModel):
 
 
 @router.get("/morning-summary")
-async def morning_summary(request: Request):
+async def morning_summary(request: Request, include_timeblock: bool = True):
     graph = request.app.state.retrieval.graph
     daily_plan = await graph.query_daily_plan()
     spending_alerts = await graph.query_spending_alerts()
-    return {
+    result = {
         "daily_plan": daily_plan,
         "spending_alerts": spending_alerts or None,
     }
+    if include_timeblock:
+        try:
+            today = _now_local().strftime("%Y-%m-%d")
+            tb = await graph.suggest_time_blocks(today)
+            if tb.get("blocks"):
+                result["timeblock_suggestion"] = tb
+        except Exception:
+            pass
+    return result
 
 
 @router.get("/noon-checkin")

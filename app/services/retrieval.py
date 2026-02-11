@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import tiktoken
 
@@ -28,6 +28,11 @@ _enc = tiktoken.get_encoding("cl100k_base")
 
 def count_tokens(text: str) -> int:
     return len(_enc.encode(text))
+
+
+def _now_local_str() -> str:
+    tz = timezone(timedelta(hours=settings.timezone_offset_hours))
+    return datetime.now(tz).strftime("%Y-%m-%d")
 
 
 def chunk_text(text: str, max_tokens: int = 500, overlap_tokens: int = 50) -> list[str]:
@@ -114,8 +119,28 @@ KNOWLEDGE_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+SPRINT_KEYWORDS = re.compile(
+    r"(سبرنت|burndown|velocity|iteration|sprint\b)",
+    re.IGNORECASE,
+)
+
+FOCUS_KEYWORDS = re.compile(
+    r"(focus|pomodoro|بومودورو|تركيز|جلسة عمل|focus stats|إحصائيات.*تركيز)",
+    re.IGNORECASE,
+)
+
+TIMEBLOCK_KEYWORDS = re.compile(
+    r"(رتب.*وقت|جدول.*مهام|time.?block|schedule.*tasks|خطة.*مهام.*وقت)",
+    re.IGNORECASE,
+)
+
+PRODUCTIVITY_KEYWORDS = re.compile(
+    r"(إنتاجية|إنتاجيتي|productivity stats|how productive|ملخص.*إنتاج)",
+    re.IGNORECASE,
+)
+
 PROJECT_KEYWORDS = re.compile(
-    r"(مشروع|تقدم|مرحلة|project|progress|milestone|sprint|status)",
+    r"(مشروع|تقدم|مرحلة|project|progress|milestone|status)",
     re.IGNORECASE,
 )
 
@@ -186,6 +211,14 @@ def smart_route(text: str) -> str:
     if KNOWLEDGE_KEYWORDS.search(text):
         return "graph_knowledge"
 
+    if SPRINT_KEYWORDS.search(text):
+        return "graph_sprint"
+    if FOCUS_KEYWORDS.search(text):
+        return "graph_focus_stats"
+    if TIMEBLOCK_KEYWORDS.search(text):
+        return "graph_timeblock"
+    if PRODUCTIVITY_KEYWORDS.search(text):
+        return "graph_productivity_report"
     if PROJECT_KEYWORDS.search(text):
         return "graph_project"
     if PERSON_KEYWORDS.search(text):
@@ -214,11 +247,13 @@ class RetrievalService:
         graph: GraphService,
         vector: VectorService,
         memory: MemoryService,
+        ner=None,
     ):
         self.llm = llm
         self.graph = graph
         self.vector = vector
         self.memory = memory
+        self.ner = ner  # NERService or None
         self.max_context_tokens = 15000
 
     # ========================
@@ -299,22 +334,13 @@ class RetrievalService:
     # RETRIEVAL PIPELINE (Agentic RAG)
     # ========================
 
-    async def retrieve_and_respond(
+    async def _prepare_context(
         self, query_ar: str, session_id: str = "default"
     ) -> dict:
-        """Agentic RAG pipeline with confirmation flow + multi-turn history.
+        """Shared pipeline steps 1-8: translate, route, confirm, retrieve, reflect, retry, build context.
 
-        Pre-check: handle pending confirmations (yes/no/number selection)
-        1. Translate query Arabic → English
-        2. FAST PATH: keyword router — if match, skip Think step
-        3. Confirmation gate: if side-effect route + action intent, confirm first
-        4. THINK (if no keyword match): LLM decides strategy + search queries
-        5. ACT: execute retrieval strategy → context_parts, sources
-        6. REFLECT + Self-RAG: LLM scores chunks, filter below threshold
-        7. RETRY (if !sufficient && retries > 0): flip strategy, merge results
-        8. Build context (system memory + conversation turns + filtered chunks, ≤15K tokens)
-        9. Generate Arabic response with multi-turn history
-        10. Return reply + sources + route + agentic_trace
+        Returns a dict with all context needed for response generation (or an early return).
+        If 'early_return' is set, the caller should return that dict directly.
         """
         agentic_trace: list[dict] = []
 
@@ -325,39 +351,51 @@ class RetrievalService:
                 confirmation = is_confirmation(query_ar.strip())
                 if confirmation == "yes":
                     result = await self._execute_confirmed_action(pending, session_id)
-                    # Don't clear if disambiguation was set (pending re-stored)
                     if not pending.get("disambiguation_options"):
                         await self.memory.clear_pending_action(session_id)
-                    return {
+                    return {"early_return": {
                         "reply": result,
                         "sources": [],
                         "route": pending.get("route", ""),
                         "query_en": pending.get("query_en", ""),
                         "agentic_trace": [{"step": "confirmed_action", "action_type": pending.get("action_type")}],
                         "pending_confirmation": bool(pending.get("disambiguation_options")),
-                    }
+                    }}
                 elif confirmation == "no":
                     await self.memory.clear_pending_action(session_id)
-                    return {
+                    return {"early_return": {
                         "reply": "تمام، ما سويت شي.",
                         "sources": [],
                         "route": pending.get("route", ""),
                         "query_en": "",
                         "agentic_trace": [{"step": "cancelled_action"}],
-                    }
+                    }}
                 elif NUMBER_SELECTION.match(query_ar.strip()):
                     result = await self._resolve_disambiguation(pending, int(query_ar.strip()))
                     await self.memory.clear_pending_action(session_id)
-                    return {
+                    return {"early_return": {
                         "reply": result,
                         "sources": [],
                         "route": pending.get("route", ""),
                         "query_en": pending.get("query_en", ""),
                         "agentic_trace": [{"step": "disambiguation_resolved"}],
-                    }
+                    }}
                 else:
-                    # Not a confirmation — clear stale pending and proceed normally
                     await self.memory.clear_pending_action(session_id)
+
+        # Auto-compress working memory if threshold exceeded
+        msg_count = await self.memory.get_working_memory_count(session_id)
+        if msg_count > settings.conversation_compress_threshold:
+            try:
+                old_messages = await self.memory.compress_working_memory(
+                    session_id, settings.conversation_compress_keep_recent
+                )
+                if old_messages:
+                    summary = await self.llm.summarize_conversation(old_messages)
+                    await self.memory.save_conversation_summary(session_id, summary)
+                    logger.info("Compressed %d messages into summary for %s", len(old_messages), session_id)
+            except Exception as e:
+                logger.warning("Conversation compression failed: %s", e)
 
         # Step 1: Translate
         query_en = await self.llm.translate_to_english(query_ar)
@@ -377,7 +415,6 @@ class RetrievalService:
             })
             search_queries = [query_en]
         else:
-            # Step 3: THINK — LLM decides strategy
             think_result = await self.llm.think_step(query_en)
             route = think_result.get("strategy", "vector")
             search_queries = think_result.get("search_queries", [query_en])
@@ -396,30 +433,25 @@ class RetrievalService:
             and route in SIDE_EFFECT_ROUTES
             and is_action_intent(query_ar, route)
         ):
-            # Extract facts to understand the action
             facts = await self.llm.extract_facts(query_en)
             entities = facts.get("entities", [])
             action_type = self._classify_action_type(entities, route)
 
             if action_type:
-                # Check clarification — does the message have enough info?
-                # Skip if extraction already found named entities (extraction success = sufficient info)
                 if entities and entities[0].get("entity_name"):
                     clarification = {"complete": True, "missing_fields": []}
                 else:
                     clarification = await self.llm.check_clarification(query_en, action_type)
                 if not clarification.get("complete", True) or not entities:
-                    # Missing info — ask for it (no pending stored)
                     question = clarification.get("clarification_question_ar", "ممكن توضح أكثر؟")
-                    return {
+                    return {"early_return": {
                         "reply": question,
                         "sources": [],
                         "route": route,
                         "query_en": query_en,
                         "agentic_trace": [{"step": "clarification", "missing": clarification.get("missing_fields", [])}],
-                    }
+                    }}
 
-                # Build confirmation message and store pending action
                 confirm_msg = build_confirmation_message(action_type, entities)
                 pending_action = {
                     "action_type": action_type,
@@ -432,14 +464,14 @@ class RetrievalService:
                 }
                 await self.memory.set_pending_action(session_id, pending_action)
                 agentic_trace.append({"step": "confirmation_requested", "action_type": action_type})
-                return {
+                return {"early_return": {
                     "reply": confirm_msg,
                     "sources": [],
                     "route": route,
                     "query_en": query_en,
                     "agentic_trace": agentic_trace,
                     "pending_confirmation": True,
-                }
+                }}
 
         # Step 4: ACT — execute retrieval
         context_parts, sources = await self._execute_retrieval_strategy(
@@ -452,7 +484,7 @@ class RetrievalService:
             "sources": list(set(sources)),
         })
 
-        # Step 5: REFLECT + Self-RAG (score chunks, filter low-relevance)
+        # Step 5: REFLECT + Self-RAG
         filtered_parts = context_parts
         if context_parts:
             reflect_result = await self.llm.reflect_step(query_en, context_parts)
@@ -479,7 +511,7 @@ class RetrievalService:
                 "threshold": threshold,
             })
 
-            # Step 6: RETRY if insufficient and retries available
+            # Step 6: RETRY if insufficient
             if not sufficient and settings.agentic_max_retries > 0:
                 retry_strategy = self._parse_retry_hint(
                     reflect_result.get("retry_strategy"), route
@@ -505,17 +537,23 @@ class RetrievalService:
                     "total_chunks": len(filtered_parts),
                 })
 
-        # --- C. Multi-turn history in response generation ---
+        # --- C. Build context ---
         memory_context = await self.memory.build_system_memory_context(session_id)
+
+        # Include conversation summary if available
+        conv_summary = await self.memory.get_conversation_summary(session_id)
+        if conv_summary:
+            memory_context += f"\n\n=== Conversation Summary ===\n{conv_summary}"
+
         conversation_history = await self.memory.get_conversation_turns(session_id)
         retrieved_context = "\n\n".join(filtered_parts)
 
-        # Token budget: system memory + history + retrieved context ≤ max
+        # Token budget
         memory_tokens = count_tokens(memory_context)
         history_tokens = sum(count_tokens(t.get("content", "")) for t in conversation_history)
         remaining = self.max_context_tokens - memory_tokens - history_tokens
         if remaining < 0:
-            remaining = 500  # Minimum for retrieved context
+            remaining = 500
         if count_tokens(retrieved_context) > remaining:
             words = retrieved_context.split()
             truncated: list[str] = []
@@ -528,19 +566,79 @@ class RetrievalService:
                 tokens_so_far += wt
             retrieved_context = " ".join(truncated)
 
-        # Step 8: Generate response with multi-turn history
+        return {
+            "context": retrieved_context,
+            "memory_context": memory_context,
+            "conversation_history": conversation_history,
+            "route": route,
+            "query_en": query_en,
+            "sources": list(set(sources)),
+            "agentic_trace": agentic_trace,
+        }
+
+    async def retrieve_and_respond(
+        self, query_ar: str, session_id: str = "default"
+    ) -> dict:
+        """Agentic RAG pipeline with confirmation flow + multi-turn history."""
+        ctx = await self._prepare_context(query_ar, session_id)
+
+        if "early_return" in ctx:
+            return ctx["early_return"]
+
         reply = await self.llm.generate_response(
-            query_ar, retrieved_context, memory_context,
-            conversation_history=conversation_history,
+            query_ar, ctx["context"], ctx["memory_context"],
+            conversation_history=ctx["conversation_history"],
         )
 
         return {
             "reply": reply,
-            "sources": list(set(sources)),
-            "route": route,
-            "query_en": query_en,
-            "agentic_trace": agentic_trace,
+            "sources": ctx["sources"],
+            "route": ctx["route"],
+            "query_en": ctx["query_en"],
+            "agentic_trace": ctx["agentic_trace"],
         }
+
+    async def retrieve_and_respond_stream(
+        self, query_ar: str, session_id: str = "default"
+    ):
+        """Streaming version — yields NDJSON lines."""
+        import json as _json
+
+        ctx = await self._prepare_context(query_ar, session_id)
+
+        if "early_return" in ctx:
+            early = ctx["early_return"]
+            yield _json.dumps({"type": "meta", "route": early.get("route", ""), "sources": early.get("sources", [])}) + "\n"
+            yield _json.dumps({"type": "token", "content": early["reply"]}) + "\n"
+            yield _json.dumps({"type": "done"}) + "\n"
+            # Fire post-processing
+            asyncio.create_task(self.post_process(
+                query_ar, early["reply"], session_id,
+                skip_fact_extraction=early.get("pending_confirmation", False),
+            ))
+            return
+
+        # Emit metadata
+        yield _json.dumps({
+            "type": "meta",
+            "route": ctx["route"],
+            "sources": ctx["sources"],
+        }) + "\n"
+
+        # Stream tokens
+        full_reply = []
+        async for chunk in self.llm.generate_response_stream(
+            query_ar, ctx["context"], ctx["memory_context"],
+            conversation_history=ctx["conversation_history"],
+        ):
+            full_reply.append(chunk)
+            yield _json.dumps({"type": "token", "content": chunk}) + "\n"
+
+        yield _json.dumps({"type": "done"}) + "\n"
+
+        # Fire post-processing in background
+        reply_text = "".join(full_reply)
+        asyncio.create_task(self.post_process(query_ar, reply_text, session_id))
 
     def _classify_action_type(self, entities: list[dict], route: str) -> str | None:
         """Map extracted entity types to action type string."""
@@ -762,6 +860,69 @@ class RetrievalService:
                 return "No duplicate items detected."
             lines = [f"- {d['item_a']['name']} ↔ {d['item_b']['name']}" for d in dups]
             return "Potential duplicates:\n" + "\n".join(lines)
+        elif route == "graph_sprint":
+            sprints = await self.graph.query_sprints(status_filter="active")
+            if not sprints:
+                sprints = await self.graph.query_sprints()
+            if not sprints:
+                return "No sprints found."
+            parts = ["Sprints:"]
+            for s in sprints:
+                parts.append(
+                    f"  - {s['name']} [{s['status']}] ({s['done_tasks']}/{s['total_tasks']} done, "
+                    f"{s['progress_pct']}%) [{s['start_date']} → {s['end_date']}]"
+                )
+                if s.get("goal"):
+                    parts.append(f"    Goal: {s['goal']}")
+            return "\n".join(parts)
+        elif route == "graph_focus_stats":
+            stats = await self.graph.query_focus_stats()
+            parts = [
+                f"Focus stats: Today {stats['today_sessions']} sessions ({stats['today_minutes']} min), "
+                f"Week {stats['week_sessions']} ({stats['week_minutes']} min), "
+                f"Total {stats['total_sessions']} ({stats['total_minutes']} min)"
+            ]
+            for t in stats.get("by_task", []):
+                parts.append(f"  - {t['task']}: {t['sessions']} sessions ({t['minutes']} min)")
+            return "\n".join(parts)
+        elif route == "graph_timeblock":
+            # Detect energy override from query
+            energy = None
+            for word in ("tired", "تعبان", "مرهق"):
+                if word in query_en.lower():
+                    energy = "tired"
+                    break
+            for word in ("energized", "نشيط", "حماس"):
+                if word in query_en.lower():
+                    energy = "energized"
+                    break
+            today = _now_local_str()
+            result = await self.graph.suggest_time_blocks(today, energy)
+            if not result["blocks"]:
+                return "No tasks to schedule."
+            parts = [f"Time blocks ({result['energy_profile']} profile, {result['date']}):"]
+            for b in result["blocks"]:
+                start = b["start_time"][-8:-3]
+                end = b["end_time"][-8:-3]
+                parts.append(f"  [{start}-{end}] {b['task_title']} (energy:{b['energy_level']}, priority:{b['priority']})")
+            return "\n".join(parts)
+        elif route == "graph_productivity_report":
+            parts = ["Productivity Report:"]
+            # Tasks
+            tasks = await self.graph.query_active_tasks()
+            parts.append(tasks)
+            # Focus
+            stats = await self.graph.query_focus_stats()
+            parts.append(
+                f"\nFocus: {stats['today_sessions']} sessions today ({stats['today_minutes']} min), "
+                f"{stats['week_sessions']} this week ({stats['week_minutes']} min)"
+            )
+            # Sprints
+            sprints = await self.graph.query_sprints(status_filter="active")
+            if sprints:
+                for s in sprints:
+                    parts.append(f"Sprint '{s['name']}': {s['progress_pct']}% ({s['done_tasks']}/{s['total_tasks']})")
+            return "\n".join(parts)
         return ""
 
     @staticmethod
@@ -814,6 +975,8 @@ class RetrievalService:
             "graph_project", "graph_person", "graph_task",
             "graph_inventory", "graph_inventory_unused",
             "graph_inventory_report", "graph_inventory_duplicates",
+            "graph_sprint", "graph_focus_stats",
+            "graph_timeblock", "graph_productivity_report",
         }
         if hint and hint in valid and hint != original:
             return hint
@@ -847,9 +1010,20 @@ class RetrievalService:
                 # (combined translation often loses actionable intent)
                 query_en = await self.llm.translate_to_english(query_ar)
 
+                # Run Arabic NER for hints
+                ner_hints = ""
+                if self.ner:
+                    try:
+                        entities = self.ner.extract_entities(query_ar)
+                        ner_hints = self.ner.format_hints(entities)
+                        if ner_hints:
+                            logger.info("NER hints: %s", ner_hints)
+                    except Exception as e:
+                        logger.debug("NER failed: %s", e)
+
                 # Extract facts from user query alone (captures intents like
                 # reminders, expenses, debts that get lost in combined translation)
-                query_facts = await self.llm.extract_facts(query_en)
+                query_facts = await self.llm.extract_facts(query_en, ner_hints=ner_hints)
                 if query_facts.get("entities"):
                     await self.graph.upsert_from_facts(query_facts)
 

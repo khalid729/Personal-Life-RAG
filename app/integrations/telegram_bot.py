@@ -53,6 +53,17 @@ router = Router()
 _pending_locations: dict[str, dict] = {}
 _PENDING_LOCATION_TTL = 300  # 5 minutes
 
+# Active focus sessions for timer mode
+# {chat_id: {"session_id": str, "task": str|None, "started_at": float, "duration": int}}
+_active_focus_sessions: dict[str, dict] = {}
+
+# Module-level scheduler reference (set during main())
+_scheduler: AsyncIOScheduler | None = None
+
+
+def _get_scheduler() -> AsyncIOScheduler | None:
+    return _scheduler
+
 
 # --- Helpers ---
 
@@ -227,6 +238,62 @@ async def chat_api(text: str, sid: str) -> dict:
     return await api_post("/chat/", json={"message": text, "session_id": sid})
 
 
+async def chat_api_stream(text: str, sid: str, message: Message) -> str:
+    """Stream chat response — edit Telegram message as tokens arrive."""
+    full_text = ""
+    last_edit = 0.0
+    meta = {}
+
+    try:
+        async with httpx.AsyncClient(base_url=API_BASE, timeout=120.0) as client:
+            async with client.stream(
+                "POST", "/chat/stream",
+                json={"message": text, "session_id": sid},
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    msg_type = data.get("type")
+                    if msg_type == "meta":
+                        meta = data
+                    elif msg_type == "token":
+                        full_text += data.get("content", "")
+                        now = time.monotonic()
+                        # Edit message every ~1 second to avoid rate limits
+                        if now - last_edit >= 1.0 and full_text.strip():
+                            try:
+                                display = full_text
+                                if len(display) > TG_MAX_LEN - 3:
+                                    display = display[:TG_MAX_LEN - 3] + "..."
+                                await message.edit_text(display)
+                                last_edit = now
+                            except Exception:
+                                pass
+                    elif msg_type == "done":
+                        break
+    except Exception as e:
+        logger.error("Streaming chat failed: %s", e)
+        if not full_text:
+            # Fallback to non-streaming
+            result = await chat_api(text, sid)
+            return result.get("reply", "خطأ")
+
+    # Final edit with full text
+    if full_text.strip():
+        try:
+            for part in split_message(full_text):
+                await message.edit_text(part)
+        except Exception:
+            pass
+
+    return full_text
+
+
 # --- Commands ---
 
 @router.message(Command("start"))
@@ -243,7 +310,11 @@ async def cmd_start(message: Message):
         "/projects — المشاريع\n"
         "/tasks — المهام\n"
         "/report — التقرير المالي\n"
-        "/inventory — المخزون والأغراض"
+        "/inventory — المخزون والأغراض\n"
+        "/focus — جلسة تركيز (بومودورو)\n"
+        "/sprint — السبرنتات\n"
+        "/backup — نسخة احتياطية\n"
+        "/graph — عرض الرسم البياني"
     )
 
 
@@ -376,6 +447,239 @@ async def cmd_inventory(message: Message):
     if not by_cat and not by_loc:
         lines.append("لا توجد أغراض مسجلة.")
     await send_reply(message, "\n".join(lines))
+
+
+@router.message(Command("focus"))
+async def cmd_focus(message: Message):
+    if not authorized(message):
+        return
+    args = message.text.strip().split(maxsplit=2)
+    chat_id = str(message.from_user.id)
+
+    # /focus done — complete active session
+    if len(args) > 1 and args[1].strip().lower() == "done":
+        if chat_id in _active_focus_sessions:
+            _active_focus_sessions.pop(chat_id)
+        try:
+            result = await api_post("/productivity/focus/complete", json={"completed": True})
+            if "error" in result:
+                await message.answer("ما في جلسة تركيز نشطة.")
+            else:
+                dur = result.get("duration_minutes", 0)
+                await message.answer(f"تم إنهاء جلسة التركيز ({dur} دقيقة).")
+        except Exception as e:
+            logger.error("Focus complete failed: %s", e)
+            await message.answer("خطأ في إنهاء الجلسة.")
+        return
+
+    # /focus stats — show statistics
+    if len(args) > 1 and args[1].strip().lower() == "stats":
+        try:
+            data = await api_get("/productivity/focus/stats")
+            lines = [
+                "إحصائيات التركيز:",
+                f"  اليوم: {data['today_sessions']} جلسات ({data['today_minutes']} دقيقة)",
+                f"  الأسبوع: {data['week_sessions']} جلسات ({data['week_minutes']} دقيقة)",
+                f"  الإجمالي: {data['total_sessions']} جلسات ({data['total_minutes']} دقيقة)",
+            ]
+            by_task = data.get("by_task", [])
+            if by_task:
+                lines.append("\nحسب المهمة:")
+                for t in by_task[:5]:
+                    lines.append(f"  • {t['task']}: {t['sessions']} ({t['minutes']} دقيقة)")
+            await send_reply(message, "\n".join(lines))
+        except Exception as e:
+            logger.error("Focus stats failed: %s", e)
+            await message.answer("خطأ في جلب الإحصائيات.")
+        return
+
+    # /focus [minutes] [task] — start session
+    duration = settings.pomodoro_default_minutes
+    task_name = None
+    if len(args) > 1:
+        try:
+            duration = int(args[1])
+        except ValueError:
+            task_name = " ".join(args[1:])
+    if len(args) > 2 and task_name is None:
+        task_name = args[2]
+
+    try:
+        payload = {"duration_minutes": duration}
+        if task_name:
+            payload["task"] = task_name
+        result = await api_post("/productivity/focus/start", json=payload)
+        sid = result.get("session_id", "")
+
+        # Store active session
+        _active_focus_sessions[chat_id] = {
+            "session_id": sid,
+            "task": task_name,
+            "started_at": time.monotonic(),
+            "duration": duration,
+        }
+
+        task_line = f" على: {task_name}" if task_name else ""
+        await message.answer(f"بدأت جلسة تركيز ({duration} دقيقة){task_line}\n/focus done لإنهاء الجلسة")
+
+        # Schedule timer notification
+        scheduler = _get_scheduler()
+        if scheduler:
+            from datetime import datetime as dt_cls, timedelta as td_cls
+            run_at = dt_cls.utcnow() + td_cls(minutes=duration)
+            bot = message.bot
+
+            async def _focus_timer_callback(bot_ref=bot, cid=settings.tg_chat_id, s_id=sid):
+                try:
+                    await bot_ref.send_message(chat_id=cid, text=f"انتهى وقت جلسة التركيز! ({duration} دقيقة)\n/focus done لتسجيل الإنجاز")
+                except Exception as e:
+                    logger.error("Focus timer callback failed: %s", e)
+
+            scheduler.add_job(
+                _focus_timer_callback, "date", run_date=run_at,
+                id=f"focus_timer_{sid}", replace_existing=True,
+            )
+    except Exception as e:
+        logger.error("Focus start failed: %s", e)
+        await message.answer("خطأ في بدء جلسة التركيز.")
+
+
+@router.message(Command("backup"))
+async def cmd_backup(message: Message):
+    if not authorized(message):
+        return
+    args = message.text.strip().split(maxsplit=1)
+
+    # /backup list
+    if len(args) > 1 and args[1].strip().lower() == "list":
+        try:
+            data = await api_get("/backup/list")
+            backups = data.get("backups", [])
+            if not backups:
+                await message.answer("لا توجد نسخ احتياطية.")
+                return
+            lines = ["النسخ الاحتياطية:"]
+            for b in backups[:10]:
+                size_mb = b["size_bytes"] / (1024 * 1024)
+                lines.append(f"  {b['timestamp']} ({size_mb:.1f} MB)")
+            await send_reply(message, "\n".join(lines))
+        except Exception as e:
+            logger.error("Backup list failed: %s", e)
+            await message.answer("خطأ في جلب قائمة النسخ.")
+        return
+
+    # /backup — create backup
+    await message.answer("جاري إنشاء نسخة احتياطية...")
+    try:
+        data = await api_post("/backup/create", timeout=300.0)
+        sizes = data.get("sizes", {})
+        lines = [
+            f"تم إنشاء النسخة: {data.get('timestamp', '')}",
+            f"  الرسم البياني: {sizes.get('graph', 0) / 1024:.0f} KB",
+            f"  المتجهات: {sizes.get('vector', 0) / 1024:.0f} KB",
+            f"  الذاكرة: {sizes.get('redis', 0) / 1024:.0f} KB",
+        ]
+        removed = data.get("old_backups_removed", 0)
+        if removed:
+            lines.append(f"  حذف {removed} نسخ قديمة")
+        await send_reply(message, "\n".join(lines))
+    except Exception as e:
+        logger.error("Backup create failed: %s", e)
+        await message.answer("خطأ في إنشاء النسخة الاحتياطية.")
+
+
+@router.message(Command("graph"))
+async def cmd_graph(message: Message):
+    if not authorized(message):
+        return
+    args = message.text.strip().split(maxsplit=2)
+
+    # /graph — schema overview
+    if len(args) == 1:
+        try:
+            data = await api_get("/graph/schema")
+            lines = [
+                f"إحصائيات الرسم البياني:",
+                f"  العقد: {data.get('total_nodes', 0)}",
+                f"  العلاقات: {data.get('total_edges', 0)}",
+                "",
+                "أنواع العقد:",
+            ]
+            for label, count in sorted(data.get("node_labels", {}).items(), key=lambda x: -x[1]):
+                lines.append(f"  {label}: {count}")
+            rel_types = data.get("relationship_types", {})
+            if rel_types:
+                lines.append("\nأنواع العلاقات:")
+                for rt, count in sorted(rel_types.items(), key=lambda x: -x[1])[:10]:
+                    lines.append(f"  {rt}: {count}")
+            await send_reply(message, "\n".join(lines))
+        except Exception as e:
+            logger.error("Graph schema failed: %s", e)
+            await message.answer("خطأ في جلب معلومات الرسم البياني.")
+        return
+
+    # /graph Person — type subgraph as image
+    # /graph محمد 2 — ego-graph
+    entity_or_center = args[1].strip()
+    hops = 2
+    if len(args) > 2:
+        try:
+            hops = int(args[2].strip())
+        except ValueError:
+            pass
+
+    await message.answer("جاري إنشاء صورة الرسم البياني...")
+    try:
+        # Check if it's a known entity type (capitalized English) or a center name
+        _KNOWN_TYPES = {"Person", "Project", "Task", "Expense", "Debt", "Reminder",
+                        "Company", "Item", "Knowledge", "Topic", "Tag", "Sprint", "Idea"}
+        payload = {"width": 1200, "height": 800, "limit": 300}
+        if entity_or_center in _KNOWN_TYPES:
+            payload["entity_type"] = entity_or_center
+        else:
+            payload["center"] = entity_or_center
+            payload["hops"] = hops
+
+        async with httpx.AsyncClient(base_url=API_BASE, timeout=60.0) as client:
+            resp = await client.post("/graph/image", json=payload)
+            resp.raise_for_status()
+            png_bytes = resp.content
+
+        photo = BufferedInputFile(png_bytes, filename="graph.png")
+        await message.answer_photo(photo=photo)
+    except Exception as e:
+        logger.error("Graph image failed: %s", e)
+        await message.answer("خطأ في إنشاء صورة الرسم البياني.")
+
+
+@router.message(Command("sprint"))
+async def cmd_sprint(message: Message):
+    if not authorized(message):
+        return
+    try:
+        data = await api_get("/productivity/sprints/")
+        sprints = data.get("sprints", [])
+        if not sprints:
+            await message.answer("لا توجد سبرنتات.")
+            return
+        lines = ["السبرنتات:"]
+        for s in sprints:
+            total = s.get("total_tasks", 0)
+            done = s.get("done_tasks", 0)
+            pct = s.get("progress_pct", 0)
+            bar_filled = int(pct / 10)
+            bar = "█" * bar_filled + "░" * (10 - bar_filled)
+            lines.append(
+                f"\n{s['name']} [{s['status']}]"
+                f"\n  {bar} {pct}% ({done}/{total})"
+                f"\n  {s.get('start_date', '?')} → {s.get('end_date', '?')}"
+            )
+            if s.get("goal"):
+                lines.append(f"  الهدف: {s['goal']}")
+        await send_reply(message, "\n".join(lines))
+    except Exception as e:
+        logger.error("Sprint command failed: %s", e)
+        await message.answer("خطأ في جلب السبرنتات.")
 
 
 # --- Callback: Confirmation buttons ---
@@ -677,13 +981,23 @@ async def handle_text(message: Message):
             # Expired — remove and proceed normally
             _pending_locations.pop(sid)
 
-    result = await chat_api(message.text, sid)
+    # Use streaming for regular chat
+    placeholder = await message.answer("...")
+    reply_text = await chat_api_stream(message.text, sid, placeholder)
 
-    keyboard = None
-    if result.get("pending_confirmation"):
-        keyboard = confirmation_keyboard()
-
-    await send_reply(message, result["reply"], keyboard=keyboard)
+    # Check if reply was a confirmation prompt (pending_confirmation)
+    # We can't detect this in streaming easily, so just display the result
+    if not reply_text.strip():
+        try:
+            await placeholder.delete()
+        except Exception:
+            pass
+        # Fallback to non-streaming
+        result = await chat_api(message.text, sid)
+        keyboard = None
+        if result.get("pending_confirmation"):
+            keyboard = confirmation_keyboard()
+        await send_reply(message, result["reply"], keyboard=keyboard)
 
 
 # --- Error handler ---
@@ -719,6 +1033,17 @@ def format_morning_summary(data: dict) -> str:
     alerts = data.get("spending_alerts")
     if alerts:
         parts.append(f"\n{alerts}")
+
+    tb = data.get("timeblock_suggestion")
+    if tb and tb.get("blocks"):
+        energy_ar = {"normal": "عادي", "tired": "متعب", "energized": "نشيط"}
+        profile = energy_ar.get(tb.get("energy_profile", ""), tb.get("energy_profile", ""))
+        lines = [f"\nجدول المهام المقترح ({profile}):"]
+        for b in tb["blocks"]:
+            start = b["start_time"][-8:-3]
+            end = b["end_time"][-8:-3]
+            lines.append(f"  [{start}-{end}] {b['task_title']}")
+        parts.append("\n".join(lines))
 
     return "\n\n".join(parts)
 
@@ -848,6 +1173,27 @@ async def job_check_reminders(bot: Bot):
         logger.error("Reminder check job failed: %s", e)
 
 
+async def job_daily_backup(bot: Bot):
+    """Daily automated backup with Telegram notification."""
+    try:
+        data = await api_post("/backup/create", timeout=300.0)
+        sizes = data.get("sizes", {})
+        total_kb = sum(sizes.values()) / 1024
+        ts = data.get("timestamp", "?")
+        removed = data.get("old_backups_removed", 0)
+        text = f"نسخة احتياطية تلقائية: {ts} ({total_kb:.0f} KB)"
+        if removed:
+            text += f" — حذف {removed} نسخ قديمة"
+        await bot.send_message(chat_id=settings.tg_chat_id, text=text)
+        logger.info("Daily backup completed: %s", ts)
+    except Exception as e:
+        logger.error("Daily backup job failed: %s", e)
+        try:
+            await bot.send_message(chat_id=settings.tg_chat_id, text=f"فشل النسخ الاحتياطي: {e}")
+        except Exception:
+            pass
+
+
 async def job_smart_alerts(bot: Bot):
     try:
         parts = []
@@ -890,9 +1236,11 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
 
+    global _scheduler
     scheduler = None
     if settings.proactive_enabled:
         scheduler = AsyncIOScheduler()
+        _scheduler = scheduler
         tz_offset = settings.timezone_offset_hours
         morning_utc = (settings.proactive_morning_hour - tz_offset) % 24
         noon_utc = (settings.proactive_noon_hour - tz_offset) % 24
@@ -919,9 +1267,18 @@ async def main():
             args=[bot],
             id="alerts",
         )
+
+        # Daily backup job
+        if settings.backup_enabled:
+            backup_utc = (settings.backup_hour - tz_offset) % 24
+            scheduler.add_job(
+                job_daily_backup, CronTrigger(hour=backup_utc), args=[bot], id="backup"
+            )
+            logger.info("Daily backup scheduled at %d:00 local", settings.backup_hour)
+
         scheduler.start()
         logger.info(
-            "Scheduler started with 5 jobs (morning=%d:00, noon=%d:00, evening=%d:00 local)",
+            "Scheduler started with jobs (morning=%d:00, noon=%d:00, evening=%d:00 local)",
             settings.proactive_morning_hour,
             settings.proactive_noon_hour,
             settings.proactive_evening_hour,

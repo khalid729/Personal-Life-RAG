@@ -4,11 +4,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import chat, files, financial, ingest, inventory, knowledge, proactive, projects, reminders, search, tasks
+from app.routers import chat, files, financial, ingest, inventory, knowledge, proactive, productivity, projects, reminders, search, tasks
+from app.routers import backup as backup_router
+from app.routers import graph_viz
+from app.services.backup import BackupService
 from app.services.files import FileService
 from app.services.graph import GraphService
 from app.services.llm import LLMService
 from app.services.memory import MemoryService
+from app.services.ner import NERService
 from app.services.retrieval import RetrievalService
 from app.services.vector import VectorService
 
@@ -28,6 +32,7 @@ async def lifespan(app: FastAPI):
     graph = GraphService()
     vector = VectorService()
     memory = MemoryService()
+    ner = NERService()
 
     await llm.start()
     logger.info("LLM service ready")
@@ -41,13 +46,19 @@ async def lifespan(app: FastAPI):
     await memory.start()
     logger.info("Memory service ready")
 
+    await ner.start()
+    logger.info("NER service ready")
+
     graph.set_vector_service(vector)
 
-    retrieval = RetrievalService(llm, graph, vector, memory)
+    retrieval = RetrievalService(llm, graph, vector, memory, ner=ner)
     app.state.retrieval = retrieval
 
     file_service = FileService(llm, retrieval)
     app.state.file_service = file_service
+
+    backup_service = BackupService(graph, vector, memory)
+    app.state.backup_service = backup_service
 
     logger.info("All services started. API is ready.")
     yield
@@ -87,6 +98,9 @@ app.include_router(tasks.router)
 app.include_router(knowledge.router)
 app.include_router(proactive.router)
 app.include_router(inventory.router)
+app.include_router(productivity.router)
+app.include_router(backup_router.router)
+app.include_router(graph_viz.router)
 
 
 @app.get("/health")

@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import AsyncGenerator
 
 import httpx
 
@@ -62,8 +63,8 @@ class LLMService:
         messages = build_translate_en_to_ar(text)
         return await self.chat(messages, max_tokens=1024, temperature=0.1)
 
-    async def extract_facts(self, text: str) -> dict:
-        messages = build_extract(text)
+    async def extract_facts(self, text: str, ner_hints: str = "") -> dict:
+        messages = build_extract(text, ner_hints=ner_hints)
         raw = await self.chat(messages, max_tokens=2048, temperature=0.1, json_mode=True)
         try:
             return json.loads(raw)
@@ -211,3 +212,101 @@ class LLMService:
         except json.JSONDecodeError:
             logger.warning("Failed to parse core_preferences JSON: %s", raw[:200])
             return {"preferences": {}}
+
+    # --- Streaming (Phase 11) ---
+
+    async def chat_stream(
+        self,
+        messages: list[dict],
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+    ) -> AsyncGenerator[str, None]:
+        body = {
+            "model": settings.vllm_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        async with self._client.stream("POST", "/chat/completions", json=body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        yield delta
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+
+    async def generate_response_stream(
+        self,
+        query: str,
+        context: str,
+        memory_context: str,
+        conversation_history: list[dict] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        from datetime import datetime, timedelta, timezone
+        from app.config import get_settings as _gs
+        riyadh_tz = timezone(timedelta(hours=_gs().timezone_offset_hours))
+        now = datetime.now(riyadh_tz)
+        today_str = now.strftime("%Y-%m-%d")
+        tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        weekdays_ar = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+        today_weekday = weekdays_ar[now.weekday()]
+        tomorrow_weekday = weekdays_ar[(now.weekday() + 1) % 7]
+
+        system_prompt = f"""أنت مساعد شخصي ذكي لإدارة الحياة اليومية. اسمك "المساعد".
+ترد بالعربية السعودية العامية. كن مختصر ومفيد.
+
+الوقت الحالي: {now.strftime("%H:%M")}
+اليوم = {today_weekday} {today_str}
+بكرة/غداً = {tomorrow_weekday} {tomorrow_str}
+مهم: لما المستخدم يقول "بكرة" أو "غداً" يقصد {tomorrow_weekday} {tomorrow_str} وليس اليوم.
+
+ذاكرتك:
+{memory_context}
+
+معلومات متاحة:
+{context}
+
+تعليمات:
+- رد بالعربي السعودي العامي
+- لو المعلومات موجودة في السياق، استخدمها
+- لو ما عندك معلومات كافية، قول بصراحة
+- كن مختصر وواضح
+- لو المستخدم يشير لشي قاله قبل، ارجع لسياق المحادثة"""
+        messages = [{"role": "system", "content": system_prompt}]
+        if conversation_history:
+            for turn in conversation_history:
+                messages.append({"role": turn["role"], "content": turn["content"]})
+        messages.append({"role": "user", "content": query})
+
+        async for chunk in self.chat_stream(messages, max_tokens=2048, temperature=0.7):
+            yield chunk
+
+    # --- Conversation Summarization (Phase 11) ---
+
+    async def summarize_conversation(self, messages: list[dict]) -> str:
+        formatted = "\n".join(
+            f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+            for m in messages
+        )
+        prompt_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "لخص هذه المحادثة بشكل مختصر بالعربي. "
+                    "ركز على الحقائق والقرارات والسياق المهم. "
+                    "اكتب الملخص فقط بدون مقدمات."
+                ),
+            },
+            {"role": "user", "content": formatted},
+        ]
+        return await self.chat(prompt_messages, max_tokens=500, temperature=0.3)

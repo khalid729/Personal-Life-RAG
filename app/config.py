@@ -86,6 +86,31 @@ class Settings(BaseSettings):
     inventory_unused_days: int = 90
     inventory_report_top_n: int = 10
 
+    # Productivity (Phase 10)
+    productivity_enabled: bool = True
+    energy_peak_hours: str = "7-12"
+    energy_low_hours: str = "14-16"
+    work_day_start: int = 7
+    work_day_end: int = 22
+    default_energy_profile: str = "normal"  # "normal", "tired", "energized"
+    pomodoro_default_minutes: int = 25
+    time_block_slot_minutes: int = 30
+    sprint_default_weeks: int = 2
+
+    # Backup (Phase 11)
+    backup_enabled: bool = True
+    backup_hour: int = 3  # 3 AM local
+    backup_retention_days: int = 30
+    backup_dir: str = "data/backups"
+
+    # Arabic NER (Phase 11)
+    arabic_ner_enabled: bool = True
+    arabic_ner_model: str = "CAMeL-Lab/bert-base-arabic-camelbert-msa-ner"
+
+    # Conversation Summarization (Phase 11)
+    conversation_compress_threshold: int = 15
+    conversation_compress_keep_recent: int = 4
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

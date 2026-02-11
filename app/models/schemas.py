@@ -55,6 +55,19 @@ class Recurrence(str, Enum):
     YEARLY = "yearly"
 
 
+class EnergyLevel(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class SprintStatus(str, Enum):
+    PLANNING = "planning"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
 class InputCategory(str, Enum):
     FINANCIAL = "financial"
     REMINDER = "reminder"
@@ -153,6 +166,10 @@ class TaskBase(BaseModel):
     priority: Optional[int] = None
     due_date: Optional[dt.date] = None
     project: Optional[str] = None
+    estimated_duration: Optional[int] = None  # minutes
+    energy_level: Optional[str] = None  # high/medium/low
+    start_time: Optional[dt.datetime] = None  # scheduled start
+    end_time: Optional[dt.datetime] = None  # scheduled end
 
 
 class TaskCreate(TaskBase):
@@ -162,6 +179,35 @@ class TaskCreate(TaskBase):
 class Task(TaskBase):
     created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
     updated_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
+
+
+class SprintBase(BaseModel):
+    name: str
+    start_date: Optional[dt.date] = None
+    end_date: Optional[dt.date] = None
+    goal: Optional[str] = None
+    status: SprintStatus = SprintStatus.PLANNING
+    project: Optional[str] = None
+
+
+class Sprint(SprintBase):
+    created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
+    velocity: Optional[float] = None
+
+
+class FocusSessionCreate(BaseModel):
+    task: Optional[str] = None
+    duration_minutes: int = 25
+
+
+class FocusStatsResponse(BaseModel):
+    today_sessions: int = 0
+    today_minutes: int = 0
+    week_sessions: int = 0
+    week_minutes: int = 0
+    total_sessions: int = 0
+    total_minutes: int = 0
+    by_task: list[dict] = []
 
 
 class ExpenseBase(BaseModel):
@@ -422,3 +468,39 @@ class InventoryLocationUpdate(BaseModel):
 
 class InventoryQuantityUpdate(BaseModel):
     quantity: int
+
+
+# --- Productivity (Phase 10) ---
+
+class SprintCreateRequest(BaseModel):
+    name: str
+    project: Optional[str] = None
+    start_date: Optional[str] = None  # YYYY-MM-DD
+    end_date: Optional[str] = None  # YYYY-MM-DD
+    goal: Optional[str] = None
+
+
+class SprintUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    status: Optional[str] = None
+    goal: Optional[str] = None
+
+
+class TimeBlockRequest(BaseModel):
+    date: str  # YYYY-MM-DD
+    energy_override: Optional[str] = None  # "normal", "tired", "energized"
+
+
+class TimeBlockResponse(BaseModel):
+    blocks: list[dict] = []
+    energy_profile: str = "normal"
+    date: str = ""
+
+
+class FocusStartRequest(BaseModel):
+    task: Optional[str] = None
+    duration_minutes: int = 25
+
+
+class FocusCompleteRequest(BaseModel):
+    completed: bool = True

@@ -338,7 +338,21 @@ class GraphService:
         return {"title": r_title, "next_due": next_due_str, "recurrence": recurrence}
 
     # --- Task ---
+    _ENERGY_ALIASES: dict[str, str] = {
+        "high": "high", "عالي": "high", "عالية": "high", "deep": "high", "deep focus": "high",
+        "medium": "medium", "متوسط": "medium", "متوسطة": "medium", "normal": "medium",
+        "low": "low", "منخفض": "low", "منخفضة": "low", "easy": "low", "light": "low",
+    }
+
+    @staticmethod
+    def _normalize_energy(level: str | None) -> str | None:
+        if not level:
+            return None
+        return GraphService._ENERGY_ALIASES.get(level.lower().strip(), level.lower().strip())
+
     async def upsert_task(self, title: str, **props) -> None:
+        if "energy_level" in props and props["energy_level"]:
+            props["energy_level"] = self._normalize_energy(props["energy_level"])
         props_str = self._build_set_clause(props, var="t")
         q = f"""
         MERGE (t:Task {{title: $title}})
@@ -346,6 +360,422 @@ class GraphService:
         ON MATCH SET t.updated_at = $now {props_str}
         """
         await self._graph.query(q, params={"title": title, "now": _now(), **props})
+
+    # --- Sprint ---
+    async def create_sprint(self, name: str, start_date: str | None = None,
+                            end_date: str | None = None, **props) -> dict:
+        """Create or update a Sprint node."""
+        if not start_date:
+            start_date = _now()[:10]
+        if not end_date:
+            d = datetime.fromisoformat(start_date) + timedelta(weeks=settings.sprint_default_weeks)
+            end_date = d.strftime("%Y-%m-%d")
+        extra = {k: v for k, v in props.items() if v is not None}
+        sets = ""
+        if extra:
+            sets = ", " + ", ".join(f"s.{k} = ${k}" for k in extra)
+        q = f"""
+        MERGE (s:Sprint {{name: $name}})
+        ON CREATE SET s.start_date = $start_date, s.end_date = $end_date,
+                      s.status = 'planning', s.created_at = $now{sets}
+        ON MATCH SET s.updated_at = $now{sets}
+        RETURN s.name, s.status, s.start_date, s.end_date
+        """
+        rows = await self.query(q, {"name": name, "start_date": start_date,
+                                    "end_date": end_date, "now": _now(), **extra})
+        result = {"name": name, "status": "planning", "start_date": start_date, "end_date": end_date}
+        if rows:
+            result = {"name": rows[0][0], "status": rows[0][1],
+                      "start_date": rows[0][2], "end_date": rows[0][3]}
+        # Link to project if provided
+        project = extra.get("project") or props.get("project")
+        if project:
+            await self.upsert_project(project)
+            try:
+                await self.create_relationship("Sprint", "name", name,
+                                               "BELONGS_TO", "Project", "name", project)
+            except Exception as e:
+                logger.debug("Sprint-Project link skipped: %s", e)
+            result["project"] = project
+        return result
+
+    async def update_sprint(self, name: str, **props) -> dict:
+        """Update sprint properties."""
+        filtered = {k: v for k, v in props.items() if v is not None}
+        if not filtered:
+            return {"error": "No properties to update"}
+        filtered["updated_at"] = _now()
+        sets = ", ".join(f"s.{k} = ${k}" for k in filtered)
+        q = f"""
+        MATCH (s:Sprint {{name: $name}})
+        SET {sets}
+        RETURN s.name, s.status, s.start_date, s.end_date, s.goal
+        """
+        rows = await self.query(q, {"name": name, **filtered})
+        if not rows:
+            return {"error": f"Sprint '{name}' not found"}
+        return {"name": rows[0][0], "status": rows[0][1],
+                "start_date": rows[0][2], "end_date": rows[0][3], "goal": rows[0][4]}
+
+    async def assign_task_to_sprint(self, task_title: str, sprint_name: str) -> dict:
+        """Link a Task to a Sprint via IN_SPRINT relationship."""
+        q = """
+        MATCH (t:Task {title: $task})
+        MATCH (s:Sprint {name: $sprint})
+        MERGE (t)-[:IN_SPRINT]->(s)
+        RETURN t.title, s.name
+        """
+        rows = await self.query(q, {"task": task_title, "sprint": sprint_name})
+        if not rows:
+            return {"error": f"Task '{task_title}' or Sprint '{sprint_name}' not found"}
+        return {"task": rows[0][0], "sprint": rows[0][1]}
+
+    async def query_sprint(self, name: str) -> dict:
+        """Sprint details + task breakdown."""
+        q = """
+        MATCH (s:Sprint {name: $name})
+        OPTIONAL MATCH (t:Task)-[:IN_SPRINT]->(s)
+        RETURN s.name, s.status, s.start_date, s.end_date, s.goal,
+               count(t) as total,
+               sum(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as done,
+               sum(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) as in_progress
+        """
+        rows = await self.query(q, {"name": name})
+        if not rows:
+            return {"error": f"Sprint '{name}' not found"}
+        r = rows[0]
+        total = r[5] or 0
+        done = r[6] or 0
+        return {
+            "name": r[0], "status": r[1], "start_date": r[2], "end_date": r[3],
+            "goal": r[4], "total_tasks": total, "done_tasks": done,
+            "in_progress_tasks": r[7] or 0,
+            "progress_pct": round(done / total * 100, 1) if total > 0 else 0,
+        }
+
+    async def query_sprints(self, status_filter: str | None = None) -> list[dict]:
+        """List sprints optionally filtered by status."""
+        where = "WHERE s.status = $status" if status_filter else ""
+        q = f"""
+        MATCH (s:Sprint)
+        {where}
+        OPTIONAL MATCH (t:Task)-[:IN_SPRINT]->(s)
+        RETURN s.name, s.status, s.start_date, s.end_date, s.goal,
+               count(t) as total,
+               sum(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as done
+        ORDER BY s.start_date DESC
+        LIMIT 20
+        """
+        params = {"status": status_filter} if status_filter else {}
+        rows = await self.query(q, params)
+        results = []
+        for r in rows:
+            total = r[5] or 0
+            done = r[6] or 0
+            results.append({
+                "name": r[0], "status": r[1], "start_date": r[2], "end_date": r[3],
+                "goal": r[4], "total_tasks": total, "done_tasks": done,
+                "progress_pct": round(done / total * 100, 1) if total > 0 else 0,
+            })
+        return results
+
+    async def query_sprint_burndown(self, name: str) -> dict:
+        """Burndown data: ideal vs actual remaining."""
+        sprint = await self.query_sprint(name)
+        if "error" in sprint:
+            return sprint
+        total = sprint["total_tasks"]
+        done = sprint["done_tasks"]
+        remaining = total - done
+        # Calculate days
+        try:
+            start = datetime.fromisoformat(sprint["start_date"])
+            end = datetime.fromisoformat(sprint["end_date"])
+            now = _now_dt()
+            total_days = max((end - start).days, 1)
+            days_passed = max((now - start).days, 0)
+            days_left = max((end - now).days, 0)
+        except (ValueError, TypeError):
+            total_days, days_passed, days_left = 14, 0, 14
+        # Ideal burndown: linear decrease
+        ideal_remaining = total * (1 - days_passed / total_days) if total_days > 0 else total
+        return {
+            "name": sprint["name"], "status": sprint["status"],
+            "total_tasks": total, "done_tasks": done, "remaining": remaining,
+            "total_days": total_days, "days_passed": days_passed, "days_left": days_left,
+            "ideal_remaining": round(ideal_remaining, 1),
+            "progress_pct": sprint["progress_pct"],
+        }
+
+    async def complete_sprint(self, name: str) -> dict:
+        """Mark sprint completed, calculate velocity."""
+        sprint = await self.query_sprint(name)
+        if "error" in sprint:
+            return sprint
+        total = sprint["total_tasks"]
+        done = sprint["done_tasks"]
+        # Calculate velocity (tasks per week)
+        try:
+            start = datetime.fromisoformat(sprint["start_date"])
+            end = _now_dt()
+            weeks = max((end - start).days / 7, 1)
+            velocity = round(done / weeks, 1)
+        except (ValueError, TypeError):
+            velocity = 0
+        q = """
+        MATCH (s:Sprint {name: $name})
+        SET s.status = 'completed', s.completed_at = $now, s.velocity = $velocity
+        RETURN s.name, s.status
+        """
+        await self.query(q, {"name": name, "now": _now(), "velocity": velocity})
+        return {
+            "name": name, "status": "completed", "done_tasks": done,
+            "total_tasks": total, "velocity": velocity,
+        }
+
+    async def query_sprint_velocity(self, project_name: str | None = None) -> dict:
+        """Average velocity across completed sprints."""
+        if project_name:
+            q = """
+            MATCH (s:Sprint)-[:BELONGS_TO]->(p:Project {name: $project})
+            WHERE s.status = 'completed' AND s.velocity IS NOT NULL
+            RETURN avg(s.velocity) as avg_vel, count(s) as cnt
+            """
+            rows = await self.query(q, {"project": project_name})
+        else:
+            q = """
+            MATCH (s:Sprint)
+            WHERE s.status = 'completed' AND s.velocity IS NOT NULL
+            RETURN avg(s.velocity) as avg_vel, count(s) as cnt
+            """
+            rows = await self.query(q)
+        if not rows or not rows[0][1]:
+            return {"avg_velocity": 0, "completed_sprints": 0}
+        return {"avg_velocity": round(rows[0][0], 1), "completed_sprints": rows[0][1]}
+
+    # --- Focus Sessions ---
+    async def start_focus_session(self, duration_minutes: int = 25,
+                                  task_title: str | None = None,
+                                  session_id: str | None = None) -> dict:
+        """Create a FocusSession node, optionally link to a Task."""
+        sid = session_id or _now().replace(":", "").replace("-", "")[:14]
+        q = """
+        CREATE (f:FocusSession {session_id: $sid, started_at: $now,
+                                duration_minutes: $dur, completed: false})
+        RETURN f.session_id, f.started_at
+        """
+        rows = await self.query(q, {"sid": sid, "now": _now(), "dur": duration_minutes})
+        result = {"session_id": sid, "started_at": _now(), "duration_minutes": duration_minutes}
+        if task_title:
+            try:
+                q_link = """
+                MATCH (f:FocusSession {session_id: $sid})
+                MATCH (t:Task)
+                WHERE toLower(t.title) CONTAINS toLower($task)
+                MERGE (f)-[:WORKED_ON]->(t)
+                RETURN t.title
+                """
+                link_rows = await self.query(q_link, {"sid": sid, "task": task_title})
+                if link_rows:
+                    result["task"] = link_rows[0][0]
+            except Exception as e:
+                logger.debug("Focus-Task link skipped: %s", e)
+        return result
+
+    async def complete_focus_session(self, session_id: str | None = None,
+                                     completed: bool = True) -> dict:
+        """Complete the latest incomplete focus session."""
+        if session_id:
+            q = """
+            MATCH (f:FocusSession {session_id: $sid})
+            WHERE f.completed = false
+            SET f.completed = $completed, f.ended_at = $now
+            RETURN f.session_id, f.started_at, f.ended_at, f.duration_minutes
+            """
+            rows = await self.query(q, {"sid": session_id, "completed": completed, "now": _now()})
+        else:
+            q = """
+            MATCH (f:FocusSession)
+            WHERE f.completed = false
+            WITH f ORDER BY f.started_at DESC LIMIT 1
+            SET f.completed = $completed, f.ended_at = $now
+            RETURN f.session_id, f.started_at, f.ended_at, f.duration_minutes
+            """
+            rows = await self.query(q, {"completed": completed, "now": _now()})
+        if not rows:
+            return {"error": "No active focus session found"}
+        return {
+            "session_id": rows[0][0], "started_at": rows[0][1],
+            "ended_at": rows[0][2], "duration_minutes": rows[0][3],
+            "completed": completed,
+        }
+
+    async def query_focus_stats(self) -> dict:
+        """Focus session statistics: today/week/total + by task."""
+        today = _now()[:10]
+        week_ago = (_now_dt() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        # Today
+        q_today = """
+        MATCH (f:FocusSession)
+        WHERE f.completed = true AND f.started_at >= $today
+        RETURN count(f), sum(f.duration_minutes)
+        """
+        r1 = await self.query(q_today, {"today": today})
+        today_sessions = r1[0][0] if r1 else 0
+        today_minutes = int(r1[0][1] or 0) if r1 else 0
+
+        # Week
+        q_week = """
+        MATCH (f:FocusSession)
+        WHERE f.completed = true AND f.started_at >= $week_ago
+        RETURN count(f), sum(f.duration_minutes)
+        """
+        r2 = await self.query(q_week, {"week_ago": week_ago})
+        week_sessions = r2[0][0] if r2 else 0
+        week_minutes = int(r2[0][1] or 0) if r2 else 0
+
+        # Total
+        q_total = """
+        MATCH (f:FocusSession)
+        WHERE f.completed = true
+        RETURN count(f), sum(f.duration_minutes)
+        """
+        r3 = await self.query(q_total)
+        total_sessions = r3[0][0] if r3 else 0
+        total_minutes = int(r3[0][1] or 0) if r3 else 0
+
+        # By task
+        q_by_task = """
+        MATCH (f:FocusSession)-[:WORKED_ON]->(t:Task)
+        WHERE f.completed = true
+        RETURN t.title, count(f), sum(f.duration_minutes)
+        ORDER BY sum(f.duration_minutes) DESC
+        LIMIT 10
+        """
+        r4 = await self.query(q_by_task)
+        by_task = [{"task": r[0], "sessions": r[1], "minutes": int(r[2] or 0)} for r in (r4 or [])]
+
+        return {
+            "today_sessions": today_sessions, "today_minutes": today_minutes,
+            "week_sessions": week_sessions, "week_minutes": week_minutes,
+            "total_sessions": total_sessions, "total_minutes": total_minutes,
+            "by_task": by_task,
+        }
+
+    # --- Energy-Aware Time-Blocking ---
+    async def suggest_time_blocks(self, date_str: str,
+                                  energy_profile: str | None = None) -> dict:
+        """Generate time-block suggestions based on energy profile and task priorities."""
+        profile = energy_profile or settings.default_energy_profile
+
+        # Parse energy hours from config
+        def parse_range(s: str) -> tuple[int, int]:
+            parts = s.split("-")
+            return int(parts[0]), int(parts[1])
+
+        peak_start, peak_end = parse_range(settings.energy_peak_hours)
+        low_start, low_end = parse_range(settings.energy_low_hours)
+
+        # Adjust based on profile
+        if profile == "tired":
+            peak_start += 1
+            peak_end -= 1
+            low_start -= 1
+            low_end += 1
+        elif profile == "energized":
+            peak_start -= 1
+            peak_end += 1
+
+        # Clamp to work day
+        day_start = settings.work_day_start
+        day_end = settings.work_day_end
+        peak_start = max(peak_start, day_start)
+        peak_end = min(peak_end, day_end)
+        low_start = max(low_start, day_start)
+        low_end = min(low_end, day_end)
+
+        # Fetch tasks (todo/in_progress, due today or no due_date, not yet scheduled)
+        eod = date_str + "T23:59:59"
+        q = """
+        MATCH (t:Task)
+        WHERE t.status IN ['todo', 'in_progress']
+          AND (t.start_time IS NULL OR t.start_time = '')
+          AND (t.due_date IS NULL OR t.due_date <= $eod)
+        RETURN t.title, t.priority, t.energy_level, t.estimated_duration
+        ORDER BY t.priority DESC
+        LIMIT 20
+        """
+        rows = await self.query(q, {"eod": eod})
+        if not rows:
+            return {"blocks": [], "energy_profile": profile, "date": date_str}
+
+        # Bucket tasks by energy
+        high_tasks, medium_tasks, low_tasks = [], [], []
+        for r in rows:
+            task = {
+                "title": r[0], "priority": r[1] or 0,
+                "energy_level": r[2] or "medium",
+                "duration": r[3] or settings.time_block_slot_minutes,
+            }
+            el = (task["energy_level"] or "medium").lower()
+            if el == "high":
+                high_tasks.append(task)
+            elif el == "low":
+                low_tasks.append(task)
+            else:
+                medium_tasks.append(task)
+
+        blocks = []
+        slot = settings.time_block_slot_minutes
+
+        def schedule_tasks(tasks: list[dict], start_h: int, end_h: int) -> None:
+            current_min = start_h * 60
+            end_min = end_h * 60
+            for task in tasks:
+                dur = min(task["duration"], 120)  # cap at 2 hours
+                if current_min + dur > end_min:
+                    break
+                s_h, s_m = divmod(current_min, 60)
+                e_min = current_min + dur
+                e_h, e_m_ = divmod(e_min, 60)
+                blocks.append({
+                    "task_title": task["title"],
+                    "start_time": f"{date_str}T{s_h:02d}:{s_m:02d}:00",
+                    "end_time": f"{date_str}T{e_h:02d}:{e_m_:02d}:00",
+                    "energy_level": task["energy_level"],
+                    "priority": task["priority"],
+                })
+                current_min = e_min
+
+        # Schedule: peak → high, low hours → low, remaining → medium
+        schedule_tasks(high_tasks, peak_start, peak_end)
+        schedule_tasks(low_tasks, low_start, low_end)
+        # Medium: fill remaining work hours
+        medium_start = peak_end if peak_end < low_start else low_end
+        medium_end = low_start if peak_end < low_start else day_end
+        schedule_tasks(medium_tasks, medium_start, medium_end)
+
+        return {"blocks": blocks, "energy_profile": profile, "date": date_str}
+
+    async def apply_time_blocks(self, blocks: list[dict], date_str: str) -> dict:
+        """Apply time-block suggestions to Task nodes (SET start_time/end_time)."""
+        applied = 0
+        for block in blocks:
+            title = block.get("task_title", "")
+            start = block.get("start_time", "")
+            end = block.get("end_time", "")
+            if not title or not start or not end:
+                continue
+            q = """
+            MATCH (t:Task {title: $title})
+            SET t.start_time = $start, t.end_time = $end, t.updated_at = $now
+            RETURN t.title
+            """
+            rows = await self.query(q, {"title": title, "start": start, "end": end, "now": _now()})
+            if rows:
+                applied += 1
+        return {"applied": applied, "date": date_str}
 
     # --- Idea ---
     async def create_idea(self, title: str, **props) -> None:
@@ -504,6 +934,29 @@ class GraphService:
                 continue
 
             try:
+                # Sprint handling
+                if etype == "Sprint":
+                    start_date = props.pop("start_date", None)
+                    end_date = props.pop("end_date", None)
+                    await self.create_sprint(ename, start_date, end_date, **props)
+                    count += 1
+                    # Create relationships for Sprint
+                    for rel in rels:
+                        target_type = rel.get("target_type", "")
+                        target_name = rel.get("target_name", "")
+                        rel_type = rel.get("type", "RELATED_TO")
+                        if target_type and target_name:
+                            if target_type in ("Person", "Company", "Project", "Topic"):
+                                target_name = await self.resolve_entity_name(target_name, target_type)
+                            target_key = "name" if target_type not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
+                            try:
+                                await self.create_relationship(
+                                    "Sprint", "name", ename, rel_type, target_type, target_key, target_name
+                                )
+                            except Exception as e:
+                                logger.debug("Sprint relationship skipped: %s", e)
+                    continue
+
                 handler = {
                     "Person": lambda n, **p: self.upsert_person(n, **p),
                     "Company": lambda n, **p: self.upsert_company(n, **p),
@@ -581,6 +1034,29 @@ class GraphService:
                     cat = props.get("category") or self._guess_knowledge_category(ename, props.get("content", ""))
                     if cat:
                         await self.tag_entity("Knowledge", "title", ename, cat)
+
+                # Auto-link Task to Project: if no BELONGS_TO in rels, search project names
+                if etype == "Task":
+                    has_project_rel = any(
+                        r.get("target_type") == "Project" or r.get("type") == "BELONGS_TO"
+                        for r in rels
+                    )
+                    if not has_project_rel:
+                        try:
+                            q_projects = "MATCH (p:Project) RETURN p.name"
+                            proj_rows = await self.query(q_projects)
+                            task_lower = ename.lower()
+                            for pr in (proj_rows or []):
+                                pname = pr[0]
+                                if pname and pname.lower() in task_lower:
+                                    await self.create_relationship(
+                                        "Task", "title", ename,
+                                        "BELONGS_TO", "Project", "name", pname,
+                                    )
+                                    logger.info("Auto-linked task '%s' to project '%s'", ename, pname)
+                                    break
+                        except Exception as e:
+                            logger.debug("Auto-link task to project skipped: %s", e)
 
                 # Create relationships
                 for rel in rels:
@@ -1151,7 +1627,7 @@ class GraphService:
 
     # --- Projects Overview ---
     async def query_projects_overview(self, status_filter: str | None = None) -> str:
-        """Projects with their linked tasks and progress."""
+        """Projects with their linked tasks, progress %, and ETA."""
         filter_clause = "WHERE p.status = $status" if status_filter else ""
         q = f"""
         MATCH (p:Project)
@@ -1169,13 +1645,37 @@ class GraphService:
             label = f" with status '{status_filter}'" if status_filter else ""
             return f"No projects found{label}."
 
+        # Velocity: tasks done in last 3 weeks / 3
+        three_weeks_ago = (_now_dt() - timedelta(weeks=3)).isoformat()
+
         parts = ["Projects:"]
         for r in rows:
             name, status, desc, priority, total, done = r
-            progress = f" ({done}/{total} tasks done)" if total and total > 0 else ""
+            total = total or 0
+            done = done or 0
+            progress_pct = round(done / total * 100, 1) if total > 0 else 0
+            progress = f" ({progress_pct}% complete, {done}/{total} tasks)" if total > 0 else ""
             priority_tag = f" [priority:{priority}]" if priority else ""
             status_tag = f" [{status}]" if status else ""
-            parts.append(f"  - {name}{status_tag}{priority_tag}{progress}")
+
+            # ETA for active projects
+            eta_tag = ""
+            if total > 0 and done < total and status in ("active", "in_progress", None):
+                q_vel = """
+                MATCH (t:Task)-[:BELONGS_TO]->(p:Project {name: $pname})
+                WHERE t.status = 'done' AND t.updated_at >= $since
+                RETURN count(t)
+                """
+                vel_rows = await self.query(q_vel, {"pname": name, "since": three_weeks_ago})
+                done_recent = vel_rows[0][0] if vel_rows and vel_rows[0][0] else 0
+                if done_recent > 0:
+                    tasks_per_week = done_recent / 3
+                    remaining = total - done
+                    weeks_left = remaining / tasks_per_week
+                    eta_date = (_now_dt() + timedelta(weeks=weeks_left)).strftime("%Y-%m-%d")
+                    eta_tag = f" [ETA: ~{eta_date}]"
+
+            parts.append(f"  - {name}{status_tag}{priority_tag}{progress}{eta_tag}")
             if desc:
                 parts.append(f"    {desc[:100]}")
         return "\n".join(parts)
@@ -1228,7 +1728,8 @@ class GraphService:
         MATCH (t:Task)
         {filter_clause}
         OPTIONAL MATCH (t)-[:BELONGS_TO]->(p:Project)
-        RETURN t.title, t.status, t.due_date, t.priority, p.name
+        RETURN t.title, t.status, t.due_date, t.priority, p.name,
+               t.estimated_duration, t.energy_level, t.start_time, t.end_time
         ORDER BY t.priority DESC, t.due_date
         LIMIT 30
         """
@@ -1240,12 +1741,18 @@ class GraphService:
 
         parts = ["Tasks:"]
         for r in rows:
-            title, status, due_date, priority, project = r
+            title, status, due_date, priority, project = r[0], r[1], r[2], r[3], r[4]
+            est_dur, energy, start_t, end_t = r[5], r[6], r[7], r[8]
             status_tag = f" [{status}]"
             due = f" (due: {due_date})" if due_date else ""
             proj = f" @ {project}" if project else ""
             prio = f" [priority:{priority}]" if priority else ""
-            parts.append(f"  - {title}{status_tag}{prio}{due}{proj}")
+            dur = f" ~{est_dur}min" if est_dur else ""
+            eng = f" energy:{energy}" if energy else ""
+            sched = ""
+            if start_t and end_t:
+                sched = f" [{start_t[-5:]}-{end_t[-5:]}]"
+            parts.append(f"  - {title}{status_tag}{prio}{dur}{eng}{due}{sched}{proj}")
         return "\n".join(parts)
 
     async def search_nodes(self, text: str, limit: int = 10) -> str:

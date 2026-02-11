@@ -166,3 +166,31 @@ class MemoryService:
     async def get_conversation_turns(self, session_id: str) -> list[dict]:
         """Returns working memory messages as structured turns for multi-turn prompting."""
         return await self.get_working_memory(session_id)
+
+    # --- Conversation Summarization (Phase 11) ---
+
+    def _summary_key(self, session_id: str) -> str:
+        return f"conversation_summary:{session_id}"
+
+    async def get_working_memory_count(self, session_id: str) -> int:
+        key = self._working_key(session_id)
+        return await self._redis.llen(key)
+
+    async def get_conversation_summary(self, session_id: str) -> str | None:
+        return await self._redis.get(self._summary_key(session_id))
+
+    async def save_conversation_summary(self, session_id: str, summary: str) -> None:
+        key = self._summary_key(session_id)
+        await self._redis.set(key, summary)
+        await self._redis.expire(key, 86400)  # 24h TTL
+
+    async def compress_working_memory(self, session_id: str, keep_recent: int) -> list[dict]:
+        """Return old messages for summarization, then trim list to keep only recent."""
+        key = self._working_key(session_id)
+        all_messages = await self._redis.lrange(key, 0, -1)
+        if len(all_messages) <= keep_recent:
+            return []
+        old_raw = all_messages[:-keep_recent]
+        # Trim the list to keep only the recent messages
+        await self._redis.ltrim(key, -keep_recent, -1)
+        return [json.loads(m) for m in old_raw]
