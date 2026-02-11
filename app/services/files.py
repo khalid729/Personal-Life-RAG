@@ -234,6 +234,7 @@ class FileService:
             "auto_expense": auto_expense,
             "auto_item": auto_item,
             "similar_items": similar_items,
+            "entities": ingest_result.get("entities", []),
         }
 
     # ========================
@@ -269,6 +270,16 @@ class FileService:
                 "facts_extracted": 0,
                 "processing_steps": steps + [f"pdf_error:{e}"],
             }
+
+        # If text extraction is too short, fall back to vision analysis
+        MIN_PDF_TEXT_CHARS = 200
+        if len(md_text.strip()) < MIN_PDF_TEXT_CHARS:
+            steps.append(f"pdf_text_short:{len(md_text.strip())}chars")
+            logger.info("PDF text too short (%d chars), falling back to vision for %s",
+                        len(md_text.strip()), filename)
+            vision_text = await self._pdf_to_vision(file_path, user_context, steps)
+            if vision_text:
+                md_text = vision_text
 
         if not md_text.strip():
             return {
@@ -311,11 +322,69 @@ class FileService:
             "chunks_stored": ingest_result["chunks_stored"],
             "facts_extracted": ingest_result["facts_extracted"],
             "processing_steps": steps,
+            "entities": ingest_result.get("entities", []),
         }
 
     def _pdf_to_markdown(self, file_path: str) -> str:
         import pymupdf4llm
         return pymupdf4llm.to_markdown(file_path)
+
+    async def _pdf_to_vision(self, file_path: str, user_context: str, steps: list[str]) -> str | None:
+        """Convert PDF pages to images and analyze with LLM vision (fallback for scanned/image PDFs)."""
+        try:
+            import pymupdf
+            doc = pymupdf.open(file_path)
+            page_texts = []
+
+            for page_num in range(min(len(doc), 5)):  # Max 5 pages
+                page = doc[page_num]
+                # Render page to image at 200 DPI
+                pix = page.get_pixmap(dpi=200)
+                img_bytes = pix.tobytes("png")
+                img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+                # Analyze with vision LLM
+                analysis = await self.llm.analyze_image(
+                    img_b64, "official_document", "image/png", user_context
+                )
+
+                # Extract text from analysis
+                text_parts = []
+                for key in ["text_content", "extracted_text", "content", "description",
+                            "brief_description", "details", "summary"]:
+                    val = analysis.get(key, "")
+                    if val and isinstance(val, str) and len(val) > 10:
+                        text_parts.append(val)
+
+                # Also grab all string values from analysis
+                if not text_parts:
+                    for k, v in analysis.items():
+                        if isinstance(v, str) and len(v) > 20 and k not in ("error", "raw"):
+                            text_parts.append(f"{k}: {v}")
+                        elif isinstance(v, dict):
+                            for sk, sv in v.items():
+                                if isinstance(sv, str) and len(sv) > 5:
+                                    text_parts.append(f"{sk}: {sv}")
+
+                if text_parts:
+                    page_texts.append(f"[Page {page_num + 1}]\n" + "\n".join(text_parts))
+
+            doc.close()
+
+            if page_texts:
+                combined = "\n\n".join(page_texts)
+                steps.append(f"vision_fallback:{len(page_texts)}pages")
+                logger.info("Vision fallback extracted %d chars from %d pages",
+                            len(combined), len(page_texts))
+                return combined
+
+            steps.append("vision_fallback_empty")
+            return None
+
+        except Exception as e:
+            logger.error("PDF vision fallback failed: %s", e)
+            steps.append(f"vision_fallback_error:{e}")
+            return None
 
     # ========================
     # AUDIO PROCESSING

@@ -36,7 +36,11 @@ def _now_local_str() -> str:
     return datetime.now(tz).strftime("%Y-%m-%d")
 
 
-def chunk_text(text: str, max_tokens: int = 500, overlap_tokens: int = 50) -> list[str]:
+def chunk_text(
+    text: str,
+    max_tokens: int = settings.chunk_max_tokens,
+    overlap_tokens: int = settings.chunk_overlap_tokens,
+) -> list[str]:
     """Split text into chunks of ~max_tokens with overlap."""
     words = text.split()
     chunks = []

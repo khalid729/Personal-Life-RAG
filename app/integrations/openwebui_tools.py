@@ -1,6 +1,6 @@
 """
 Open WebUI Tools for Personal Life RAG.
-Version: 1.3
+Version: 2.0
 
 Copy this file's content into Open WebUI Admin → Functions → Add Function.
 Uses sync `requests` (Open WebUI runs tools synchronously).
@@ -9,10 +9,8 @@ API URL uses host.docker.internal since Open WebUI runs in Docker.
 Changelog:
   v1.0 — Initial: chat, search, financial, reminders, projects, tasks, inventory, productivity, backup, graph
   v1.1 — Added: delete_reminder, update_reminder, delete_all_reminders, merge_duplicate_reminders (20 tools)
-  v1.2 — Added: store_document for PDF/document storage (21 tools)
-  v1.3 — Updated: chat + store_document docstrings for auto file storage flow
-  v1.4 — store_document now returns extracted entities detail + instructs LLM to show them
-  v1.5 — Fixed: chat no longer re-sends file details (prevents wrong time extraction)
+  v1.2-1.5 — store_document tool (removed in v2.0 — filter now handles files directly)
+  v2.0 — Removed store_document (filter v2.0 processes files via API directly). 20 tools.
 """
 
 import json
@@ -22,9 +20,9 @@ from pydantic import BaseModel, Field
 
 
 class Tools:
-    """Personal Life RAG Tools v1.5 — 21 tools for finances, reminders, projects, tasks, knowledge, inventory, productivity, backup, and graph."""
+    """Personal Life RAG Tools v2.0 — 20 tools for finances, reminders, projects, tasks, knowledge, inventory, productivity, backup, and graph."""
 
-    VERSION = "1.5"
+    VERSION = "2.0"
 
     API_BASE = "http://host.docker.internal:8500"
     TIMEOUT = 60
@@ -65,12 +63,8 @@ class Tools:
         Send a message to the Personal Life RAG system. Supports Arabic and English.
         Use this for general conversation, recording expenses, debts, reminders, or any query.
 
-        IMPORTANT — When the user uploads a file:
-        1. FIRST call store_document — it stores the content AND extracts all facts (reminders, dates, etc.) automatically.
-        2. THEN call chat ONLY with the user's own comment (NOT the file details — those are already stored).
-           Example: if user said "السواق بيوديها" just send that comment + "بخصوص فحص السيارة".
-        DO NOT re-send dates/times from the file to chat — store_document already saved them correctly.
-        DO NOT use the current time as the appointment time — use ONLY dates/times from the document.
+        NOTE: File uploads are handled automatically by the filter — no need to process files here.
+        If the user adds a comment about an uploaded file, just send the comment via this tool.
 
         CRITICAL RULES for interpreting the response:
         - ONLY say an action was completed if the response contains 'STATUS: ACTION_EXECUTED'
@@ -105,59 +99,6 @@ class Tools:
             return f"STATUS: ACTION_EXECUTED — The action was confirmed and executed.\n\n{reply}"
 
         return f"STATUS: CONVERSATION — This is an informational/conversational reply. No data was modified.\n\n{reply}"
-
-    def store_document(self, text: str, source_type: str = "document") -> str:
-        """
-        Store text content in the personal knowledge base. MUST be called whenever the user uploads a file.
-        The text will be embedded in the vector store and facts will be extracted to the knowledge graph.
-
-        WHEN TO USE: Always call this tool FIRST when a PDF, image, or document is uploaded.
-
-        CRITICAL: You MUST pass the COMPLETE text content of the file — not a summary or excerpt.
-        Include ALL dates, times, names, numbers, locations, and details exactly as they appear in the document.
-        The system needs the raw text to correctly extract facts (reminders, appointments, expenses, etc.).
-
-        :param text: The FULL text content of the file — copy everything, do not summarize or shorten.
-        :param source_type: Type of content — 'document', 'note', 'knowledge', 'article'. Defaults to 'document'.
-        :return: Storage result with extracted entities detail.
-        """
-        result = self._post("/ingest/text", json_data={
-            "text": text,
-            "source_type": source_type,
-            "tags": [],
-        }, timeout=120)
-        chunks = result.get("chunks_stored", 0)
-        facts = result.get("facts_extracted", 0)
-        entities = result.get("entities", [])
-        if chunks == 0 and facts == 0:
-            return "STATUS: ACTION_EXECUTED\n\nلم يتم استخراج حقائق من النص، لكن تم تخزينه كنص خام."
-
-        lines = [
-            f"STATUS: ACTION_EXECUTED",
-            f"",
-            f"تم تخزين المستند في قاعدة المعرفة:",
-            f"• {chunks} أجزاء نصية محفوظة",
-            f"• {facts} حقائق مستخرجة",
-        ]
-        if entities:
-            lines.append("")
-            lines.append("المعلومات المستخرجة:")
-            for e in entities:
-                etype = e.get("entity_type", "")
-                ename = e.get("entity_name", "")
-                props = e.get("properties", {})
-                rels = e.get("relationships", [])
-                detail_parts = [f"  - [{etype}] {ename}"]
-                for k, v in props.items():
-                    if v and k not in ("entity_name", "entity_type"):
-                        detail_parts.append(f"    • {k}: {v}")
-                for r in rels:
-                    detail_parts.append(f"    → {r.get('relation', '')} → {r.get('target_name', '')}")
-                lines.extend(detail_parts)
-        lines.append("")
-        lines.append("كل المعلومات أعلاه تم تخزينها تلقائياً في قاعدة المعرفة (تذكيرات، مواعيد، أشخاص، إلخ).")
-        lines.append("أخبر المستخدم بالمعلومات المستخرجة. لا تحتاج استدعاء chat لإعادة تسجيل نفس البيانات.")
-        return "\n".join(lines)
 
     def search_knowledge(self, query: str) -> str:
         """

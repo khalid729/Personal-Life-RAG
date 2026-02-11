@@ -1980,8 +1980,11 @@ class GraphService:
             logger.warning("Idea similarity detection failed: %s", e)
 
     # --- Inventory ---
-    async def upsert_item(self, name: str, **props) -> dict:
-        """Create or update an inventory Item node. If location provided, link to Location node."""
+    async def upsert_item(self, name: str, quantity_mode: str = "set", **props) -> dict:
+        """Create or update an inventory Item node. If location provided, link to Location node.
+
+        quantity_mode: "set" (default) replaces quantity on match, "add" increments it.
+        """
         name = await self.resolve_entity_name(name, "Item")
         location = props.pop("location", None)
         if location:
@@ -2010,10 +2013,11 @@ class GraphService:
         on_create_extra = f", {props_set}" if props_set else ""
         on_match_extra = f", {props_set}" if props_set else ""
 
+        qty_expr = "i.quantity + $quantity" if quantity_mode == "add" else "$quantity"
         q = f"""
         MERGE (i:Item {{name: $name}})
         ON CREATE SET i.created_at = $now, i.quantity = $quantity, i.status = 'active'{on_create_extra}
-        ON MATCH SET i.updated_at = $now, i.quantity = i.quantity + $quantity{on_match_extra}
+        ON MATCH SET i.updated_at = $now, i.quantity = {qty_expr}{on_match_extra}
         RETURN i.name, i.quantity, i.status
         """
         rows = await self.query(q, {"name": name, "now": _now(), "quantity": quantity, **filtered})

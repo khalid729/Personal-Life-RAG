@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     daily_summary_ttl_days: int = 7
     max_context_tokens: int = 15000
 
+    # Chunking
+    chunk_max_tokens: int = 3000
+    chunk_overlap_tokens: int = 150
+
     # File Processing
     file_storage_path: str = "data/files"
     max_file_size_mb: int = 50

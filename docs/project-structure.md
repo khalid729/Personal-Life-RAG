@@ -27,9 +27,9 @@ Personal_Rag/
 │   │   ├── retrieval.py         # Agentic RAG pipeline — smart router, ingestion, retrieval
 │   │   │                        #   (think/act/reflect/retry), confirmation flow, post-processing,
 │   │   │                        #   _prepare_context() refactor, streaming, NER integration, auto-compression
-│   │   ├── files.py             # File processing — images (vision), PDFs (pymupdf4llm),
+│   │   ├── files.py             # File processing — images (vision), PDFs (pymupdf4llm + vision fallback),
 │   │   │                        #   audio (WhisperX), auto-expense, auto-item from photos,
-│   │   │                        #   barcode scanning (pyzbar)
+│   │   │                        #   barcode scanning (pyzbar), _pdf_to_vision() for scanned PDFs
 │   │   ├── backup.py            # BackupService — graph/vector/redis dump + restore, retention cleanup
 │   │   └── ner.py               # NERService — Arabic NER (CamelBERT), lazy-loaded, entity hints
 │   │
@@ -63,9 +63,9 @@ Personal_Rag/
 │   └── integrations/            # External interfaces (Phase 5)
 │       ├── __init__.py
 │       ├── telegram_bot.py      # Telegram bot (aiogram 3.x, standalone process)
-│       ├── openwebui_tools.py   # Open WebUI tools file (21 tools v1.5, copy to WebUI Admin)
-│       └── openwebui_filter.py  # Open WebUI filter v1.3 (date/time injection, STATUS rules,
-│                                #   auto file-upload detection, store_document enforcement)
+│       ├── openwebui_tools.py   # Open WebUI tools file (20 tools v2.0, copy to WebUI Admin)
+│       └── openwebui_filter.py  # Open WebUI filter v2.0 (date/time injection, STATUS rules,
+│                                #   direct file processing via API, anti-self-confirmation)
 │
 ├── data/
 │   ├── files/                   # Uploaded files (content-addressed: {hash[:2]}/{hash}.{ext})

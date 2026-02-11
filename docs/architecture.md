@@ -73,7 +73,8 @@ Personal Life RAG is a bilingual (Arabic/English) personal life management syste
 ### 5. File Service (`app/services/files.py`)
 - Processes uploaded files: images, PDFs, audio
 - Images: vLLM Vision API (classify type, then type-specific analysis)
-- PDFs: pymupdf4llm for markdown extraction
+- PDFs: pymupdf4llm for markdown extraction; **vision fallback** for scanned/image-heavy PDFs (< 200 chars extracted)
+- **PDF vision fallback**: `_pdf_to_vision()` renders pages at 200 DPI via pymupdf → base64 PNG → Qwen3-VL vision analysis (max 5 pages)
 - Audio: WhisperX (large-v3-turbo, `language="ar"`, loaded on-demand, serialized via asyncio.Lock)
 - PyTorch 2.6 compatibility: patches `torch.load` to handle `weights_only=None` for omegaconf checkpoints
 - Files stored at `data/files/{hash[:2]}/{hash}.{ext}`
@@ -258,6 +259,8 @@ All settings are in `app/config.py` via Pydantic `BaseSettings` (overridable via
 | `arabic_ner_model` | `"CAMeL-Lab/..."` | HuggingFace NER model name |
 | `conversation_compress_threshold` | 15 | Compress when messages exceed this |
 | `conversation_compress_keep_recent` | 4 | Messages to keep after compression |
+| `chunk_max_tokens` | 3000 | Max tokens per ingestion chunk |
+| `chunk_overlap_tokens` | 150 | Overlap tokens between chunks |
 
 ## Interfaces (Phase 5)
 
@@ -302,19 +305,22 @@ Three client interfaces provide access from mobile, browser, and Claude Desktop 
 - Standalone Python file — copy into Open WebUI Admin → Functions (type: Tool)
 - Sync `requests` (Open WebUI runs tools synchronously)
 - API URL: `http://host.docker.internal:8500` (Docker → host)
-- 21 tools (v1.5): chat, store_document, search_knowledge, get_financial_report, get_debts, get_reminders, delete_reminder, update_reminder, delete_all_reminders, merge_duplicate_reminders, get_projects, get_tasks, daily_plan, get_inventory, get_inventory_report, get_sprints, get_focus_stats, create_backup, list_backups, get_graph_schema, get_graph_stats
-- `store_document` stores text via `/ingest/text` and returns extracted entities detail (chunks, facts, entity list)
+- 20 tools (v2.0): chat, search_knowledge, get_financial_report, get_debts, get_reminders, delete_reminder, update_reminder, delete_all_reminders, merge_duplicate_reminders, get_projects, get_tasks, daily_plan, get_inventory, get_inventory_report, get_sprints, get_focus_stats, create_backup, list_backups, get_graph_schema, get_graph_stats
 - Configurable via Valves (api_base_url, session_id)
 
 ### Open WebUI Filter (`app/integrations/openwebui_filter.py`)
 - Standalone Python file — copy into Open WebUI Admin → Functions (type: Filter)
-- **Inlet filter** (v1.3): injects current date/time (Arabic) + timezone into system prompt
-- Solves: Open WebUI LLM doesn't know the current date → hallucinated wrong dates
+- **Inlet filter** (v2.0): injects current date/time (Arabic) + timezone into system prompt
+- **Direct file processing**: detects files in `inlet()` → reads from Docker path → sends to `/ingest/file` API → injects results into message. No LLM tool-calling needed
+- File detection: `_extract_files()` reads `body["files"][0]["file"]["path"]` (Open WebUI's nested file structure)
+- `_process_file_via_api()`: reads file bytes from Docker path, sends as multipart upload
+- `_format_result()`: formats API response with file type, chunks, facts, entities for LLM context
 - Includes Arabic day/month names, "بكرة" = tomorrow's date
 - **Anti-lying STATUS rules**: instructs LLM to only say "done" when `STATUS: ACTION_EXECUTED` is present; prevents fabricating results
-- **Auto file-upload detection**: `_has_files()` checks body-level files, message-level files/images, and citation markers
-- When files detected, injects mandatory store_document instruction (full text, not summary)
-- Configurable via Valves (timezone_offset, prepend_date, arabic_context)
+- **Anti-self-confirmation**: LLM must not ask "هل تريد أضيف؟" — sends directly to chat tool. Confirmation only for delete intents
+- **Anti-fake-STATUS**: LLM must not generate `STATUS:` prefixes on its own — these come only from tool responses
+- Debug mode valve: POSTs full request body to `/debug/filter-inlet` for troubleshooting
+- Configurable via Valves (api_url, timezone_offset, prepend_date, arabic_context, debug_mode)
 
 ### MCP Server (`mcp_server.py`)
 - Standalone process using FastMCP (SSE transport) on port 8600

@@ -62,8 +62,8 @@ Ingest text into both vector store and knowledge graph.
 ```
 
 Notes:
-- `entities` contains a list of extracted entities with their types and properties (added in `IngestResponse` schema)
-- Used by the Open WebUI `store_document` tool to show detailed extraction results to the user
+- `entities` contains a list of extracted entities with their types and properties
+- Used by the Open WebUI filter (v2.0) when injecting file processing results into messages
 
 ### POST /ingest/file
 Upload and process a file (image/PDF/audio).
@@ -81,7 +81,10 @@ Upload and process a file (image/PDF/audio).
   "chunks_stored": 1,
   "facts_extracted": 3,
   "processing_steps": ["classify", "analyze", "embed"],
-  "auto_expense": {"amount": 150, "vendor": "Starbucks", "category": "food"}
+  "auto_expense": {"amount": 150, "vendor": "Starbucks", "category": "food"},
+  "entities": [
+    {"type": "Expense", "name": "coffee", "properties": {"amount": 150, "currency": "SAR"}}
+  ]
 }
 ```
 
@@ -766,6 +769,23 @@ Generate PNG image of the graph.
 ```
 
 **Response:** PNG image (`image/png`)
+
+---
+
+## Debug
+
+### POST /debug/filter-inlet
+Debug endpoint for inspecting Open WebUI filter request bodies. Dumps the full request body to `data/debug_filter_body.json`.
+
+**Request:** Any JSON body (typically forwarded from Open WebUI filter's debug mode)
+
+**Response:**
+```json
+{
+  "status": "saved",
+  "path": "data/debug_filter_body.json"
+}
+```
 
 ---
 

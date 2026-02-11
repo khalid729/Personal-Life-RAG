@@ -374,6 +374,7 @@ class FileUploadResponse(BaseModel):
     processing_steps: list[str] = []
     auto_expense: Optional[dict] = None
     auto_item: Optional[dict] = None
+    entities: list[dict] = []
 
 
 class SearchRequest(BaseModel):

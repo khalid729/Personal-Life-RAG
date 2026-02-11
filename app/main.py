@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import chat, files, financial, ingest, inventory, knowledge, proactive, productivity, projects, reminders, search, tasks
@@ -106,3 +106,41 @@ app.include_router(graph_viz.router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/debug/filter-inlet")
+async def debug_filter_inlet(request: Request):
+    """Debug endpoint: receives full body from Open WebUI filter to inspect structure."""
+    import json
+    body = await request.json()
+
+    # Write to file for inspection
+    debug_path = "data/debug_filter_body.json"
+    with open(debug_path, "w", encoding="utf-8") as f:
+        json.dump(body, f, ensure_ascii=False, indent=2, default=str)
+
+    # Log summary
+    messages = body.get("messages", [])
+    logger.info("=== FILTER DEBUG: %d messages ===", len(messages))
+    for i, msg in enumerate(messages):
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        content_type = type(content).__name__
+        content_len = len(str(content))
+        # Check for files/images in message
+        has_files = "files" in msg
+        has_images = "images" in msg
+        logger.info("  msg[%d] role=%s content_type=%s len=%d files=%s images=%s",
+                     i, role, content_type, content_len, has_files, has_images)
+        # Log first 200 chars of content
+        preview = str(content)[:200]
+        logger.info("  msg[%d] preview: %s", i, preview)
+
+    # Log body-level keys
+    body_keys = [k for k in body.keys() if k != "messages"]
+    logger.info("  body keys (non-messages): %s", body_keys)
+    for k in body_keys:
+        v = body[k]
+        logger.info("  body[%s] type=%s preview=%s", k, type(v).__name__, str(v)[:200])
+
+    return {"status": "ok", "messages_count": len(messages), "body_keys": body_keys}

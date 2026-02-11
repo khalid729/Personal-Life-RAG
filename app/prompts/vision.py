@@ -10,15 +10,17 @@ Return a JSON object:
   "payment_method": "cash/card/null",
   "notes": "any additional info"
 }""",
-    "official_document": """Extract key information from this official document.
+    "official_document": """Extract ALL information from this official document. Be thorough — extract every number, date, name, and detail visible.
 Return a JSON object:
 {
-  "document_type": "contract/certificate/form/etc",
-  "title": "document title",
-  "parties": ["party1", "party2"],
-  "key_terms": ["term1", "term2"],
-  "dates": {"issued": "YYYY-MM-DD", "expiry": "YYYY-MM-DD or null"},
-  "summary": "brief summary of the document"
+  "document_type": "appointment/contract/certificate/form/license/permit/receipt/booking",
+  "title": "document title or purpose",
+  "text_content": "ALL readable text from the document, transcribed exactly as shown",
+  "dates": {"date": "YYYY-MM-DD", "time": "HH:MM or null", "hijri_date": "if shown or null", "expiry": "YYYY-MM-DD or null"},
+  "location": "full location/address if any",
+  "reference_numbers": {"booking_number": "if any", "reference_id": "if any", "plate_number": "if any", "id_number": "if any"},
+  "parties": ["person/company names mentioned"],
+  "summary": "brief summary covering: what, when, where, who, and any reference numbers"
 }""",
     "personal_photo": """Describe this personal photo in detail.
 Return a JSON object:

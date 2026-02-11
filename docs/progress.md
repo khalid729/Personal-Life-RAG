@@ -287,11 +287,28 @@
 - [x] **Anti-lying protocol**: STATUS prefix (ACTION_EXECUTED / PENDING_CONFIRMATION / CONVERSATION) on all chat tool responses
 - [x] **Inventory routing fix**: Added purchase keywords (شريت/اشتريت/جبت/i bought/i got a/i have a), fixed `عندي` word boundary
 - [x] **Item dedup fix**: Added `resolve_entity_name()` to `upsert_item()` — prevents duplicate Item nodes
-- [x] **`store_document` tool**: Open WebUI tool to store PDF/document text via `/ingest/text` — returns extracted entities detail (total: 21 Open WebUI tools, v1.5)
 - [x] `IngestResponse` schema: new `entities: list[dict]` field returns extracted entity details from `/ingest/text`
-- [x] Open WebUI filter (`openwebui_filter.py`, v1.3): inlet filter injecting Arabic date/time + strict behavioral rules + auto file-upload detection via `_has_files()` + mandatory store_document instruction injection + anti-lying STATUS rules
 - [x] MCP `_current_date_context()` helper prepends date to every chat response
 - [x] Duplicate cleanup: 45 reminders → 10 clean unique reminders (9 exact-match merged + 20 near-duplicates removed)
+
+### Open WebUI Filter v2.0 + File Processing Improvements
+- [x] **Filter v2.0** (`openwebui_filter.py`): Rewritten to directly process files via API instead of relying on LLM `store_document` tool-calling
+- [x] Direct file processing: filter detects files in `inlet()` → sends to `/ingest/file` via HTTP → injects results into message
+- [x] File detection: `_extract_files()` reads `body["files"][0]["file"]["path"]` (Open WebUI's nested file structure)
+- [x] `_process_file_via_api()`: reads file from Docker path, sends as multipart upload to RAG API
+- [x] `_format_result()`: formats API response with file type, chunks, facts, entities for LLM context
+- [x] Debug mode valve: POSTs full request body to `/debug/filter-inlet` for troubleshooting
+- [x] Anti-self-confirmation rule: "لا تسأل المستخدم هل تريد أضيف — أرسل الطلب مباشرة لأداة chat"
+- [x] Anti-fake-STATUS rule: "لا تولّد STATUS: من عندك" (LLM was generating fake STATUS prefixes)
+- [x] **Open WebUI Tools v2.0** (`openwebui_tools.py`): Removed `store_document` tool (now handled by filter). 20 tools total
+- [x] **PDF vision fallback** (`files.py`): when pymupdf4llm extracts < 200 chars (scanned/image-heavy PDFs), converts pages to 200 DPI images → Qwen3-VL vision analysis (max 5 pages)
+- [x] `_pdf_to_vision()` method: pymupdf render → base64 PNG → `llm.analyze_image()` → combines text from all pages
+- [x] **Vision prompt improvement** (`vision.py`): `official_document` prompt now asks for `text_content`, `reference_numbers` (booking, reference_id, plate, id_number), `dates` with time
+- [x] **Extract prompt rewrite** (`extract.py`): cleaner structure, explicit recurring reminder instructions (date = NEXT future occurrence), reference number extraction, 2 new few-shot examples
+- [x] **Item quantity fix** (`graph.py`): `upsert_item` defaults to SET quantity on match (not ADD) via `quantity_mode` parameter. Prevents double-counting when image pipeline + post-processing both upsert same item
+- [x] `FileUploadResponse` schema: added `entities: list[dict]` field
+- [x] Config: added `chunk_max_tokens` (3000), `chunk_overlap_tokens` (150)
+- [x] Debug endpoint: `POST /debug/filter-inlet` — dumps full body to `data/debug_filter_body.json`
 
 ### Phase 11 — Testing Results (all passed)
 - [x] Backup: create (67KB graph, 2.4MB vector, 120KB redis), list, restore (183 nodes, 10 edges, 173 points, 107 keys)

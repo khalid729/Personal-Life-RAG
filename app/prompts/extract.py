@@ -1,45 +1,56 @@
 EXTRACT_SYSTEM = """You are a fact extraction engine for a personal knowledge graph.
-Extract entities and relationships from the user's text.
+Extract entities and relationships from the user's text. Be thorough — extract ALL details, numbers, dates, and references mentioned.
 
 Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove, Sprint
 
-Special entity types:
-- DebtPayment (pseudo-entity): Use when someone pays back or settles a debt. Keywords: "سدد", "رجع", "دفع له", "paid back", "settled", "returned the money". Extract the person and amount. This will automatically update the existing debt record.
-- Item: A physical possession or inventory item. Keywords: "عندي", "شريت", "في السطح", "في الدرج", "bought", "i have", "stored in". Extract name, quantity (default 1), location, category, condition, brand.
-- ItemUsage (pseudo-entity): When items are consumed/used/given away/lost. Keywords: "استخدمت", "ضاع", "عطيت", "خلصت", "used", "gave away", "lost", "consumed", "broke". Extract item name and quantity_used. This reduces the item's quantity in inventory.
-- ItemMove (pseudo-entity): When items are moved between locations. Keywords: "نقلت", "حركت", "حطيته في", "moved", "relocated", "transferred". Extract item name, to_location (required), from_location (optional). This updates the item's storage location.
-- Sprint: A time-boxed iteration for grouping tasks. Keywords: "سبرنت", "sprint", "iteration". Extract name, start_date, end_date, goal. Link to Project via BELONGS_TO if mentioned.
-- Task enhancements: Tasks can have additional properties:
-  - estimated_duration: time in minutes (e.g. "2 hours" = 120, "30 min" = 30)
-  - energy_level: "high" (deep focus needed), "medium" (normal), "low" (easy/routine). Keywords: "deep focus"/"تركيز عالي" = high, "easy"/"سهل" = low
-- Reminder subtypes via properties:
-  - reminder_type: "one_time" (default), "recurring" (repeating schedule), "persistent" (don't forget until done), "event_based" (triggered by an event), "financial" (payment/bill related)
-  - recurrence: "daily", "weekly", "monthly", "yearly" (for recurring type)
-  - priority: 1-5 (5 = highest, use for persistent/urgent reminders)
-  - trigger_event: description of triggering event (for event_based type)
-  - linked_entity: name of related person/project (if applicable)
+=== Entity details ===
 
-For each entity, extract:
-- entity_type: one of the types above
-- entity_name: the name/title
-- properties: key-value pairs (e.g. amount, date, status, category, description)
-- relationships: list of {type, target_type, target_name} (e.g. WORKS_AT, BELONGS_TO, OWES, RELATED_TO)
+Reminder:
+  - reminder_type: "one_time" | "recurring" | "persistent" | "event_based" | "financial"
+  - recurrence: "daily" | "weekly" | "monthly" | "yearly" (for recurring type)
+  - date: YYYY-MM-DD (the date of the event/appointment itself)
+  - time: HH:MM (if mentioned)
+  - location: where the event takes place
+  - priority: 1-5 (5 = highest)
+  - trigger_event: description of triggering event (for event_based)
+  - linked_entity: related person/item/project name
+  - reference_number: booking/reference/ID number if any
+  - IMPORTANT: Always set a concrete date. Never leave date empty.
+  - For recurring reminders: set date to the NEXT future occurrence, not the past one.
+    Example: event was on 2026-02-11, user wants yearly reminder → date = 2027-02-11 (next year).
+    Example: user wants reminder 30 days before next yearly event on 2026-02-11 → date = 2027-01-12.
+  - Do NOT use event_based type for simple recurring reminders. Use recurring with recurrence field instead.
 
-Date format: YYYY-MM-DD. Currency amounts should include the value and currency (default SAR).
+Knowledge:
+  - Store factual information: locations, reference numbers, details about services, accounts, etc.
+  - Include ALL numbers and identifiers (booking numbers, plate numbers, reference IDs, phone numbers).
 
-Respond with ONLY a JSON object:
+Expense: amount, currency (default SAR), category, date, vendor
+Debt: amount, currency, direction ("i_owe" or "owed_to_me"), reason
+DebtPayment: amount, currency — auto-updates existing debt
+Item: name, quantity (default 1), location, category, condition, brand
+ItemUsage: item name, quantity_used — reduces item quantity
+ItemMove: item name, to_location (required), from_location (optional)
+Task: priority, estimated_duration (minutes), energy_level (high/medium/low)
+Sprint: name, start_date, end_date, goal — link to Project via BELONGS_TO
+
+=== Output format ===
+
+For each entity extract: entity_type, entity_name, properties (key-value pairs), relationships (list of {type, target_type, target_name}).
+
+Date format: YYYY-MM-DD. Respond with ONLY a JSON object:
 {
   "entities": [
     {
-      "entity_type": "Expense",
-      "entity_name": "lunch",
-      "properties": {"amount": 45, "currency": "SAR", "category": "food", "date": "2025-01-15"},
-      "relationships": [{"type": "PAID_AT", "target_type": "Company", "target_name": "McDonalds"}]
+      "entity_type": "...",
+      "entity_name": "...",
+      "properties": {...},
+      "relationships": [...]
     }
   ]
 }
 
-If no entities can be extracted, return: {"entities": []}"""
+If no entities found: {"entities": []}"""
 
 EXTRACT_EXAMPLES = [
     {
@@ -85,6 +96,14 @@ EXTRACT_EXAMPLES = [
     {
         "input": "Create Sprint 1 for the Smart Home project, 2 weeks starting today",
         "output": '{"entities": [{"entity_type": "Sprint", "entity_name": "Sprint 1", "properties": {"goal": "Smart Home sprint"}, "relationships": [{"type": "BELONGS_TO", "target_type": "Project", "target_name": "Smart Home"}]}]}',
+    },
+    {
+        "input": "Vehicle inspection appointment at Al-Salama Center, Dammam, on 2026-02-11 at 19:30. Plate: 7277TXB. Booking ref: 1025217086.",
+        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "vehicle inspection", "properties": {"reminder_type": "one_time", "date": "2026-02-11", "time": "19:30", "location": "Al-Salama Center, Dammam", "priority": 4, "linked_entity": "7277TXB", "reference_number": "1025217086"}, "relationships": []}, {"entity_type": "Knowledge", "entity_name": "vehicle inspection booking", "properties": {"plate_number": "7277TXB", "booking_number": "1025217086", "location": "Al-Salama Center, Dammam", "date": "2026-02-11", "time": "19:30"}, "relationships": []}]}',
+    },
+    {
+        "input": "Create a yearly reminder for the car inspection. The inspection was on 2026-02-11. Remind me 30 days before.",
+        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "yearly car inspection reminder", "properties": {"reminder_type": "recurring", "recurrence": "yearly", "date": "2027-01-12", "time": "09:00", "priority": 4, "linked_entity": "car inspection"}, "relationships": []}]}',
     },
 ]
 
