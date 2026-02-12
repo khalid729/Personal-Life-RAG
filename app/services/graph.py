@@ -1480,13 +1480,15 @@ class GraphService:
         for row in rows:
             props = self._clean_props(row[0].properties)
             name = props.pop("name", "?")
+            name_ar = props.pop("name_ar", "")
+            display = f"{name_ar} ({name})" if name_ar else name
             details = []
             for k, v in props.items():
                 if v:
                     details.append(f"{k}: {v}")
             rels = row[1] if len(row) > 1 else []
             rel_strs = [f"{r['rel']} → {r['target']}" for r in rels if r.get("target")]
-            line = f"  - {name}"
+            line = f"  - {display}"
             if details:
                 line += f" ({', '.join(details)})"
             if rel_strs:
@@ -2682,6 +2684,12 @@ class GraphService:
     def _clean_props(self, props: dict) -> dict:
         return {k: v for k, v in props.items() if k not in self._INTERNAL_PROPS}
 
+    def _display_name(self, props: dict) -> str:
+        """Return Arabic name (English) if available, else just English name."""
+        name_ar = props.get("name_ar", "")
+        name = props.get("name", props.get("title", "?"))
+        return f"{name_ar} ({name})" if name_ar else name
+
     def _build_set_clause(self, props: dict, var: str = "p") -> str:
         filtered = {k: v for k, v in props.items() if v is not None and v != ""}
         if not filtered:
@@ -2705,11 +2713,11 @@ class GraphService:
                     desc_parts.append(str(self._clean_props(node.properties)))
             if row[1] and row[3]:  # rel1, n1
                 n1 = row[3]
-                n1_name = n1.properties.get("name", n1.properties.get("title", "")) if hasattr(n1, "properties") else str(n1)
+                n1_name = self._display_name(n1.properties) if hasattr(n1, "properties") else str(n1)
                 desc_parts.append(f"-[{row[1]}]-> [{row[2]}] {n1_name}")
             if row[4] and row[6]:  # rel2, n2
                 n2 = row[6]
-                n2_name = n2.properties.get("name", n2.properties.get("title", "")) if hasattr(n2, "properties") else str(n2)
+                n2_name = self._display_name(n2.properties) if hasattr(n2, "properties") else str(n2)
                 desc_parts.append(f"-[{row[4]}]-> [{row[5]}] {n2_name}")
             if desc_parts:
                 line = " ".join(desc_parts)
@@ -2730,15 +2738,15 @@ class GraphService:
                 desc_parts.append(str(self._clean_props(row[0].properties)))
             if row[1] and row[3]:
                 n1 = row[3]
-                n1_name = n1.properties.get("name", n1.properties.get("title", "")) if hasattr(n1, "properties") else str(n1)
+                n1_name = self._display_name(n1.properties) if hasattr(n1, "properties") else str(n1)
                 desc_parts.append(f"-[{row[1]}]-> [{row[2]}] {n1_name}")
             if row[4] and row[6]:
                 n2 = row[6]
-                n2_name = n2.properties.get("name", n2.properties.get("title", "")) if hasattr(n2, "properties") else str(n2)
+                n2_name = self._display_name(n2.properties) if hasattr(n2, "properties") else str(n2)
                 desc_parts.append(f"-[{row[4]}]-> [{row[5]}] {n2_name}")
             if len(row) > 7 and row[7] and row[9]:
                 n3 = row[9]
-                n3_name = n3.properties.get("name", n3.properties.get("title", "")) if hasattr(n3, "properties") else str(n3)
+                n3_name = self._display_name(n3.properties) if hasattr(n3, "properties") else str(n3)
                 desc_parts.append(f"-[{row[7]}]-> [{row[8]}] {n3_name}")
             if desc_parts:
                 line = " ".join(desc_parts)

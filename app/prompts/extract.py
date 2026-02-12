@@ -5,7 +5,7 @@ Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, 
 
 === Entity details ===
 
-Person: relationship, phone, email, company, notes, date_of_birth (YYYY-MM-DD), id_number
+Person: relationship, phone, email, company, notes, date_of_birth (YYYY-MM-DD), id_number, name_ar (Arabic name from NER hints or source text — copy exactly, do not transliterate)
 
 Reminder:
   - reminder_type: "one_time" | "recurring" | "persistent" | "event_based" | "financial"
@@ -109,7 +109,11 @@ EXTRACT_EXAMPLES = [
     },
     {
         "input": "Family card members: Father: EXAMPLE_DAD (born 1980-05-15, ID 1055667788). Mother: EXAMPLE_MOM (born 1985-03-20, ID 1099887766). Son: EXAMPLE_SON (born 2010-11-01, ID 1122334455).",
-        "output": '{"entities": [{"entity_type": "Person", "entity_name": "EXAMPLE_DAD", "properties": {"date_of_birth": "1980-05-15", "id_number": "1055667788", "notes": "father"}, "relationships": [{"type": "FAMILY_MEMBER", "target_type": "Person", "target_name": "EXAMPLE_MOM"}, {"type": "FAMILY_MEMBER", "target_type": "Person", "target_name": "EXAMPLE_SON"}]}, {"entity_type": "Person", "entity_name": "EXAMPLE_MOM", "properties": {"date_of_birth": "1985-03-20", "id_number": "1099887766", "notes": "mother"}, "relationships": []}, {"entity_type": "Person", "entity_name": "EXAMPLE_SON", "properties": {"date_of_birth": "2010-11-01", "id_number": "1122334455", "notes": "son"}, "relationships": []}]}',
+        "output": '{"entities": [{"entity_type": "Person", "entity_name": "EXAMPLE_DAD", "properties": {"date_of_birth": "1980-05-15", "id_number": "1055667788", "name_ar": "أب_مثال", "notes": "father"}, "relationships": [{"type": "FAMILY_MEMBER", "target_type": "Person", "target_name": "EXAMPLE_MOM"}, {"type": "FAMILY_MEMBER", "target_type": "Person", "target_name": "EXAMPLE_SON"}]}, {"entity_type": "Person", "entity_name": "EXAMPLE_MOM", "properties": {"date_of_birth": "1985-03-20", "id_number": "1099887766", "name_ar": "أم_مثال", "notes": "mother"}, "relationships": []}, {"entity_type": "Person", "entity_name": "EXAMPLE_SON", "properties": {"date_of_birth": "2010-11-01", "id_number": "1122334455", "name_ar": "ابن_مثال", "notes": "son"}, "relationships": []}]}',
+    },
+    {
+        "input": "[NER hints: Detected entities: Person: رهف]\n\nMy daughter Rafeh got an A in math",
+        "output": '{"entities": [{"entity_type": "Person", "entity_name": "Rafeh", "properties": {"name_ar": "رهف", "notes": "daughter, got A in math"}, "relationships": []}]}',
     },
 ]
 

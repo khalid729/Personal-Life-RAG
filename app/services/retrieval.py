@@ -1084,7 +1084,7 @@ class RetrievalService:
                 }
                 combined = f"User said: {query_ar}\nAssistant replied: {reply_ar}"
                 combined_en = await self.llm.translate_to_english(combined)
-                combined_facts = await self.llm.extract_facts(combined_en)
+                combined_facts = await self.llm.extract_facts(combined_en, ner_hints=ner_hints)
                 if combined_facts.get("entities"):
                     combined_facts["entities"] = [
                         e for e in combined_facts["entities"]

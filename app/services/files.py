@@ -600,7 +600,10 @@ class FileService:
             members = analysis.get("members")
             if members and isinstance(members, list):
                 for m in members:
-                    m_parts = [m.get("name", "")]
+                    m_parts = []
+                    name = m.get("name", "")
+                    if name:
+                        m_parts.append(f"name_ar: {name}")  # Vision extracts Arabic names
                     if m.get("role"):
                         m_parts.append(f"role: {m['role']}")
                     if m.get("date_of_birth"):
