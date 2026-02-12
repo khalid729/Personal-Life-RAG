@@ -19,14 +19,14 @@
 Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove, Sprint
 
 Key rules:
-- Person: has `date_of_birth` (YYYY-MM-DD), `id_number`
+- Person: has `date_of_birth` (YYYY-MM-DD), `id_number`, `name_ar` (Arabic name copied from NER hints — not transliterated)
 - Reminder: MUST have concrete `date`, never empty
 - Recurring: date = NEXT future occurrence (e.g. yearly 2026-02-11 → 2027-02-11)
 - "30 days before" → next_year - 30 days
 - Do NOT use `event_based` for simple recurring — use `recurring` + `recurrence`
 - Knowledge: include ALL reference numbers, booking numbers, plate numbers, IDs
 - `build_extract()` auto-injects today's date + tomorrow for relative date resolution
-- NER hints prepended as `[NER hints: ...]` to user content
+- NER hints prepended as `[NER hints: ...]` to user content — LLM maps Arabic names to English entities via `name_ar`
 
 ## Vision Prompts (vision.py)
 

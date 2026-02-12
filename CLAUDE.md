@@ -47,6 +47,7 @@ curl -s -X POST http://localhost:8500/chat/ \
 - **Post-processing**: BackgroundTasks extracts facts from query + combined exchange, upserts to graph
 - **Smart routing**: 20 keyword patterns → fast-path to graph strategy, fallback to LLM classify
 - **Entity resolution**: vector-based dedup (0.85 person, 0.80 default) via `resolve_entity_name()`
+- **Arabic name preservation**: NER hints → extract prompt → `name_ar` on Person nodes → `_display_name()` shows `رهف (Rahaf)` in LLM context
 - **Confirmation**: ONLY for delete/cancel intents; all other side-effects run directly
 
 ## Key Gotchas
@@ -59,6 +60,7 @@ curl -s -X POST http://localhost:8500/chat/ \
 - `datetime.utcnow()` deprecated — use `datetime.now(timezone(timedelta(hours=3)))`
 - Config tuning: `chunk_max_tokens=6000`, `chunk_overlap_tokens=300`, `max_context_tokens=40000`
 - Hijri dates: `upsert_person()` auto-converts year < 1900 via `hijri-converter`
+- Arabic names: `name_ar` auto-populated from NER hints; graph display prefers Arabic via `_display_name()`
 - Dep: `hijri-converter` for Hijri→Gregorian date conversion
 
 ## Phases (1–11 complete)

@@ -30,10 +30,11 @@ GraphService.set_vector_service(vector)  # for entity resolution
 - Entity resolution: `resolve_entity_name(name, label)` → vector similarity → canonical name
 - `query_person_context(query)`: fuzzy name matching — extracts candidate names, CONTAINS search, returns all matches + fallback summary of all persons
 - `upsert_person()`: auto-converts Hijri dates (year < 1900) to Gregorian via `hijri-converter`; stores `date_of_birth` (gregorian) + `date_of_birth_hijri`
-- Person nodes support `name_ar` property for Arabic name preservation
+- Person nodes support `name_ar` property for Arabic name preservation (auto-populated from NER hints)
+- `_display_name(props)`: returns `"رهف (Rahaf)"` if `name_ar` exists, else just English name — used in all graph context formatting
 - `_INTERNAL_PROPS`: filtered from LLM context (`name_aliases`, `created_at`, `updated_at`, `file_hash`, `source`)
 - `_build_set_clause(props, var)`: generates Cypher SET from dict; skips empty strings to prevent overwriting good data
-- `_format_graph_context()` / `_format_graph_context_3hop()`: format multi-hop query results for LLM
+- `_format_graph_context()` / `_format_graph_context_3hop()`: format multi-hop query results for LLM; use `_display_name()` for relation targets
 - `upsert_from_facts(entities)`: main ingestion — routes each entity_type to its upsert method
 - `find_file_by_hash(hash)`: check File node existence
 
@@ -49,7 +50,7 @@ GraphService.set_vector_service(vector)  # for entity resolution
 - **Smart routing**: 20 keyword patterns in specificity order, fallback to LLM classify
 - **Pipeline**: Think (pick strategy) → Act (execute graph/vector queries) → Reflect (score chunks, filter < 0.3)
 - **Retry**: if reflect says insufficient, retry with broader strategy
-- **Post-processing**: BackgroundTasks runs `_extract_and_upsert()` — extracts from query alone + combined exchange
+- **Post-processing**: BackgroundTasks runs `_extract_and_upsert()` — extracts from query alone + combined exchange (both with NER hints)
 - **Dedup**: combined extraction skips entity types already found in query extraction
 - **Confirmation flow**: only for delete/cancel intents
 - **Clarification**: skipped if extraction found named entities
@@ -62,7 +63,7 @@ GraphService.set_vector_service(vector)  # for entity resolution
 - Audio: WhisperX transcription (lazy-loaded, GPU, Arabic)
 - Barcode: `_scan_barcodes()` via pyzbar
 - `_save_file()`: stores at `data/files/{hash[:2]}/{hash}.{ext}`
-- `_analysis_to_text()`: converts structured JSON to readable text per file_type
+- `_analysis_to_text()`: converts structured JSON to readable text per file_type; members use `name_ar:` prefix so extract prompt preserves Arabic names
 
 ## MemoryService (memory.py)
 
