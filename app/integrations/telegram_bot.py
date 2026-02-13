@@ -1162,7 +1162,30 @@ async def job_noon_checkin(bot: Bot):
 async def job_evening_summary(bot: Bot):
     try:
         data = await api_get("/proactive/evening-summary")
-        text = format_evening_summary(data)
+        completed = data.get("completed_today", [])
+        tomorrow = data.get("tomorrow_reminders", [])
+
+        # Build raw text for LLM
+        parts = []
+        if completed:
+            parts.append("أنجزت اليوم:\n" + "\n".join(f"- {c}" for c in completed))
+        else:
+            parts.append("ما أنجزت شي مسجل اليوم.")
+        if tomorrow:
+            items = "\n".join(f"- {r['title']} ({r['due_date']})" for r in tomorrow)
+            parts.append(f"تذكيرات بكرة:\n{items}")
+
+        raw = "\n\n".join(parts)
+
+        try:
+            fmt = await api_post(
+                "/proactive/format-reminders",
+                json={"raw_text": raw, "context": "evening"},
+            )
+            text = fmt.get("formatted", "")
+        except Exception:
+            text = format_evening_summary(data)
+
         for part in split_message(text):
             await bot.send_message(chat_id=settings.tg_chat_id, text=part)
         logger.info("Evening summary sent")
