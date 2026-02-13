@@ -2003,7 +2003,7 @@ class GraphService:
     # --- Projects Overview ---
     async def query_projects_overview(self, status_filter: str | None = None) -> str:
         """Projects with their linked tasks, progress %, and ETA."""
-        filter_clause = "WHERE p.status = $status" if status_filter else ""
+        filter_clause = "WHERE toLower(p.status) = toLower($status)" if status_filter else ""
         q = f"""
         MATCH (p:Project)
         {filter_clause}

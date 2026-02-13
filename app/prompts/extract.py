@@ -1,5 +1,5 @@
 EXTRACT_SYSTEM = """You are a fact extraction engine for a personal knowledge graph.
-Extract entities and relationships from the user's text. Be thorough — extract ALL details, numbers, dates, and references mentioned.
+Extract entities and relationships from the user's text. Be thorough — extract ALL details, numbers, dates, and references.
 
 Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove, Sprint
 
@@ -9,23 +9,13 @@ Person: relationship, phone, email, company, notes, date_of_birth (YYYY-MM-DD), 
 
 Reminder:
   - reminder_type: "one_time" | "recurring" | "persistent" | "event_based" | "financial"
-  - recurrence: "daily" | "weekly" | "monthly" | "yearly" (for recurring type)
-  - date: YYYY-MM-DD (the date of the event/appointment itself)
+  - recurrence: "daily" | "weekly" | "monthly" | "yearly" (for recurring)
+  - date: YYYY-MM-DD (REQUIRED — always set a concrete date)
   - time: HH:MM (if mentioned)
-  - location: where the event takes place
-  - priority: 1-5 (5 = highest)
-  - trigger_event: description of triggering event (for event_based)
-  - linked_entity: related person/item/project name
-  - reference_number: booking/reference/ID number if any
-  - IMPORTANT: Always set a concrete date. Never leave date empty.
-  - For recurring reminders: set date to the NEXT future occurrence, not the past one.
-    Example: event was on 2026-02-11, user wants yearly reminder → date = 2027-02-11 (next year).
-    Example: user wants reminder 30 days before next yearly event on 2026-02-11 → date = 2027-01-12.
-  - Do NOT use event_based type for simple recurring reminders. Use recurring with recurrence field instead.
+  - location, priority (1-5), trigger_event, linked_entity, reference_number
+  - For recurring: date = NEXT future occurrence, not past.
 
-Knowledge:
-  - Store factual information: locations, reference numbers, details about services, accounts, etc.
-  - Include ALL numbers and identifiers (booking numbers, plate numbers, reference IDs, phone numbers).
+Knowledge: store factual info — locations, reference numbers, IDs, accounts, etc.
 
 Expense: amount, currency (default SAR), category, date, vendor
 Debt: amount, currency, direction ("i_owe" or "owed_to_me"), reason
@@ -38,19 +28,8 @@ Sprint: name, start_date, end_date, goal — link to Project via BELONGS_TO
 
 === Output format ===
 
-For each entity extract: entity_type, entity_name, properties (key-value pairs), relationships (list of {type, target_type, target_name}).
-
-Date format: YYYY-MM-DD. Respond with ONLY a JSON object:
-{
-  "entities": [
-    {
-      "entity_type": "...",
-      "entity_name": "...",
-      "properties": {...},
-      "relationships": [...]
-    }
-  ]
-}
+JSON only:
+{"entities": [{"entity_type": "...", "entity_name": "...", "properties": {...}, "relationships": [{"type": "...", "target_type": "...", "target_name": "..."}]}]}
 
 If no entities found: {"entities": []}"""
 
@@ -60,60 +39,24 @@ EXTRACT_EXAMPLES = [
         "output": '{"entities": [{"entity_type": "Debt", "entity_name": "dinner debt", "properties": {"amount": 500, "currency": "SAR", "direction": "owed_to_me", "reason": "dinner"}, "relationships": [{"type": "OWES", "target_type": "Person", "target_name": "Ahmad"}]}, {"entity_type": "Person", "entity_name": "Ahmad", "properties": {}, "relationships": []}]}',
     },
     {
-        "input": "I owe Fahd 800 riyals for the car repair",
-        "output": '{"entities": [{"entity_type": "Debt", "entity_name": "car repair debt", "properties": {"amount": 800, "currency": "SAR", "direction": "i_owe", "reason": "car repair"}, "relationships": [{"type": "OWES", "target_type": "Person", "target_name": "Fahd"}]}, {"entity_type": "Person", "entity_name": "Fahd", "properties": {}, "relationships": []}]}',
-    },
-    {
         "input": "I spent 200 riyals on groceries at Tamimi today",
-        "output": '{"entities": [{"entity_type": "Expense", "entity_name": "groceries", "properties": {"amount": 200, "currency": "SAR", "category": "groceries"}, "relationships": [{"type": "PAID_AT", "target_type": "Company", "target_name": "Tamimi"}]}, {"entity_type": "Company", "entity_name": "Tamimi", "properties": {"industry": "retail"}, "relationships": []}]}',
-    },
-    {
-        "input": "Ahmad paid back 200 SAR from the dinner debt",
-        "output": '{"entities": [{"entity_type": "DebtPayment", "entity_name": "dinner debt payment", "properties": {"amount": 200, "currency": "SAR"}, "relationships": [{"type": "PAID_BY", "target_type": "Person", "target_name": "Ahmad"}]}]}',
+        "output": '{"entities": [{"entity_type": "Expense", "entity_name": "groceries", "properties": {"amount": 200, "currency": "SAR", "category": "groceries"}, "relationships": [{"type": "PAID_AT", "target_type": "Company", "target_name": "Tamimi"}]}]}',
     },
     {
         "input": "Remind me to pay rent on the 1st of every month",
         "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "pay rent", "properties": {"reminder_type": "recurring", "recurrence": "monthly", "priority": 4}, "relationships": []}]}',
     },
     {
-        "input": "Don't let me forget to renew the car registration",
-        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "renew car registration", "properties": {"reminder_type": "persistent", "priority": 5}, "relationships": []}]}',
-    },
-    {
         "input": "I have 5 USB-C cables stored in the roof storage on the second shelf",
         "output": '{"entities": [{"entity_type": "Item", "entity_name": "USB-C cable", "properties": {"quantity": 5, "location": "السطح > الرف الثاني", "category": "cables"}, "relationships": []}]}',
     },
     {
-        "input": "I used 2 USB-C cables from the roof storage",
-        "output": '{"entities": [{"entity_type": "ItemUsage", "entity_name": "USB-C cable", "properties": {"quantity_used": 2}, "relationships": []}]}',
-    },
-    {
-        "input": "I moved the printer from the roof to the office",
-        "output": '{"entities": [{"entity_type": "ItemMove", "entity_name": "printer", "properties": {"to_location": "المكتب", "from_location": "السطح"}, "relationships": []}]}',
-    },
-    {
-        "input": "Add task: finish the report, high priority, needs deep focus for 2 hours",
-        "output": '{"entities": [{"entity_type": "Task", "entity_name": "finish the report", "properties": {"priority": 5, "estimated_duration": 120, "energy_level": "high"}, "relationships": []}]}',
-    },
-    {
-        "input": "Create Sprint 1 for the Smart Home project, 2 weeks starting today",
-        "output": '{"entities": [{"entity_type": "Sprint", "entity_name": "Sprint 1", "properties": {"goal": "Smart Home sprint"}, "relationships": [{"type": "BELONGS_TO", "target_type": "Project", "target_name": "Smart Home"}]}]}',
-    },
-    {
-        "input": "Vehicle inspection appointment at Al-Salama Center, Dammam, on 2026-02-11 at 19:30. Plate: 7277TXB. Booking ref: 1025217086.",
-        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "vehicle inspection", "properties": {"reminder_type": "one_time", "date": "2026-02-11", "time": "19:30", "location": "Al-Salama Center, Dammam", "priority": 4, "linked_entity": "7277TXB", "reference_number": "1025217086"}, "relationships": []}, {"entity_type": "Knowledge", "entity_name": "vehicle inspection booking", "properties": {"plate_number": "7277TXB", "booking_number": "1025217086", "location": "Al-Salama Center, Dammam", "date": "2026-02-11", "time": "19:30"}, "relationships": []}]}',
-    },
-    {
-        "input": "Create a yearly reminder for the car inspection. The inspection was on 2026-02-11. Remind me 30 days before.",
-        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "yearly car inspection reminder", "properties": {"reminder_type": "recurring", "recurrence": "yearly", "date": "2027-01-12", "time": "09:00", "priority": 4, "linked_entity": "car inspection"}, "relationships": []}]}',
-    },
-    {
-        "input": "Family card members: Father: EXAMPLE_DAD (born 1980-05-15, ID 1055667788). Mother: EXAMPLE_MOM (born 1985-03-20, ID 1099887766). Son: EXAMPLE_SON (born 2010-11-01, ID 1122334455).",
-        "output": '{"entities": [{"entity_type": "Person", "entity_name": "EXAMPLE_DAD", "properties": {"date_of_birth": "1980-05-15", "id_number": "1055667788", "name_ar": "أب_مثال", "notes": "father"}, "relationships": [{"type": "FAMILY_MEMBER", "target_type": "Person", "target_name": "EXAMPLE_MOM"}, {"type": "FAMILY_MEMBER", "target_type": "Person", "target_name": "EXAMPLE_SON"}]}, {"entity_type": "Person", "entity_name": "EXAMPLE_MOM", "properties": {"date_of_birth": "1985-03-20", "id_number": "1099887766", "name_ar": "أم_مثال", "notes": "mother"}, "relationships": []}, {"entity_type": "Person", "entity_name": "EXAMPLE_SON", "properties": {"date_of_birth": "2010-11-01", "id_number": "1122334455", "name_ar": "ابن_مثال", "notes": "son"}, "relationships": []}]}',
-    },
-    {
         "input": "[NER hints: Detected entities: Person: رهف]\n\nMy daughter Rafeh got an A in math",
         "output": '{"entities": [{"entity_type": "Person", "entity_name": "Rafeh", "properties": {"name_ar": "رهف", "notes": "daughter, got A in math"}, "relationships": []}]}',
+    },
+    {
+        "input": "Vehicle inspection at Al-Salama Center, Dammam, on 2026-02-11 at 19:30. Plate: 7277TXB. Booking ref: 1025217086.",
+        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "vehicle inspection", "properties": {"reminder_type": "one_time", "date": "2026-02-11", "time": "19:30", "location": "Al-Salama Center, Dammam", "priority": 4, "reference_number": "1025217086"}, "relationships": []}, {"entity_type": "Knowledge", "entity_name": "vehicle inspection booking", "properties": {"plate_number": "7277TXB", "booking_number": "1025217086", "location": "Al-Salama Center, Dammam"}, "relationships": []}]}',
     },
 ]
 

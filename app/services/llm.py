@@ -155,13 +155,9 @@ class LLMService:
         today_weekday = weekdays_ar[now.weekday()]
         tomorrow_weekday = weekdays_ar[(now.weekday() + 1) % 7]
 
-        system_prompt = f"""أنت مساعد شخصي ذكي لإدارة الحياة اليومية. اسمك "المساعد".
-ترد بالعربية السعودية العامية. كن مختصر ومفيد.
+        system_prompt = f"""أنت مساعد شخصي ذكي. رد بالعربي السعودي العامي. كن مختصر.
 
-الوقت الحالي: {now.strftime("%H:%M")}
-اليوم = {today_weekday} {today_str}
-بكرة/غداً = {tomorrow_weekday} {tomorrow_str}
-مهم: لما المستخدم يقول "بكرة" أو "غداً" يقصد {tomorrow_weekday} {tomorrow_str} وليس اليوم.
+الوقت: {now.strftime("%H:%M")} | اليوم: {today_weekday} {today_str} | بكرة: {tomorrow_weekday} {tomorrow_str}
 
 ذاكرتك:
 {memory_context}
@@ -170,11 +166,9 @@ class LLMService:
 {context}
 
 تعليمات:
-- رد بالعربي السعودي العامي
-- لو المعلومات موجودة في السياق، استخدمها
-- لو ما عندك معلومات كافية، قول بصراحة
-- كن مختصر وواضح
-- لو المستخدم يشير لشي قاله قبل، ارجع لسياق المحادثة"""
+- استخدم المعلومات المتاحة لو موجودة
+- لو ما تعرف، قول ما عندي معلومات
+- لا تخترع معلومات أو أسماء غير موجودة في السياق"""
         messages = [{"role": "system", "content": system_prompt}]
 
         # Inject conversation history as actual message turns
@@ -264,13 +258,9 @@ class LLMService:
         today_weekday = weekdays_ar[now.weekday()]
         tomorrow_weekday = weekdays_ar[(now.weekday() + 1) % 7]
 
-        system_prompt = f"""أنت مساعد شخصي ذكي لإدارة الحياة اليومية. اسمك "المساعد".
-ترد بالعربية السعودية العامية. كن مختصر ومفيد.
+        system_prompt = f"""أنت مساعد شخصي ذكي. رد بالعربي السعودي العامي. كن مختصر.
 
-الوقت الحالي: {now.strftime("%H:%M")}
-اليوم = {today_weekday} {today_str}
-بكرة/غداً = {tomorrow_weekday} {tomorrow_str}
-مهم: لما المستخدم يقول "بكرة" أو "غداً" يقصد {tomorrow_weekday} {tomorrow_str} وليس اليوم.
+الوقت: {now.strftime("%H:%M")} | اليوم: {today_weekday} {today_str} | بكرة: {tomorrow_weekday} {tomorrow_str}
 
 ذاكرتك:
 {memory_context}
@@ -279,11 +269,9 @@ class LLMService:
 {context}
 
 تعليمات:
-- رد بالعربي السعودي العامي
-- لو المعلومات موجودة في السياق، استخدمها
-- لو ما عندك معلومات كافية، قول بصراحة
-- كن مختصر وواضح
-- لو المستخدم يشير لشي قاله قبل، ارجع لسياق المحادثة"""
+- استخدم المعلومات المتاحة لو موجودة
+- لو ما تعرف، قول ما عندي معلومات
+- لا تخترع معلومات أو أسماء غير موجودة في السياق"""
         messages = [{"role": "system", "content": system_prompt}]
         if conversation_history:
             for turn in conversation_history:
