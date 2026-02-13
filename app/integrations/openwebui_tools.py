@@ -99,6 +99,18 @@ class Tools:
         if was_action:
             return f"STATUS: ACTION_EXECUTED — The action was confirmed and executed.\n\n{reply}"
 
+        # Detect auto-saved actions (reminders, expenses, debts) — stored in background
+        auto_save_routes = {
+            "graph_reminder", "graph_financial", "graph_debt_payment",
+            "graph_inventory",
+        }
+        if route in auto_save_routes:
+            return (
+                f"STATUS: AUTO_SAVED — تم حفظ البيانات تلقائياً في الخلفية (route: {route}).\n"
+                "اعرض الرد التالي للمستخدم كما هو. البيانات محفوظة.\n\n"
+                + reply
+            )
+
         return f"STATUS: CONVERSATION — This is an informational/conversational reply. No data was modified.\n\n{reply}"
 
     def search_knowledge(self, query: str) -> str:
