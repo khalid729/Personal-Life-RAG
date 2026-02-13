@@ -1150,11 +1150,22 @@ async def job_morning_summary(bot: Bot):
 async def job_noon_checkin(bot: Bot):
     try:
         data = await api_get("/proactive/noon-checkin")
-        text = format_noon_checkin(data)
-        if text:
-            for part in split_message(text):
-                await bot.send_message(chat_id=settings.tg_chat_id, text=part)
-            logger.info("Noon check-in sent")
+        overdue = data.get("overdue_reminders", [])
+        if not overdue:
+            return
+
+        try:
+            fmt = await api_post(
+                "/proactive/format-reminders",
+                json={"reminders": overdue, "context": "noon"},
+            )
+            text = fmt.get("formatted", "")
+        except Exception:
+            text = format_noon_checkin(data)
+
+        for part in split_message(text):
+            await bot.send_message(chat_id=settings.tg_chat_id, text=part)
+        logger.info("Noon check-in sent")
     except Exception as e:
         logger.error("Noon check-in job failed: %s", e)
 
