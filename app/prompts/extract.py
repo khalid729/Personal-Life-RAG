@@ -10,10 +10,10 @@ Person: relationship, phone, email, company, notes, date_of_birth (YYYY-MM-DD), 
 Reminder:
   - reminder_type: "one_time" | "recurring" | "persistent" | "event_based" | "financial"
   - recurrence: "daily" | "weekly" | "monthly" | "yearly" (for recurring)
-  - date: YYYY-MM-DD (REQUIRED — always set a concrete date)
+  - due_date: YYYY-MM-DD (REQUIRED — always set a concrete date, resolve 'بكرة'/'tomorrow' using today's date below)
   - time: HH:MM (if mentioned)
   - location, priority (1-5), trigger_event, linked_entity, reference_number
-  - For recurring: date = NEXT future occurrence, not past.
+  - For recurring: due_date = NEXT future occurrence, not past.
 
 Knowledge: store factual info — locations, reference numbers, IDs, accounts, etc.
 
@@ -44,7 +44,7 @@ EXTRACT_EXAMPLES = [
     },
     {
         "input": "Remind me to pay rent on the 1st of every month",
-        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "pay rent", "properties": {"reminder_type": "recurring", "recurrence": "monthly", "priority": 4}, "relationships": []}]}',
+        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "pay rent", "properties": {"reminder_type": "recurring", "recurrence": "monthly", "due_date": "2026-03-01", "priority": 4}, "relationships": []}]}',
     },
     {
         "input": "I have 5 USB-C cables stored in the roof storage on the second shelf",
@@ -56,7 +56,7 @@ EXTRACT_EXAMPLES = [
     },
     {
         "input": "Vehicle inspection at Al-Salama Center, Dammam, on 2026-02-11 at 19:30. Plate: 7277TXB. Booking ref: 1025217086.",
-        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "vehicle inspection", "properties": {"reminder_type": "one_time", "date": "2026-02-11", "time": "19:30", "location": "Al-Salama Center, Dammam", "priority": 4, "reference_number": "1025217086"}, "relationships": []}, {"entity_type": "Knowledge", "entity_name": "vehicle inspection booking", "properties": {"plate_number": "7277TXB", "booking_number": "1025217086", "location": "Al-Salama Center, Dammam"}, "relationships": []}]}',
+        "output": '{"entities": [{"entity_type": "Reminder", "entity_name": "vehicle inspection", "properties": {"reminder_type": "one_time", "due_date": "2026-02-11", "time": "19:30", "location": "Al-Salama Center, Dammam", "priority": 4, "reference_number": "1025217086"}, "relationships": []}, {"entity_type": "Knowledge", "entity_name": "vehicle inspection booking", "properties": {"plate_number": "7277TXB", "booking_number": "1025217086", "location": "Al-Salama Center, Dammam"}, "relationships": []}]}',
     },
 ]
 
