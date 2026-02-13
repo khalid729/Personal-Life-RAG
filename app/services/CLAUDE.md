@@ -52,6 +52,10 @@ GraphService.set_vector_service(vector)  # entity resolution
 - Image: classify → vision → `_analysis_to_text()` (uses `name_ar:` prefix for Arabic names) → ingest
 - PDF: pymupdf4llm; if <200 chars → render pages → vision
 - Audio: WhisperX (lazy-loaded, GPU, Arabic)
+- Text: decode (utf-8/cp1256/latin-1) → ingest
+- **URL**: `process_url()` — GitHub URL parser + generic web fetch → strip HTML → ingest
+  - GitHub: repo root → README (main/master fallback), blob → raw file, tree → subpath README
+  - Large texts: chunked parallel extraction with entity dedup
 - Storage: `data/files/{hash[:2]}/{hash}.{ext}`
 
 ## MemoryService — 3 layers

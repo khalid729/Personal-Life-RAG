@@ -11,8 +11,8 @@
 
 ## Open WebUI Tools (openwebui_tools.py)
 
-- 20 sync tools via `http://host.docker.internal:8500`
-- chat, search, financial, debts, reminders, projects, tasks, knowledge, inventory, sprints, focus, backup, graph
+- 21 sync tools via `http://host.docker.internal:8500`
+- chat, search, financial, debts, reminders, projects, tasks, knowledge, inventory, sprints, focus, backup, graph, ingest_url
 
 ## Open WebUI Filter (openwebui_filter.py)
 

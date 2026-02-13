@@ -8,7 +8,7 @@
 |--------|--------|---------------|
 | chat | `/chat` | POST / , POST /stream (NDJSON), POST /summary |
 | ingest | `/ingest` | POST /text, POST /file |
-| files | `/ingest` | POST /file, GET /file/{hash} |
+| files | `/ingest` | POST /file, POST /url, GET /file/{hash} |
 | search | `/search` | POST / |
 | financial | `/financial` | GET /report, /debts, /alerts, POST /debts/payment |
 | reminders | `/reminders` | GET /, POST /action, /update, /delete, /delete-all, /merge-duplicates |

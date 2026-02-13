@@ -38,6 +38,7 @@ curl -s -X POST http://localhost:8500/chat/ \
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
 - **Chat flow**: POST /chat → Think→Act→Reflect → response + BackgroundTasks extraction
+- **URL ingestion**: POST /ingest/url → GitHub parser (repo/blob/tree) + web fetch → ingest pipeline
 - **Smart routing**: 20 keyword patterns → graph strategy, fallback LLM classify
 - **Entity resolution**: vector dedup (0.85 person, 0.80 default) via `resolve_entity_name()`
 - **Arabic names**: NER → `name_ar` on Person → `_display_name()` = `رهف (Rahaf)`
