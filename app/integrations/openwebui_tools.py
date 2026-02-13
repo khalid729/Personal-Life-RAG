@@ -402,11 +402,25 @@ class Tools:
         data = self._post("/ingest/url", json_data={"url": url, "topic": topic}, timeout=120)
         if data.get("status") == "error":
             return f"خطأ: {data.get('error', 'فشل سحب المحتوى')}"
-        return (
-            f"تم سحب المحتوى من الرابط\n"
-            f"Chunks: {data.get('chunks_stored', 0)} | "
-            f"Facts: {data.get('facts_extracted', 0)}"
-        )
+        lines = [
+            f"STATUS: ACTION_EXECUTED — تم سحب وتخزين محتوى الرابط بنجاح.",
+            f"الرابط: {url}",
+            f"الأجزاء المخزنة: {data.get('chunks_stored', 0)}",
+            f"الحقائق المستخرجة: {data.get('facts_extracted', 0)}",
+        ]
+        entities = data.get("entities", [])
+        if entities:
+            lines.append("المعلومات المستخرجة:")
+            for ent in entities:
+                ent_type = ent.get("entity_type", "")
+                ent_name = ent.get("entity_name", "")
+                props = ent.get("properties", {})
+                desc = props.get("description", "")
+                line = f"  - [{ent_type}] {ent_name}"
+                if desc:
+                    line += f": {desc[:100]}"
+                lines.append(line)
+        return "\n".join(lines)
 
     def get_graph_stats(self) -> str:
         """
