@@ -1093,18 +1093,6 @@ def format_evening_summary(data: dict) -> str:
     return "\n\n".join(parts)
 
 
-def format_due_reminder(reminder: dict) -> str:
-    title = reminder.get("title", "")
-    desc = reminder.get("description", "")
-    priority = reminder.get("priority")
-    lines = [f"تذكير: {title}"]
-    if desc:
-        lines.append(desc)
-    if priority and priority >= 3:
-        lines.append(f"[أولوية: {priority}]")
-    return "\n".join(lines)
-
-
 def format_stalled_projects(data: dict) -> str:
     projects = data.get("stalled_projects", [])
     if not projects:
@@ -1134,7 +1122,24 @@ def format_old_debts(data: dict) -> str:
 async def job_morning_summary(bot: Bot):
     try:
         data = await api_get("/proactive/morning-summary")
-        text = format_morning_summary(data)
+        plan = data.get("daily_plan", "")
+
+        if plan and plan != "No actionable items for today.":
+            try:
+                fmt = await api_post(
+                    "/proactive/format-reminders",
+                    json={"raw_text": plan, "context": "morning"},
+                )
+                text = fmt.get("formatted", "")
+            except Exception:
+                text = format_morning_summary(data)
+        else:
+            text = "صباح الخير! ما عندك شي مجدول اليوم ☀️"
+
+        alerts = data.get("spending_alerts")
+        if alerts:
+            text += f"\n\n💰 {alerts}"
+
         for part in split_message(text):
             await bot.send_message(chat_id=settings.tg_chat_id, text=part)
         logger.info("Morning summary sent")
@@ -1169,10 +1174,32 @@ async def job_check_reminders(bot: Bot):
     try:
         data = await api_get("/proactive/due-reminders")
         reminders = data.get("due_reminders", [])
+        if not reminders:
+            return
+
+        # 1. Call LLM to format all reminders as one message
+        try:
+            fmt = await api_post(
+                "/proactive/format-reminders",
+                json={"reminders": reminders, "context": "due"},
+            )
+            text = fmt.get("formatted", "")
+        except Exception:
+            text = "⏰ تذكيراتك:\n\n" + "\n".join(
+                f"{'🔴' if (r.get('priority') or 0) >= 4 else '🔵'} {r['title']}"
+                for r in reminders
+            )
+
+        # 2. Send one batched message
+        for part in split_message(text):
+            await bot.send_message(chat_id=settings.tg_chat_id, text=part)
+
+        # 3. Mark notified + advance recurring
         for r in reminders:
-            text = format_due_reminder(r)
-            await bot.send_message(chat_id=settings.tg_chat_id, text=text)
-            # Advance recurring reminders to next due date
+            try:
+                await api_post("/proactive/mark-notified", json={"title": r["title"]})
+            except Exception:
+                pass
             recurrence = r.get("recurrence")
             if recurrence and recurrence in ("daily", "weekly", "monthly", "yearly"):
                 try:
@@ -1180,11 +1207,10 @@ async def job_check_reminders(bot: Bot):
                         "/proactive/advance-reminder",
                         json={"title": r["title"], "recurrence": recurrence},
                     )
-                    logger.info("Advanced recurring reminder: %s", r["title"])
-                except Exception as e:
-                    logger.warning("Failed to advance reminder '%s': %s", r["title"], e)
-        if reminders:
-            logger.info("Sent %d due reminder(s)", len(reminders))
+                except Exception:
+                    pass
+
+        logger.info("Sent %d due reminder(s) (formatted)", len(reminders))
     except Exception as e:
         logger.error("Reminder check job failed: %s", e)
 
@@ -1257,19 +1283,14 @@ async def main():
     if settings.proactive_enabled:
         scheduler = AsyncIOScheduler()
         _scheduler = scheduler
-        tz_offset = settings.timezone_offset_hours
-        morning_utc = (settings.proactive_morning_hour - tz_offset) % 24
-        noon_utc = (settings.proactive_noon_hour - tz_offset) % 24
-        evening_utc = (settings.proactive_evening_hour - tz_offset) % 24
-
         scheduler.add_job(
-            job_morning_summary, CronTrigger(hour=morning_utc), args=[bot], id="morning"
+            job_morning_summary, CronTrigger(hour=settings.proactive_morning_hour), args=[bot], id="morning"
         )
         scheduler.add_job(
-            job_noon_checkin, CronTrigger(hour=noon_utc), args=[bot], id="noon"
+            job_noon_checkin, CronTrigger(hour=settings.proactive_noon_hour), args=[bot], id="noon"
         )
         scheduler.add_job(
-            job_evening_summary, CronTrigger(hour=evening_utc), args=[bot], id="evening"
+            job_evening_summary, CronTrigger(hour=settings.proactive_evening_hour), args=[bot], id="evening"
         )
         scheduler.add_job(
             job_check_reminders,
@@ -1286,9 +1307,8 @@ async def main():
 
         # Daily backup job
         if settings.backup_enabled:
-            backup_utc = (settings.backup_hour - tz_offset) % 24
             scheduler.add_job(
-                job_daily_backup, CronTrigger(hour=backup_utc), args=[bot], id="backup"
+                job_daily_backup, CronTrigger(hour=settings.backup_hour), args=[bot], id="backup"
             )
             logger.info("Daily backup scheduled at %d:00 local", settings.backup_hour)
 

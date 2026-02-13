@@ -1,11 +1,14 @@
 """Proactive system endpoints — called by scheduler jobs in the Telegram bot."""
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/proactive", tags=["proactive"])
 
@@ -24,6 +27,16 @@ def _now_local() -> datetime:
 class AdvanceReminderRequest(BaseModel):
     title: str
     recurrence: str
+
+
+class FormatRemindersRequest(BaseModel):
+    reminders: list[dict] = []
+    raw_text: str = ""
+    context: str = "due"  # "due", "morning", "evening"
+
+
+class MarkNotifiedRequest(BaseModel):
+    title: str
 
 
 # --- Endpoints ---
@@ -143,8 +156,9 @@ async def due_reminders(request: Request):
     WHERE r.status = 'pending'
       AND r.due_date IS NOT NULL
       AND r.due_date <= $now
+      AND (r.notified_at IS NULL)
     RETURN r.title, r.due_date, r.reminder_type, r.priority, r.description, r.recurrence
-    ORDER BY r.due_date
+    ORDER BY r.priority DESC, r.due_date
     LIMIT 30
     """
     rows = await graph.query(q, {"now": now_str})
@@ -166,6 +180,75 @@ async def advance_reminder(req: AdvanceReminderRequest, request: Request):
     graph = request.app.state.retrieval.graph
     result = await graph.advance_recurring_reminder(req.title, req.recurrence)
     return result
+
+
+@router.post("/mark-notified")
+async def mark_notified(req: MarkNotifiedRequest, request: Request):
+    """Set notified_at on a reminder so it won't fire again."""
+    graph = request.app.state.retrieval.graph
+    await graph.query(
+        "MATCH (r:Reminder) WHERE toLower(r.title) = toLower($title) AND r.status = 'pending' SET r.notified_at = $now",
+        {"title": req.title, "now": _now_local().isoformat()},
+    )
+    return {"status": "ok"}
+
+
+@router.post("/format-reminders")
+async def format_reminders(req: FormatRemindersRequest, request: Request):
+    """Use LLM to format reminders as a creative Arabic message with emojis."""
+    llm = request.app.state.retrieval.llm
+
+    # Build reminder text from list or raw_text
+    if req.raw_text:
+        reminder_text = req.raw_text
+    else:
+        lines = []
+        for r in req.reminders:
+            title = r.get("title", "")
+            due = r.get("due_date", "")
+            priority = r.get("priority", 3)
+            desc = r.get("description", "")
+            line = f"- {title}"
+            if due:
+                line += f" (موعد: {due})"
+            if priority and int(priority) >= 4:
+                line += " [مهم]"
+            if desc:
+                line += f" — {desc}"
+            lines.append(line)
+        reminder_text = "\n".join(lines)
+
+    context_prompts = {
+        "due": "هذي تذكيرات حان وقتها الحين. رتبها كرسالة تذكير واحدة.",
+        "morning": "هذي تذكيرات ومهام اليوم. رتبها كرسالة صباحية تحفيزية.",
+        "evening": "هذي ملخص اليوم. رتبها كرسالة مسائية.",
+    }
+
+    prompt = f"""{context_prompts.get(req.context, context_prompts["due"])}
+
+التذكيرات:
+{reminder_text}
+
+القواعد:
+- اكتب بالعربي السعودي
+- استخدم ايموجي مناسبة لكل تذكير
+- رتبها حسب الأهمية
+- اجعلها رسالة واحدة منظمة وواضحة
+- لا تضيف تذكيرات من عندك
+- لا تكتب مقدمة طويلة"""
+
+    messages = [
+        {"role": "system", "content": "أنت مساعد شخصي. مهمتك ترتيب التذكيرات بشكل جميل ومبتكر."},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        formatted = await llm.chat(messages, max_tokens=1024, temperature=0.8)
+        return {"formatted": formatted}
+    except Exception as e:
+        logger.warning("LLM format-reminders failed: %s", e)
+        fallback = "⏰ تذكيراتك:\n\n" + "\n".join(f"• {r.get('title', '')}" for r in req.reminders)
+        return {"formatted": fallback}
 
 
 @router.get("/stalled-projects")

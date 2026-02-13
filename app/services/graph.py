@@ -446,7 +446,7 @@ class GraphService:
         MATCH (r:Reminder)
         WHERE toLower(r.title) CONTAINS toLower($title)
           AND r.status = 'pending'
-        SET r.due_date = $next_due, r.updated_at = $now
+        SET r.due_date = $next_due, r.updated_at = $now, r.notified_at = NULL
         """
         await self.query(q_update, {"title": title, "next_due": next_due_str, "now": _now()})
 
