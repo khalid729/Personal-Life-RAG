@@ -71,8 +71,9 @@ async def noon_checkin(request: Request):
     WHERE r.status = 'pending'
       AND r.due_date IS NOT NULL
       AND r.due_date < $now
+      AND (r.notified_at IS NULL)
     RETURN r.title, r.due_date, r.reminder_type, r.priority, r.description
-    ORDER BY r.due_date
+    ORDER BY r.priority DESC, r.due_date
     LIMIT 20
     """
     rows = await graph.query(q, {"now": now_str})
