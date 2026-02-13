@@ -5,9 +5,11 @@ import hashlib
 import io
 import json
 import logging
+import re
 from pathlib import Path
 
 import aiofiles
+import httpx
 
 from app.config import get_settings
 from app.services.llm import LLMService
@@ -25,6 +27,11 @@ AUDIO_MIMES = {
     "audio/ogg", "audio/flac", "audio/m4a", "audio/mp4",
     "audio/x-m4a", "audio/aac",
 }
+TEXT_MIMES = {
+    "text/plain", "text/markdown", "text/x-markdown",
+    "application/octet-stream",  # some clients send .md as octet-stream
+}
+TEXT_EXTS = {".md", ".txt", ".text", ".markdown"}
 
 
 def _scan_barcodes(file_bytes: bytes) -> list[dict]:
@@ -89,6 +96,10 @@ class FileService:
             return await self._process_audio(
                 file_path, filename, file_hash, user_context, tags, topic, steps
             )
+        elif content_type in TEXT_MIMES or ext in TEXT_EXTS:
+            return await self._process_text(
+                file_bytes, filename, file_hash, user_context, tags, topic, steps
+            )
         else:
             return {
                 "status": "error",
@@ -100,6 +111,161 @@ class FileService:
                 "facts_extracted": 0,
                 "processing_steps": steps + ["unsupported_content_type"],
             }
+
+    # ========================
+    # URL PROCESSING
+    # ========================
+
+    _GITHUB_REPO_RE = re.compile(r"github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$")
+    _GITHUB_BLOB_RE = re.compile(r"github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)")
+    _GITHUB_TREE_RE = re.compile(r"github\.com/([^/]+)/([^/]+)/tree/([^/]+)(?:/(.+))?")
+    _GITHUB_RAW_RE = re.compile(r"raw\.githubusercontent\.com/")
+
+    def _github_to_raw_urls(self, url: str) -> list[str]:
+        """Convert a GitHub URL to raw.githubusercontent.com URLs to fetch."""
+        # Already a raw URL
+        if self._GITHUB_RAW_RE.search(url):
+            return [url]
+
+        # github.com/owner/repo/blob/branch/path → raw file
+        m = self._GITHUB_BLOB_RE.search(url)
+        if m:
+            owner, repo, branch, path = m.groups()
+            return [f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"]
+
+        # github.com/owner/repo/tree/branch[/subpath] → README in subpath
+        m = self._GITHUB_TREE_RE.search(url)
+        if m:
+            owner, repo, branch, subpath = m.groups()
+            base = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}"
+            prefix = f"{subpath}/" if subpath else ""
+            return [f"{base}/{prefix}README.md"]
+
+        # github.com/owner/repo → try README on main, then master
+        m = self._GITHUB_REPO_RE.search(url)
+        if m:
+            owner, repo = m.groups()
+            return [
+                f"https://raw.githubusercontent.com/{owner}/{repo}/main/README.md",
+                f"https://raw.githubusercontent.com/{owner}/{repo}/master/README.md",
+            ]
+
+        return []
+
+    def _strip_html(self, html: str) -> str:
+        """Strip HTML tags, scripts, and styles to plain text."""
+        text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.S)
+        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.S)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    async def process_url(
+        self,
+        url: str,
+        user_context: str = "",
+        tags: list[str] | None = None,
+        topic: str | None = None,
+    ) -> dict:
+        """Fetch content from a URL (GitHub or generic web) and ingest it."""
+        steps = []
+        is_github = "github.com" in url or "raw.githubusercontent.com" in url
+
+        # 1. Determine URLs to fetch
+        if is_github:
+            raw_urls = self._github_to_raw_urls(url)
+            if not raw_urls:
+                return {
+                    "status": "error",
+                    "chunks_stored": 0,
+                    "facts_extracted": 0,
+                    "entities": [],
+                    "error": "Could not parse GitHub URL",
+                }
+            steps.append(f"github_urls:{len(raw_urls)}")
+        else:
+            raw_urls = [url]
+            steps.append("generic_url")
+
+        # 2. Fetch each URL
+        fetched_texts = []
+        seen_hashes = set()
+
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            for fetch_url in raw_urls:
+                try:
+                    resp = await client.get(fetch_url)
+                    if resp.status_code == 404 and is_github:
+                        steps.append(f"404:{fetch_url.split('/')[-1]}")
+                        continue
+                    resp.raise_for_status()
+
+                    content = resp.text
+                    content_type = resp.headers.get("content-type", "")
+
+                    # Strip HTML if needed
+                    if "text/html" in content_type:
+                        content = self._strip_html(content)
+                        steps.append("html_stripped")
+
+                    # Dedup by content hash
+                    h = hashlib.sha256(content.encode()).hexdigest()
+                    if h in seen_hashes:
+                        steps.append("dedup_skipped")
+                        continue
+                    seen_hashes.add(h)
+
+                    if content.strip():
+                        fetched_texts.append(content)
+                        steps.append(f"fetched:{len(content)}chars")
+
+                except httpx.HTTPStatusError as e:
+                    steps.append(f"http_error:{e.response.status_code}")
+                except httpx.RequestError as e:
+                    steps.append(f"request_error:{type(e).__name__}")
+
+        if not fetched_texts:
+            return {
+                "status": "error",
+                "chunks_stored": 0,
+                "facts_extracted": 0,
+                "entities": [],
+                "error": "Could not fetch any content from URL",
+            }
+
+        # 3. Combine fetched text
+        combined = "\n\n".join(fetched_texts)
+
+        # 4. Prepend source URL and user context
+        header_parts = [f"[Source URL: {url}]"]
+        if user_context:
+            header_parts.append(f"[User context: {user_context}]")
+        combined = "\n".join(header_parts) + "\n\n" + combined
+
+        # 5. Ingest via retrieval pipeline
+        ingest_result = await self.retrieval.ingest_text(
+            combined,
+            source_type="web_url",
+            tags=tags,
+            topic=topic,
+        )
+        steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
+
+        # 6. Store File node in graph with URL as metadata
+        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        await self.retrieval.graph.upsert_file_node(
+            url_hash, url, "web_url",
+            {"brief_description": f"Web content from: {url}", "url": url},
+        )
+        steps.append("graph_node_created")
+
+        return {
+            "status": "ok",
+            "chunks_stored": ingest_result["chunks_stored"],
+            "facts_extracted": ingest_result["facts_extracted"],
+            "entities": ingest_result.get("entities", []),
+            "processing_steps": steps,
+        }
 
     # ========================
     # IMAGE PROCESSING
@@ -507,6 +673,85 @@ class FileService:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             logger.info("WhisperX model released, GPU memory freed")
+
+    # ========================
+    # TEXT FILE PROCESSING
+    # ========================
+
+    async def _process_text(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        file_hash: str,
+        user_context: str,
+        tags: list[str] | None,
+        topic: str | None,
+        steps: list[str],
+    ) -> dict:
+        # Decode text content
+        for encoding in ("utf-8", "utf-8-sig", "cp1256", "latin-1"):
+            try:
+                text = file_bytes.decode(encoding)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        else:
+            return {
+                "status": "error",
+                "filename": filename,
+                "file_type": "text_document",
+                "file_hash": file_hash,
+                "analysis": {"error": "Could not decode text file"},
+                "chunks_stored": 0,
+                "facts_extracted": 0,
+                "processing_steps": steps + ["decode_error"],
+            }
+
+        steps.append(f"text_decoded:{len(text)}chars")
+
+        if not text.strip():
+            return {
+                "status": "error",
+                "filename": filename,
+                "file_type": "text_document",
+                "file_hash": file_hash,
+                "analysis": {"error": "Empty text file"},
+                "chunks_stored": 0,
+                "facts_extracted": 0,
+                "processing_steps": steps + ["text_empty"],
+            }
+
+        # Prepend context if provided
+        if user_context:
+            text = f"[User context: {user_context}]\n\n{text}"
+
+        # Ingest through existing pipeline (chunk → enrich → embed → extract)
+        ingest_result = await self.retrieval.ingest_text(
+            text,
+            source_type="file_text_document",
+            tags=tags,
+            topic=topic,
+        )
+        steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
+
+        # Store file node in graph
+        await self.retrieval.graph.upsert_file_node(
+            file_hash, filename, "text_document",
+            {"brief_description": f"Text document: {filename}", "preview": text[:200]},
+        )
+        steps.append("graph_node_created")
+
+        return {
+            "status": "ok",
+            "filename": filename,
+            "file_type": "text_document",
+            "file_hash": file_hash,
+            "analysis": {"text_length": len(text), "preview": text[:500]},
+            "chunks_stored": ingest_result["chunks_stored"],
+            "facts_extracted": ingest_result["facts_extracted"],
+            "processing_steps": steps,
+            "entities": ingest_result.get("entities", []),
+        }
 
     # ========================
     # HELPERS

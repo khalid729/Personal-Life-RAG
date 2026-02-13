@@ -11,6 +11,7 @@ Changelog:
   v1.1 — Added: delete_reminder, update_reminder, delete_all_reminders, merge_duplicate_reminders (20 tools)
   v1.2-1.5 — store_document tool (removed in v2.0 — filter now handles files directly)
   v2.0 — Removed store_document (filter v2.0 processes files via API directly). 20 tools.
+  v2.1 — Added ingest_url tool for GitHub/web URL ingestion. 21 tools.
 """
 
 import json
@@ -20,9 +21,9 @@ from pydantic import BaseModel, Field
 
 
 class Tools:
-    """Personal Life RAG Tools v2.0 — 20 tools for finances, reminders, projects, tasks, knowledge, inventory, productivity, backup, and graph."""
+    """Personal Life RAG Tools v2.1 — 21 tools for finances, reminders, projects, tasks, knowledge, inventory, productivity, backup, graph, and URL ingestion."""
 
-    VERSION = "2.0"
+    VERSION = "2.1"
 
     API_BASE = "http://host.docker.internal:8500"
     TIMEOUT = 60
@@ -388,6 +389,24 @@ class Tools:
         for label, count in data.get("node_labels", {}).items():
             lines.append(f"• {label}: {count}")
         return "\n".join(lines)
+
+    def ingest_url(self, url: str, topic: str = "") -> str:
+        """
+        Fetch and ingest content from a URL (GitHub repos, web pages, docs).
+        Use this when the user shares a link and wants to store/analyze its content.
+
+        :param url: The URL to fetch and ingest.
+        :param topic: Optional topic to categorize the content.
+        :return: Ingestion result summary.
+        """
+        data = self._post("/ingest/url", json_data={"url": url, "topic": topic}, timeout=120)
+        if data.get("status") == "error":
+            return f"خطأ: {data.get('error', 'فشل سحب المحتوى')}"
+        return (
+            f"تم سحب المحتوى من الرابط\n"
+            f"Chunks: {data.get('chunks_stored', 0)} | "
+            f"Facts: {data.get('facts_extracted', 0)}"
+        )
 
     def get_graph_stats(self) -> str:
         """

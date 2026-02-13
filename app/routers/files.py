@@ -5,7 +5,7 @@ from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from app.config import get_settings
-from app.models.schemas import FileUploadResponse
+from app.models.schemas import FileUploadResponse, IngestResponse, URLIngestRequest
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,23 @@ async def upload_file(
     )
 
     return FileUploadResponse(**result)
+
+
+@router.post("/url", response_model=IngestResponse)
+async def ingest_url(req: URLIngestRequest, request: Request):
+    file_service = request.app.state.file_service
+    result = await file_service.process_url(
+        url=req.url,
+        user_context=req.context,
+        tags=req.tags,
+        topic=req.topic,
+    )
+    return IngestResponse(
+        status=result["status"],
+        chunks_stored=result["chunks_stored"],
+        facts_extracted=result["facts_extracted"],
+        entities=result.get("entities", []),
+    )
 
 
 @router.get("/file/{file_hash}")

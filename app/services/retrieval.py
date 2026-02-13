@@ -336,9 +336,34 @@ class RetrievalService:
         return await self.vector.upsert_chunks(enriched, metadata_list)
 
     async def _extract_and_store_facts(self, text_en: str) -> tuple[int, list[dict]]:
-        facts = await self.llm.extract_facts(text_en)
-        count = await self.graph.upsert_from_facts(facts)
-        return count, facts.get("entities", [])
+        # For large texts, extract from each chunk individually then merge
+        tokens = count_tokens(text_en)
+        if tokens <= 3000:
+            facts = await self.llm.extract_facts(text_en)
+            count = await self.graph.upsert_from_facts(facts)
+            return count, facts.get("entities", [])
+
+        # Chunk and extract in parallel
+        chunks = chunk_text(text_en, max_tokens=3000, overlap_tokens=200)
+        logger.info("Large text (%d tokens) → %d chunks for extraction", tokens, len(chunks))
+
+        chunk_facts = await asyncio.gather(
+            *[self.llm.extract_facts(chunk) for chunk in chunks]
+        )
+
+        # Merge and dedup entities by (entity_type, entity_name)
+        seen = set()
+        merged_entities = []
+        for facts in chunk_facts:
+            for entity in facts.get("entities", []):
+                key = (entity.get("entity_type", ""), entity.get("entity_name", ""))
+                if key not in seen:
+                    seen.add(key)
+                    merged_entities.append(entity)
+
+        merged = {"entities": merged_entities}
+        count = await self.graph.upsert_from_facts(merged)
+        return count, merged_entities
 
     # ========================
     # RETRIEVAL PIPELINE (Agentic RAG)

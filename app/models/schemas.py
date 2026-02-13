@@ -363,6 +363,13 @@ class IngestResponse(BaseModel):
     entities: list[dict] = []
 
 
+class URLIngestRequest(BaseModel):
+    url: str
+    context: str = ""
+    tags: list[str] = []
+    topic: Optional[str] = None
+
+
 class FileUploadResponse(BaseModel):
     status: str
     filename: str
