@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 import httpx
 
 from app.config import get_settings
-from app.prompts.agentic import build_reflect, build_think
+from app.prompts.agentic import build_think
 from app.prompts.classify import build_classify
 from app.prompts.extract import build_context_enrichment, build_extract
 from app.prompts.extract_specialized import build_specialized_extract
@@ -139,15 +139,6 @@ class LLMService:
         except json.JSONDecodeError:
             logger.warning("Failed to parse think_step JSON: %s", raw[:200])
             return {"strategy": "vector", "search_queries": [query_en], "reasoning": "fallback"}
-
-    async def reflect_step(self, query_en: str, chunks: list[str]) -> dict:
-        messages = build_reflect(query_en, chunks)
-        raw = await self.chat(messages, max_tokens=1024, temperature=0.1, json_mode=True)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse reflect_step JSON: %s", raw[:200])
-            return {"sufficient": True, "chunk_scores": [], "retry_strategy": None}
 
     async def generate_response(
         self,

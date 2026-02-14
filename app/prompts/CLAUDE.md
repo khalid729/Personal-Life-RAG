@@ -10,7 +10,7 @@
 | classify.py | Input categorization (9 categories) |
 | translate.py | AR↔EN with Saudi dialect examples |
 | conversation.py | Confirmation/action detection (regex-based) |
-| agentic.py | Think step (reflect step kept but unused) |
+| agentic.py | Think step (LLM classify fallback) |
 | file_classify.py | Uploaded file type classification |
 
 ## Specialized Extract (extract_specialized.py)
