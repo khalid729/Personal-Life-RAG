@@ -91,25 +91,17 @@ class Tools:
                 + "\n\n⚠️ أرسل 'نعم' للتأكيد أو 'لا' للإلغاء عبر chat tool."
             )
 
-        # Check if this was a confirmed action execution
+        # Check if this was a confirmed action or data was extracted/stored
         agentic_trace = result.get("agentic_trace", [])
         was_action = any(
             step.get("step") == "confirmed_action" for step in agentic_trace
         )
-        if was_action:
-            return f"STATUS: ACTION_EXECUTED — The action was confirmed and executed.\n\n{reply}"
-
-        # Detect auto-saved actions (reminders, expenses, debts) — stored in background
-        auto_save_routes = {
-            "graph_reminder", "graph_financial", "graph_debt_payment",
-            "graph_inventory",
-        }
-        if route in auto_save_routes:
-            return (
-                f"STATUS: AUTO_SAVED — تم حفظ البيانات تلقائياً في الخلفية (route: {route}).\n"
-                "اعرض الرد التالي للمستخدم كما هو. البيانات محفوظة.\n\n"
-                + reply
-            )
+        was_extracted = any(
+            step.get("step") == "extract" and step.get("upserted", 0) > 0
+            for step in agentic_trace
+        )
+        if was_action or was_extracted:
+            return f"STATUS: ACTION_EXECUTED — Data was stored/action was executed.\n\n{reply}"
 
         return f"STATUS: CONVERSATION — This is an informational/conversational reply. No data was modified.\n\n{reply}"
 

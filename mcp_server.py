@@ -90,13 +90,17 @@ async def chat(message: str, session_id: str = "mcp") -> str:
             + "\n\n⚠️ Ask user to confirm: send 'نعم' (yes) or 'لا' (no) via this chat tool."
         )
 
-    # Check if this was a confirmed action execution
+    # Check if this was a confirmed action or data was extracted/stored
     agentic_trace = result.get("agentic_trace", [])
     was_action = any(
         step.get("step") == "confirmed_action" for step in agentic_trace
     )
-    if was_action:
-        return date_ctx + f"STATUS: ACTION_EXECUTED — The action was confirmed and executed.\n\n{reply}"
+    was_extracted = any(
+        step.get("step") == "extract" and step.get("upserted", 0) > 0
+        for step in agentic_trace
+    )
+    if was_action or was_extracted:
+        return date_ctx + f"STATUS: ACTION_EXECUTED — Data was stored/action was executed.\n\n{reply}"
 
     return date_ctx + f"STATUS: CONVERSATION — Informational reply. No data was modified.\n\n{reply}"
 
