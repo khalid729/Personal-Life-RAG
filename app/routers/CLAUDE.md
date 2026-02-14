@@ -25,7 +25,7 @@
 
 1. `retrieval.retrieve_and_respond(message, session_id)`
 2. Returns `ChatResponse(reply, sources, route, agentic_trace, pending_confirmation)`
-3. BackgroundTasks: memory + extraction + embeddings
+3. BackgroundTasks: memory + vector embeddings (extraction happens in main pipeline Stage 2)
 
 ## Streaming — NDJSON
 

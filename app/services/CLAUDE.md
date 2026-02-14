@@ -43,9 +43,14 @@ GraphService.set_vector_service(vector)  # entity resolution
 ## RetrievalService (retrieval.py)
 
 - **Routing**: 20 keyword patterns → fast-path, fallback LLM classify
-- **Pipeline**: Think → Act → Reflect (score chunks, filter < 0.3) → retry if insufficient
-- **Post-processing**: BackgroundTasks extracts from query + combined exchange (both with NER hints, dedup by entity type)
-- **Confirmation**: delete/cancel only; clarification skipped if NER found entities
+- **Pipeline (3 LLM calls)**:
+  - Stage 1: parallel translate + NER + keyword route
+  - Stage 2: parallel specialized extract + retrieve → upsert facts immediately
+  - Stage 3: respond (with extraction summary for truthful confirmations)
+- **Specialized extractors**: 5 domain prompts (~40% of general prompt size) via `extract_specialized.py`
+  - `ROUTE_TO_EXTRACTOR` maps 19 routes → reminder/finance/inventory/people/productivity + general fallback
+- **Post-processing**: memory + vector storage only (extraction moved to Stage 2)
+- **Confirmation**: delete/cancel only
 
 ## FileService (files.py)
 

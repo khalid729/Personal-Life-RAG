@@ -20,7 +20,7 @@ app/
 ├── models/schemas.py    # Enums + Pydantic models
 ├── services/            # 8 async services (see services/CLAUDE.md)
 ├── routers/             # 15 REST routers (see routers/CLAUDE.md)
-├── prompts/             # 7 prompt builders (see prompts/CLAUDE.md)
+├── prompts/             # 8 prompt builders (see prompts/CLAUDE.md)
 └── integrations/        # Telegram, Open WebUI, MCP (see integrations/CLAUDE.md)
 ```
 
@@ -37,7 +37,7 @@ curl -s -X POST http://localhost:8500/chat/ \
 ## Core Patterns
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
-- **Chat flow**: POST /chat → Think→Act→Reflect → response + BackgroundTasks extraction
+- **Chat flow**: POST /chat → parallel(Translate+NER) → parallel(Extract+Retrieve) → Respond (3 LLM calls)
 - **URL ingestion**: POST /ingest/url → GitHub parser (repo/blob/tree) + web fetch → ingest pipeline
 - **Smart routing**: 20 keyword patterns → graph strategy, fallback LLM classify
 - **Entity resolution**: vector dedup (0.85 person, 0.80 default) via `resolve_entity_name()`
