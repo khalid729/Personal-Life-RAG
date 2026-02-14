@@ -104,8 +104,10 @@ FINANCIAL_KEYWORDS = re.compile(
 
 # Reminder action (done/snooze/cancel)
 REMINDER_ACTION_KEYWORDS = re.compile(
-    r"(خلصت|تم التذكير|تمت المهمة|أجّل|أجلي|الغي التذكير|الغاء|"
-    r"\bdone\b|\bsnooze\b|\bcancel\b|\bcomplete\b|\bfinished\b|\bpostpone\b)",
+    r"(خلصت|خلصته|تم التذكير|تمت المهمة|أجّل|أجلي|الغي التذكير|الغاء|"
+    r"استلمت|سلمت|أنجزت|أنجزته|سويت|سويته|وصلني|"
+    r"\bdone\b|\bsnooze\b|\bcancel\b|\bcomplete\b|\bfinished\b|\bpostpone\b|"
+    r"\bpicked up\b|\breceived\b|\bcompleted\b)",
     re.IGNORECASE,
 )
 
@@ -211,7 +213,7 @@ def smart_route(text: str) -> str:
         return "graph_financial"
 
     # Reminder sub-routes
-    if REMINDER_ACTION_KEYWORDS.search(text) and REMINDER_KEYWORDS.search(text):
+    if REMINDER_ACTION_KEYWORDS.search(text):
         return "graph_reminder_action"
     if REMINDER_KEYWORDS.search(text):
         return "graph_reminder"
@@ -669,14 +671,14 @@ class RetrievalService:
         """Map extracted entity types to action type string."""
         for entity in entities:
             etype = entity.get("entity_type", "")
-            if etype in ("Expense", "Debt", "DebtPayment", "Reminder", "Item", "ItemUsage", "ItemMove"):
+            if etype in ("Expense", "Debt", "DebtPayment", "Reminder", "ReminderAction", "Item", "ItemUsage", "ItemMove"):
                 return etype
         # Fallback from route
         route_map = {
             "graph_financial": "Expense",
             "graph_debt_payment": "DebtPayment",
             "graph_reminder": "Reminder",
-            "graph_reminder_action": "Reminder",
+            "graph_reminder_action": "ReminderAction",
             "graph_inventory": "Item",
         }
         return route_map.get(route)

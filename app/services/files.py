@@ -653,7 +653,10 @@ class FileService:
             # Load and transcribe audio
             audio = whisperx.load_audio(file_path)
             result = model.transcribe(
-                audio, batch_size=settings.whisperx_batch_size
+                audio,
+                batch_size=settings.whisperx_batch_size,
+                beam_size=settings.whisperx_beam_size,
+                initial_prompt="محادثة باللهجة السعودية العربية.",
             )
 
             # Build transcript text

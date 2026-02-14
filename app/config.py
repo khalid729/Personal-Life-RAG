@@ -45,10 +45,11 @@ class Settings(BaseSettings):
     max_file_size_mb: int = 50
 
     # WhisperX
-    whisperx_model: str = "large-v3-turbo"
+    whisperx_model: str = "large-v3"
     whisperx_compute_type: str = "float16"
-    whisperx_batch_size: int = 16
+    whisperx_batch_size: int = 8
     whisperx_language: str = "ar"
+    whisperx_beam_size: int = 5
 
     # Agentic RAG
     agentic_max_retries: int = 1

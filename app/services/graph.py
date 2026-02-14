@@ -363,13 +363,27 @@ class GraphService:
             extra["snooze_count"] = 0
         sets = ""
         if extra:
-            sets = ", ".join(f"r.{k} = ${k}" for k in extra)
-        q = f"""
-        MERGE (r:Reminder {{title: $title}})
-        ON CREATE SET r.status = 'pending', r.created_at = $now{', ' + sets if sets else ''}
-        ON MATCH SET r.updated_at = $now{', ' + sets if sets else ''}
+            sets = ", " + ", ".join(f"r.{k} = ${k}" for k in extra)
+
+        # Case-insensitive match existing pending/snoozed (FalkorDB can't do case-insensitive MERGE)
+        q_match = f"""
+        MATCH (r:Reminder)
+        WHERE toLower(r.title) = toLower($title)
+          AND r.status IN ['pending', 'snoozed']
+        SET r.updated_at = $now{sets}
+        RETURN r.title
         """
-        await self._graph.query(q, params={"title": title, "now": _now(), **extra})
+        params = {"title": title, "now": _now(), **extra}
+        rows = await self.query(q_match, params)
+        if rows:
+            return  # Updated existing reminder
+
+        # No match — create new
+        q_create = f"""
+        CREATE (r:Reminder {{title: $title}})
+        SET r.status = 'pending', r.created_at = $now, r.snooze_count = 0{sets}
+        """
+        await self._graph.query(q_create, params=params)
 
     async def update_reminder_status(
         self, title: str, action: str, snooze_until: str | None = None
@@ -1311,6 +1325,18 @@ class GraphService:
                             else:
                                 logger.warning("ItemMove failed: %s", result["error"])
                         continue  # Skip relationship creation for pseudo-entity
+
+                    if etype == "ReminderAction":
+                        action = props.get("action", "done")
+                        reminder_title = props.get("reminder_title", ename)
+                        snooze_until = props.get("snooze_until")
+                        result = await self.update_reminder_status(reminder_title, action, snooze_until)
+                        if "error" not in result:
+                            count += 1
+                            logger.info("ReminderAction: %s → %s", reminder_title, action)
+                        else:
+                            logger.warning("ReminderAction failed: %s", result["error"])
+                        continue
 
                     if etype == "Expense":
                         amount = props.pop("amount", 0)

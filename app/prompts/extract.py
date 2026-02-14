@@ -1,7 +1,7 @@
 EXTRACT_SYSTEM = """You are a fact extraction engine for a personal knowledge graph.
 Extract entities and relationships from the user's text. Be thorough — extract ALL details, numbers, dates, and references.
 
-Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove, Sprint
+Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, ReminderAction, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove, Sprint
 
 === Entity details ===
 
@@ -14,12 +14,14 @@ Reminder:
   - time: HH:MM (if mentioned)
   - location, priority (1-5), trigger_event, linked_entity, reference_number
   - For recurring: due_date = NEXT future occurrence, not past.
+  - IMPORTANT: Use consistent lowercase titles. If a similar reminder likely exists, reuse its exact title.
 
 Knowledge: store factual info — locations, reference numbers, IDs, accounts, etc.
 
 Expense: amount, currency (default SAR), category, date, vendor
 Debt: amount, currency, direction ("i_owe" or "owed_to_me"), reason
 DebtPayment: amount, currency — auto-updates existing debt
+ReminderAction: action ("done" | "snooze" | "cancel"), reminder_title — marks reminder completed/snoozed/cancelled. Use when user finished, received, picked up, or completed the thing the reminder was about.
 Item: name, quantity (default 1), location, category, condition, brand
 ItemUsage: item name, quantity_used — reduces item quantity
 ItemMove: item name, to_location (required), from_location (optional)
