@@ -7,10 +7,7 @@ import tiktoken
 
 from app.config import get_settings
 from app.prompts.conversation import (
-    SIDE_EFFECT_ROUTES,
     NUMBER_SELECTION,
-    build_confirmation_message,
-    is_action_intent,
     is_confirmation,
     is_delete_intent,
 )
@@ -373,10 +370,63 @@ class RetrievalService:
     # RETRIEVAL PIPELINE (Agentic RAG)
     # ========================
 
+    async def _run_ner(self, text_ar: str) -> str:
+        """Run NER on Arabic text, return formatted hints or empty string."""
+        if not self.ner:
+            return ""
+        try:
+            entities = self.ner.extract_entities(text_ar)
+            hints = self.ner.format_hints(entities)
+            if hints:
+                logger.info("NER hints: %s", hints)
+            return hints
+        except Exception as e:
+            logger.debug("NER failed: %s", e)
+            return ""
+
+    @staticmethod
+    def _build_extraction_summary(facts: dict, count: int) -> str:
+        """Build short summary of what was extracted for the responder."""
+        if count == 0:
+            return ""
+        lines = []
+        for e in facts.get("entities", []):
+            etype = e.get("entity_type", "")
+            ename = e.get("entity_name", "")
+            props = e.get("properties", {})
+            if etype == "Reminder":
+                due = props.get("due_date", "")
+                lines.append(f"CREATED reminder: {ename} (due: {due})")
+            elif etype == "ReminderAction":
+                action = props.get("action", "done")
+                title = props.get("reminder_title", ename)
+                lines.append(f"MARKED reminder {action}: {title}")
+            elif etype == "Expense":
+                amt = props.get("amount", "")
+                lines.append(f"RECORDED expense: {ename} ({amt} SAR)")
+            elif etype == "DebtPayment":
+                lines.append(f"RECORDED debt payment: {ename}")
+            elif etype == "Debt":
+                amt = props.get("amount", "")
+                direction = props.get("direction", "")
+                lines.append(f"RECORDED debt: {ename} ({amt} SAR, {direction})")
+            elif etype == "Item":
+                qty = props.get("quantity", 1)
+                lines.append(f"STORED item: {ename} (qty: {qty})")
+            elif etype == "ItemMove":
+                to_loc = props.get("to_location", "")
+                lines.append(f"MOVED item: {ename} → {to_loc}")
+            elif etype == "ItemUsage":
+                qty = props.get("quantity_used", 1)
+                lines.append(f"USED item: {ename} (qty: {qty})")
+            else:
+                lines.append(f"STORED {etype}: {ename}")
+        return "\n".join(lines)
+
     async def _prepare_context(
         self, query_ar: str, session_id: str = "default"
     ) -> dict:
-        """Shared pipeline steps 1-8: translate, route, confirm, retrieve, reflect, retry, build context.
+        """Multi-agent pipeline: parallel translate+NER+route → parallel extract+retrieve → build context.
 
         Returns a dict with all context needed for response generation (or an early return).
         If 'early_return' is set, the caller should return that dict directly.
@@ -436,10 +486,13 @@ class RetrievalService:
             except Exception as e:
                 logger.warning("Conversation compression failed: %s", e)
 
-        # Step 1: Translate
-        query_en = await self.llm.translate_to_english(query_ar)
+        # === Stage 1: Parallel translate + NER + route ===
+        translate_coro = self.llm.translate_to_english(query_ar)
+        ner_coro = self._run_ner(query_ar)
 
-        # Step 2: Fast path — keyword router
+        query_en, ner_hints = await asyncio.gather(translate_coro, ner_coro)
+
+        # Route (keyword-based, no LLM)
         route = smart_route(query_ar)
         if route == "llm_classify":
             route = smart_route(query_en)
@@ -454,6 +507,7 @@ class RetrievalService:
             })
             search_queries = [query_en]
         else:
+            # Fallback: use think_step (LLM classify)
             think_result = await self.llm.think_step(query_en)
             route = think_result.get("strategy", "vector")
             search_queries = think_result.get("search_queries", [query_en])
@@ -466,7 +520,7 @@ class RetrievalService:
                 "reasoning": think_result.get("reasoning", ""),
             })
 
-        # --- B. Confirmation (DELETE actions only — all other side-effects execute directly) ---
+        # --- B. Confirmation (DELETE actions only) ---
         if (
             settings.confirmation_enabled
             and is_delete_intent(query_ar)
@@ -493,10 +547,14 @@ class RetrievalService:
                 "pending_confirmation": True,
             }}
 
-        # Step 4: ACT — execute retrieval
-        context_parts, sources = await self._execute_retrieval_strategy(
-            route, query_en, search_queries
+        # === Stage 2: Parallel extract + retrieve ===
+        extract_coro = self.llm.extract_facts_specialized(query_en, route, ner_hints)
+        retrieve_coro = self._execute_retrieval_strategy(route, query_en, search_queries)
+
+        facts, (context_parts, sources) = await asyncio.gather(
+            extract_coro, retrieve_coro
         )
+
         agentic_trace.append({
             "step": "act",
             "strategy": route,
@@ -504,58 +562,16 @@ class RetrievalService:
             "sources": list(set(sources)),
         })
 
-        # Step 5: REFLECT + Self-RAG
-        filtered_parts = context_parts
-        if context_parts:
-            reflect_result = await self.llm.reflect_step(query_en, context_parts)
-            chunk_scores = reflect_result.get("chunk_scores", [])
-            sufficient = reflect_result.get("sufficient", True)
-
-            threshold = settings.self_rag_threshold
-            if chunk_scores:
-                scored_parts = []
-                for cs in chunk_scores:
-                    idx = cs.get("index", -1)
-                    score = cs.get("score", 1.0)
-                    if 0 <= idx < len(context_parts) and score >= threshold:
-                        scored_parts.append(context_parts[idx])
-                filtered_parts = scored_parts if scored_parts else context_parts[:1]
-            else:
-                filtered_parts = context_parts
-
+        # Upsert extracted facts immediately
+        extraction_summary = ""
+        if facts.get("entities"):
+            count = await self.graph.upsert_from_facts(facts)
+            extraction_summary = self._build_extraction_summary(facts, count)
             agentic_trace.append({
-                "step": "reflect",
-                "sufficient": sufficient,
-                "chunk_scores": chunk_scores,
-                "chunks_after_filter": len(filtered_parts),
-                "threshold": threshold,
+                "step": "extract",
+                "entities": len(facts["entities"]),
+                "upserted": count,
             })
-
-            # Step 6: RETRY if insufficient
-            if not sufficient and settings.agentic_max_retries > 0:
-                retry_strategy = self._parse_retry_hint(
-                    reflect_result.get("retry_strategy"), route
-                )
-                agentic_trace.append({
-                    "step": "retry",
-                    "original_strategy": route,
-                    "retry_strategy": retry_strategy,
-                })
-                retry_parts, retry_sources = await self._execute_retrieval_strategy(
-                    retry_strategy, query_en, search_queries
-                )
-                existing_set = set(filtered_parts)
-                for rp in retry_parts:
-                    if rp not in existing_set:
-                        filtered_parts.append(rp)
-                        existing_set.add(rp)
-                sources.extend(retry_sources)
-
-                agentic_trace.append({
-                    "step": "retry_result",
-                    "new_chunks": len(retry_parts),
-                    "total_chunks": len(filtered_parts),
-                })
 
         # --- C. Build context ---
         memory_context = await self.memory.build_system_memory_context(session_id)
@@ -566,7 +582,7 @@ class RetrievalService:
             memory_context += f"\n\n=== Conversation Summary ===\n{conv_summary}"
 
         conversation_history = await self.memory.get_conversation_turns(session_id)
-        retrieved_context = "\n\n".join(filtered_parts)
+        retrieved_context = "\n\n".join(context_parts)
 
         # Token budget
         memory_tokens = count_tokens(memory_context)
@@ -589,6 +605,7 @@ class RetrievalService:
         return {
             "context": retrieved_context,
             "memory_context": memory_context,
+            "extraction_summary": extraction_summary,
             "conversation_history": conversation_history,
             "route": route,
             "query_en": query_en,
@@ -599,7 +616,7 @@ class RetrievalService:
     async def retrieve_and_respond(
         self, query_ar: str, session_id: str = "default"
     ) -> dict:
-        """Agentic RAG pipeline with confirmation flow + multi-turn history."""
+        """Multi-agent pipeline with confirmation flow + multi-turn history."""
         ctx = await self._prepare_context(query_ar, session_id)
 
         if "early_return" in ctx:
@@ -608,6 +625,7 @@ class RetrievalService:
         reply = await self.llm.generate_response(
             query_ar, ctx["context"], ctx["memory_context"],
             conversation_history=ctx["conversation_history"],
+            extraction_summary=ctx.get("extraction_summary", ""),
         )
 
         return {
@@ -641,6 +659,7 @@ class RetrievalService:
             # Fire post-processing
             asyncio.create_task(self.post_process(
                 query_ar, early["reply"], session_id,
+                query_en=early.get("query_en"),
                 skip_fact_extraction=early.get("pending_confirmation", False),
             ))
             return
@@ -657,6 +676,7 @@ class RetrievalService:
         async for chunk in self.llm.generate_response_stream(
             query_ar, ctx["context"], ctx["memory_context"],
             conversation_history=ctx["conversation_history"],
+            extraction_summary=ctx.get("extraction_summary", ""),
         ):
             full_reply.append(chunk)
             yield _json.dumps({"type": "token", "content": chunk}) + "\n"
@@ -665,23 +685,10 @@ class RetrievalService:
 
         # Fire post-processing in background
         reply_text = "".join(full_reply)
-        asyncio.create_task(self.post_process(query_ar, reply_text, session_id))
-
-    def _classify_action_type(self, entities: list[dict], route: str) -> str | None:
-        """Map extracted entity types to action type string."""
-        for entity in entities:
-            etype = entity.get("entity_type", "")
-            if etype in ("Expense", "Debt", "DebtPayment", "Reminder", "ReminderAction", "Item", "ItemUsage", "ItemMove"):
-                return etype
-        # Fallback from route
-        route_map = {
-            "graph_financial": "Expense",
-            "graph_debt_payment": "DebtPayment",
-            "graph_reminder": "Reminder",
-            "graph_reminder_action": "ReminderAction",
-            "graph_inventory": "Item",
-        }
-        return route_map.get(route)
+        asyncio.create_task(self.post_process(
+            query_ar, reply_text, session_id,
+            query_en=ctx.get("query_en"),
+        ))
 
     _DELETE_STRIP_RE = re.compile(
         r"(احذف|حذف|امحي|امسح|شيل|ازل|الغي|الغاء|كنسل|فك|"
@@ -1043,27 +1050,6 @@ class RetrievalService:
             parts.append("Top by quantity: " + ", ".join(f"{t['name']}({t['quantity']})" for t in report["top_by_quantity"][:5]))
         return "\n".join(parts)
 
-    def _parse_retry_hint(self, hint: str | None, original: str) -> str:
-        """Parse retry strategy from Reflect step, or flip to opposite."""
-        valid = {
-            "vector", "hybrid",
-            "graph_financial", "graph_financial_report",
-            "graph_debt_summary", "graph_debt_payment",
-            "graph_reminder", "graph_reminder_action",
-            "graph_daily_plan", "graph_knowledge",
-            "graph_project", "graph_person", "graph_task",
-            "graph_inventory", "graph_inventory_unused",
-            "graph_inventory_report", "graph_inventory_duplicates",
-            "graph_sprint", "graph_focus_stats",
-            "graph_timeblock", "graph_productivity_report",
-        }
-        if hint and hint in valid and hint != original:
-            return hint
-        # Flip: if was graph-based, try vector; if vector, try hybrid
-        if original.startswith("graph_"):
-            return "vector"
-        return "hybrid"
-
     # ========================
     # BACKGROUND POST-PROCESSING
     # ========================
@@ -1073,9 +1059,14 @@ class RetrievalService:
         query_ar: str,
         reply_ar: str,
         session_id: str,
+        query_en: str | None = None,
         skip_fact_extraction: bool = False,
     ) -> None:
-        """Run after response is sent: update memory, extract facts, store embeddings."""
+        """Run after response is sent: update memory, store vector embeddings.
+
+        Fact extraction has moved to the main pipeline (Stage 2).
+        This only handles memory updates + vector storage + periodic tasks.
+        """
         try:
             # Update working memory
             await self.memory.push_message(session_id, "user", query_ar)
@@ -1085,44 +1076,12 @@ class RetrievalService:
             msg_count = await self.memory.increment_message_count(session_id)
 
             if not skip_fact_extraction:
-                # Translate user query separately for fact extraction
-                # (combined translation often loses actionable intent)
-                query_en = await self.llm.translate_to_english(query_ar)
-
-                # Run Arabic NER for hints
-                ner_hints = ""
-                if self.ner:
-                    try:
-                        entities = self.ner.extract_entities(query_ar)
-                        ner_hints = self.ner.format_hints(entities)
-                        if ner_hints:
-                            logger.info("NER hints: %s", ner_hints)
-                    except Exception as e:
-                        logger.debug("NER failed: %s", e)
-
-                # Extract facts from user query alone (captures intents like
-                # reminders, expenses, debts that get lost in combined translation)
-                query_facts = await self.llm.extract_facts(query_en, ner_hints=ner_hints)
-                if query_facts.get("entities"):
-                    await self.graph.upsert_from_facts(query_facts)
-
-                # Also extract from combined exchange for relationship context,
-                # but skip DebtPayment to avoid double-applying payments
-                query_entity_types = {
-                    e.get("entity_type") for e in query_facts.get("entities", [])
-                }
-                combined = f"User said: {query_ar}\nAssistant replied: {reply_ar}"
-                combined_en = await self.llm.translate_to_english(combined)
-                combined_facts = await self.llm.extract_facts(combined_en, ner_hints=ner_hints)
-                if combined_facts.get("entities"):
-                    combined_facts["entities"] = [
-                        e for e in combined_facts["entities"]
-                        if e.get("entity_type") not in query_entity_types
-                    ]
-                    if combined_facts["entities"]:
-                        await self.graph.upsert_from_facts(combined_facts)
+                # Translate only if not passed from pipeline
+                if not query_en:
+                    query_en = await self.llm.translate_to_english(query_ar)
 
                 # Store the exchange as a vector for future retrieval
+                combined_en = f"User: {query_en}\nAssistant: {reply_ar}"
                 await self.vector.upsert_chunks(
                     [combined_en],
                     [{"source_type": "conversation", "topic": "chat"}],

@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.prompts.agentic import build_reflect, build_think
 from app.prompts.classify import build_classify
 from app.prompts.extract import build_context_enrichment, build_extract
+from app.prompts.extract_specialized import build_specialized_extract
 from app.prompts.file_classify import build_file_classify
 from app.prompts.conversation import CLARIFICATION_SYSTEM, CORE_MEMORY_SYSTEM
 from app.prompts.translate import build_translate_ar_to_en, build_translate_en_to_ar
@@ -71,6 +72,16 @@ class LLMService:
             return json.loads(raw)
         except json.JSONDecodeError:
             logger.warning("Failed to parse extract_facts JSON: %s", raw[:200])
+            return {"entities": []}
+
+    async def extract_facts_specialized(self, text: str, route: str, ner_hints: str = "") -> dict:
+        """Extract facts using a domain-specialized prompt based on route."""
+        messages = build_specialized_extract(text, route, ner_hints=ner_hints)
+        raw = await self.chat(messages, max_tokens=2048, temperature=0.1, json_mode=True)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse extract_facts_specialized JSON: %s", raw[:200])
             return {"entities": []}
 
     async def classify_input(self, text: str) -> dict:
@@ -144,6 +155,7 @@ class LLMService:
         context: str,
         memory_context: str,
         conversation_history: list[dict] | None = None,
+        extraction_summary: str = "",
     ) -> str:
         from datetime import datetime, timedelta, timezone
         from app.config import get_settings as _gs
@@ -155,10 +167,14 @@ class LLMService:
         today_weekday = weekdays_ar[now.weekday()]
         tomorrow_weekday = weekdays_ar[(now.weekday() + 1) % 7]
 
+        action_block = ""
+        if extraction_summary:
+            action_block = f"\nإجراءات تمت:\n{extraction_summary}\n"
+
         system_prompt = f"""أنت مساعد شخصي ذكي. رد بالعربي السعودي العامي. كن مختصر.
 
 الوقت: {now.strftime("%H:%M")} | اليوم: {today_weekday} {today_str} | بكرة: {tomorrow_weekday} {tomorrow_str}
-
+{action_block}
 ذاكرتك:
 {memory_context}
 
@@ -166,6 +182,7 @@ class LLMService:
 {context}
 
 تعليمات:
+- لو في إجراءات تمت، أكد للمستخدم بشكل طبيعي
 - استخدم المعلومات المتاحة لو موجودة
 - لو ما تعرف، قول ما عندي معلومات
 - لا تخترع معلومات أو أسماء غير موجودة في السياق"""
@@ -247,6 +264,7 @@ class LLMService:
         context: str,
         memory_context: str,
         conversation_history: list[dict] | None = None,
+        extraction_summary: str = "",
     ) -> AsyncGenerator[str, None]:
         from datetime import datetime, timedelta, timezone
         from app.config import get_settings as _gs
@@ -258,10 +276,14 @@ class LLMService:
         today_weekday = weekdays_ar[now.weekday()]
         tomorrow_weekday = weekdays_ar[(now.weekday() + 1) % 7]
 
+        action_block = ""
+        if extraction_summary:
+            action_block = f"\nإجراءات تمت:\n{extraction_summary}\n"
+
         system_prompt = f"""أنت مساعد شخصي ذكي. رد بالعربي السعودي العامي. كن مختصر.
 
 الوقت: {now.strftime("%H:%M")} | اليوم: {today_weekday} {today_str} | بكرة: {tomorrow_weekday} {tomorrow_str}
-
+{action_block}
 ذاكرتك:
 {memory_context}
 
@@ -269,6 +291,7 @@ class LLMService:
 {context}
 
 تعليمات:
+- لو في إجراءات تمت، أكد للمستخدم بشكل طبيعي
 - استخدم المعلومات المتاحة لو موجودة
 - لو ما تعرف، قول ما عندي معلومات
 - لا تخترع معلومات أو أسماء غير موجودة في السياق"""
