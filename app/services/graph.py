@@ -385,39 +385,89 @@ class GraphService:
         """
         await self._graph.query(q_create, params=params)
 
+    async def _find_matching_reminders(self, title: str, status_filter: str = "") -> list:
+        """Find reminders matching title using multi-strategy search.
+
+        Strategies (in order):
+        1. Direct CONTAINS (original title)
+        2. CONTAINS with singular/plural variant
+        3. All-keywords match (every word in title found in reminder)
+        """
+        status_clause = ""
+        if status_filter:
+            status_clause = f" AND r.status IN {status_filter}"
+
+        # Strategy 1: direct CONTAINS
+        q = f"""
+        MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($title){status_clause}
+        RETURN r.title, id(r)
+        """
+        rows = await self.query(q, {"title": title})
+        if rows:
+            return rows
+
+        # Strategy 2: singular/plural variant
+        t = title.strip()
+        variant = t[:-1] if (t.endswith("s") and len(t) > 3) else t + "s"
+        rows = await self.query(q, {"title": variant})
+        if rows:
+            logger.info("Reminder matched with variant '%s' (original: '%s')", variant, title)
+            return rows
+
+        # Strategy 3: all-keywords — each word must appear in the title
+        words = [w for w in title.lower().split() if len(w) >= 3]
+        if len(words) >= 2:
+            conditions = " AND ".join(f"toLower(r.title) CONTAINS '{w}'" for w in words)
+            q_kw = f"""
+            MATCH (r:Reminder) WHERE {conditions}{status_clause}
+            RETURN r.title, id(r)
+            """
+            rows = await self.query(q_kw, {})
+            if rows:
+                logger.info("Reminder matched via keywords %s (original: '%s')", words, title)
+                return rows
+
+        return []
+
     async def update_reminder_status(
         self, title: str, action: str, snooze_until: str | None = None
     ) -> dict:
         """Mark reminder done/snoozed/cancelled. Returns updated info."""
-        if action == "done":
-            q = """
-            MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($title)
-            SET r.status = 'done', r.completed_at = $now
-            RETURN r.title, r.status
-            """
-            rows = await self.query(q, {"title": title, "now": _now()})
-        elif action == "snooze":
-            q = """
-            MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($title)
-            SET r.status = 'snoozed',
-                r.snooze_count = coalesce(r.snooze_count, 0) + 1,
-                r.snoozed_until = $snooze_until
-            RETURN r.title, r.status, r.snooze_count
-            """
-            rows = await self.query(q, {"title": title, "snooze_until": snooze_until or ""})
-        elif action == "cancel":
-            q = """
-            MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($title)
-            SET r.status = 'cancelled', r.cancelled_at = $now
-            RETURN r.title, r.status
-            """
-            rows = await self.query(q, {"title": title, "now": _now()})
-        else:
-            return {"error": f"Unknown action: {action}"}
-
-        if not rows:
+        # Find matching reminders first
+        matches = await self._find_matching_reminders(title)
+        if not matches:
             return {"error": f"No reminder found matching '{title}'"}
-        return {"title": rows[0][0], "status": rows[0][1]}
+
+        # Apply action to all matches
+        matched_titles = [r[0] for r in matches]
+        for r_title in matched_titles:
+            if action == "done":
+                q = """
+                MATCH (r:Reminder) WHERE r.title = $title
+                SET r.status = 'done', r.completed_at = $now
+                RETURN r.title, r.status
+                """
+                await self.query(q, {"title": r_title, "now": _now()})
+            elif action == "snooze":
+                q = """
+                MATCH (r:Reminder) WHERE r.title = $title
+                SET r.status = 'snoozed',
+                    r.snooze_count = coalesce(r.snooze_count, 0) + 1,
+                    r.snoozed_until = $snooze_until
+                RETURN r.title, r.status, r.snooze_count
+                """
+                await self.query(q, {"title": r_title, "snooze_until": snooze_until or ""})
+            elif action == "cancel":
+                q = """
+                MATCH (r:Reminder) WHERE r.title = $title
+                SET r.status = 'cancelled', r.cancelled_at = $now
+                RETURN r.title, r.status
+                """
+                await self.query(q, {"title": r_title, "now": _now()})
+            else:
+                return {"error": f"Unknown action: {action}"}
+
+        return {"title": matched_titles[0], "status": action if action != "done" else "done"}
 
     async def advance_recurring_reminder(self, title: str, recurrence: str) -> dict:
         """Advance a recurring reminder to its next due date."""
