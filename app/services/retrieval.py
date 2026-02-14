@@ -90,8 +90,8 @@ DEBT_QUERY_KEYWORDS = re.compile(
 
 # Financial report / monthly summary
 FINANCIAL_REPORT_KEYWORDS = re.compile(
-    r"(ملخص|تقرير|مصاريف الشهر|مصاريف شهر|مقارنة|كم صرفت|"
-    r"report|summary|monthly.*spend|spend.*month|spending.*month|compare.*month|how much.*spend)",
+    r"(ملخص.*مالي|ملخص.*مصاريف|ملخص.*صرف|تقرير.*مالي|تقرير.*مصاريف|مصاريف الشهر|مصاريف شهر|مقارنة|كم صرفت|"
+    r"financial.*report|financial.*summary|monthly.*spend|spend.*month|spending.*month|compare.*month|how much.*spend)",
     re.IGNORECASE,
 )
 
@@ -115,7 +115,9 @@ REMINDER_KEYWORDS = re.compile(
 )
 
 DAILY_PLAN_KEYWORDS = re.compile(
-    r"(رتب.*يومي|خطة اليوم|خطط.*يومي|يومي ايش|plan my day|daily plan|today.?s plan|what.?s on)",
+    r"(رتب.*يومي|خطة اليوم|خطط.*يومي|يومي ايش|ملخص.*يوم|ملخص.*عمل|وش عندي اليوم|وش عندي.*اليوم|"
+    r"أعمال اليوم|مهام اليوم|جدول اليوم|اللي عندي اليوم|"
+    r"plan my day|daily plan|today.?s plan|what.?s on|today.?s tasks|what do I have today)",
     re.IGNORECASE,
 )
 
@@ -194,6 +196,10 @@ def smart_route(text: str) -> str:
     """Route query to the best source based on keywords.
     More specific routes checked first to avoid false matches.
     """
+    # Daily plan (check before financial — "ملخص اليوم" != "ملخص مالي")
+    if DAILY_PLAN_KEYWORDS.search(text):
+        return "graph_daily_plan"
+
     # Financial sub-routes (most specific first)
     if DEBT_PAYMENT_KEYWORDS.search(text):
         return "graph_debt_payment"
@@ -209,10 +215,6 @@ def smart_route(text: str) -> str:
         return "graph_reminder_action"
     if REMINDER_KEYWORDS.search(text):
         return "graph_reminder"
-
-    # Daily plan + Knowledge
-    if DAILY_PLAN_KEYWORDS.search(text):
-        return "graph_daily_plan"
     if KNOWLEDGE_KEYWORDS.search(text):
         return "graph_knowledge"
 
