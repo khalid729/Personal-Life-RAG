@@ -13,6 +13,7 @@
 
 - 21 sync tools via `http://host.docker.internal:8500`
 - chat, search, financial, debts, reminders, projects, tasks, knowledge, inventory, sprints, focus, backup, graph, ingest_url
+- **STATUS detection**: checks `agentic_trace` for `extract.upserted > 0` → `ACTION_EXECUTED` (trace-based, not route-based)
 
 ## Open WebUI Filter (openwebui_filter.py)
 
@@ -23,4 +24,5 @@
 
 ## MCP Server (:8600)
 
-SSE-based, prepends date context to every response.
+- SSE-based, prepends date context to every response
+- Same trace-based STATUS detection as tools (`extract.upserted > 0` → `ACTION_EXECUTED`)
