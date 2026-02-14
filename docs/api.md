@@ -28,7 +28,7 @@ Main conversational endpoint. Handles Arabic/English queries with agentic RAG.
 
 Notes:
 - If `pending_confirmation: true`, the next message should be yes/no/number
-- `agentic_trace` shows the pipeline steps (route, act, reflect, retry)
+- `agentic_trace` shows the pipeline steps (route, act, extract)
 - `sources` indicates where the context came from
 
 ---

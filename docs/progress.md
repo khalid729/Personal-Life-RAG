@@ -17,9 +17,9 @@
 - [x] Text ingestion endpoint
 
 ### Phase 2 — Agentic RAG + File Processing
-- [x] Think > Act > Reflect pipeline with Self-RAG chunk scoring
+- [x] ~~Think > Act > Reflect pipeline with Self-RAG chunk scoring~~ → replaced by 3-stage parallel pipeline (Phase 12)
 - [x] Smart keyword router (zero-latency fast path)
-- [x] Max 1 retry (flip strategy if Reflect says insufficient)
+- [x] ~~Max 1 retry (flip strategy if Reflect says insufficient)~~ → removed in Phase 12
 - [x] Image processing (vLLM Vision: classify type > analyze)
 - [x] PDF processing (pymupdf4llm markdown extraction)
 - [x] Audio processing (WhisperX on-demand, serialized via Lock)
@@ -317,6 +317,31 @@
 - [x] Streaming: NDJSON with meta, token chunks, done — all working
 - [x] Graph Viz: schema (287 nodes, 74 edges), stats, export, PNG image generation verified
 - [x] Regression: regular chat + proactive endpoints still work
+
+### Phase 12 — Multi-Agent Pipeline (Specialized Parallel Extraction)
+- [x] **5 specialized extractors** (`extract_specialized.py`): reminder, finance, inventory, people, productivity (~40% of general prompt size)
+- [x] `ROUTE_TO_EXTRACTOR` maps 19 graph routes → extractor key, unknown routes → general fallback
+- [x] `build_specialized_extract(text, route, ner_hints)`: picks extractor, injects date hints + NER
+- [x] `extract_facts_specialized()` in LLM service
+- [x] **3-stage parallel pipeline** in `_prepare_context()`:
+  - Stage 1: `asyncio.gather(translate, NER)` + keyword route
+  - Stage 2: `asyncio.gather(specialized_extract, retrieve)` → upsert facts immediately
+  - Stage 3: respond with extraction summary for truthful confirmations
+- [x] **Extraction summary**: `_build_extraction_summary()` tells responder what was stored (CREATED/RECORDED/STORED/MOVED)
+- [x] `generate_response()` + `generate_response_stream()` accept `extraction_summary` parameter
+- [x] System prompt includes "إجراءات تمت" block for truthful action confirmations
+- [x] **Simplified post-processing**: extraction removed, only memory + vector storage + periodic tasks
+- [x] `post_process()` accepts `query_en` from pipeline (avoids duplicate translation)
+- [x] **Removed**: reflect step (`reflect_step()`, `REFLECT_SYSTEM`, `build_reflect()`), retry logic, `_classify_action_type()`, `_parse_retry_hint()`
+- [x] Think step kept only for `llm_classify` fallback (when keyword routing fails)
+- [x] **Result**: 3 LLM calls per message (translate + extract + respond) down from 8
+
+### Phase 12 — Testing Results (5/5 passed)
+- [x] Reminder creation: "ذكرني أدفع الإيجار بكرة" → reminder created, confirmed in response
+- [x] Expense recording: "صرفت 200 ريال بنزين" → expense stored, confirmed in response
+- [x] Reminder action: "خلصت دفع الإيجار" → status changed to done, verified in graph
+- [x] Inventory query: "وش عندي في المخزون" → items listed from graph
+- [x] Streaming: all routes work with NDJSON streaming endpoint
 
 ---
 

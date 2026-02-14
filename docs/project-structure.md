@@ -10,10 +10,10 @@ Personal_Rag/
 │   │   └── schemas.py           # Pydantic models: enums, entity schemas, API request/response models
 │   │
 │   ├── services/
-│   │   ├── llm.py               # vLLM client — translate, extract (w/ NER hints), classify, vision,
-│   │   │                        #   think/reflect, clarification, core memory extraction, daily
-│   │   │                        #   summarization, streaming (chat_stream, generate_response_stream),
-│   │   │                        #   conversation summarization
+│   │   ├── llm.py               # vLLM client — translate, extract (general + 5 specialized),
+│   │   │                        #   classify, vision, think (agentic fallback), clarification,
+│   │   │                        #   core memory extraction, daily summarization, streaming
+│   │   │                        #   (chat_stream, generate_response_stream), conversation summarization
 │   │   ├── graph.py             # FalkorDB — entity CRUD, entity resolution (vector dedup),
 │   │   │                        #   smart tags (normalization + TAGGED_WITH), knowledge auto-categorization,
 │   │   │                        #   multi-hop traversal (3-hop), financial reports, debt management,
@@ -24,9 +24,10 @@ Personal_Rag/
 │   │   ├── vector.py            # Qdrant — BGE-M3 embedding, chunk upsert/search with filtering
 │   │   ├── memory.py            # Redis — 3-layer memory (working/daily/core), pending actions,
 │   │   │                        #   message counter, context builders, conversation compression + summary
-│   │   ├── retrieval.py         # Agentic RAG pipeline — smart router, ingestion, retrieval
-│   │   │                        #   (think/act/reflect/retry), confirmation flow, post-processing,
-│   │   │                        #   _prepare_context() refactor, streaming, NER integration, auto-compression
+│   │   ├── retrieval.py         # Agentic RAG pipeline — smart router, ingestion, 3-stage parallel
+│   │   │                        #   pipeline (translate+NER | extract+retrieve | respond),
+│   │   │                        #   confirmation flow, post-processing (memory+vector only),
+│   │   │                        #   streaming, NER integration, auto-compression
 │   │   ├── files.py             # File processing — images (vision), PDFs (pymupdf4llm + vision fallback),
 │   │   │                        #   audio (WhisperX), auto-expense, auto-item from photos,
 │   │   │                        #   barcode scanning (pyzbar), _pdf_to_vision() for scanned PDFs
@@ -56,7 +57,8 @@ Personal_Rag/
 │   │   ├── extract.py           # Fact/entity extraction prompt (incl. DebtPayment, ItemUsage, ItemMove)
 │   │   ├── file_classify.py     # Image file type classification prompt
 │   │   ├── vision.py            # Type-specific image analysis prompts (invoice, document, etc.)
-│   │   ├── agentic.py           # Think + Reflect prompts for agentic RAG pipeline
+│   │   ├── extract_specialized.py # 5 domain extractors + general fallback, ROUTE_TO_EXTRACTOR mapping
+│   │   ├── agentic.py           # Think prompt for agentic RAG pipeline (LLM classify fallback)
 │   │   └── conversation.py      # Delete detection (is_delete_intent, DELETE_PATTERNS),
 │   │                             #   clarification, action detection (Phase 4)
 │   │
@@ -103,9 +105,9 @@ Services are created and started in `main.py`'s `lifespan` context manager, stor
 ### Background Post-Processing
 After each chat response, `post_process()` runs in a FastAPI `BackgroundTask`:
 - Stores the exchange in working memory
-- Extracts facts from user query (preserves intent) and combined exchange (captures relationships)
-- Dedup: combined extraction skips entity types already found in query extraction
+- Stores conversation as vector embedding (reuses `query_en` from pipeline to avoid duplicate translation)
 - Periodically triggers daily summaries and core memory extraction
+- Note: fact extraction moved to Stage 2 of the main pipeline (specialized extractors run in parallel with retrieval)
 
 ### Confirmation Flow (Delete-Only)
 Only delete/cancel intents go through a confirmation gate. All other side-effects (adding expenses, reminders, inventory items, debts) execute directly via post-processing.

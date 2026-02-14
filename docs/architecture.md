@@ -36,7 +36,7 @@ Personal Life RAG is a bilingual (Arabic/English) personal life management syste
 ### 1. LLM Service (`app/services/llm.py`)
 - Connects to vLLM (OpenAI-compatible API) on port 8000
 - Model: **Qwen3-VL-32B-Instruct** (90K context, vision-capable)
-- Functions: translate (AR<>EN), extract facts (with NER hints), classify input, think/reflect (agentic), vision analysis, clarification checking, core memory extraction, daily summarization
+- Functions: translate (AR<>EN), extract facts (general + 5 specialized domain extractors), classify input, think (agentic fallback), vision analysis, clarification checking, core memory extraction, daily summarization
 - Streaming: `chat_stream()` parses SSE from vLLM, `generate_response_stream()` yields token chunks
 - Conversation summarization: `summarize_conversation()` — Arabic summary, temperature 0.3, max 500 tokens
 - `enable_thinking: False` in chat_template_kwargs to avoid Qwen3 thinking tokens
@@ -87,8 +87,9 @@ Personal Life RAG is a bilingual (Arabic/English) personal life management syste
 ### 6. Retrieval Service (`app/services/retrieval.py`)
 - Orchestrates the full Agentic RAG pipeline (see [Pipeline](#agentic-rag-pipeline))
 - Smart keyword router for zero-latency routing
+- **3-stage parallel pipeline**: Stage 1 (translate + NER), Stage 2 (specialized extract + retrieve), Stage 3 (respond with extraction summary)
 - Ingestion pipeline: translate > chunk > enrich > embed + extract facts
-- Post-processing: fact extraction (with NER hints), periodic summaries, core memory extraction
+- Post-processing: memory + vector storage only (extraction moved to Stage 2 of main pipeline)
 - `_prepare_context()` — shared pipeline extracted for code reuse between sync and streaming
 - `retrieve_and_respond_stream()` — yields NDJSON (meta, token chunks, done)
 - Auto-compression: when working memory > 15 messages, summarize + keep 4 recent
@@ -116,40 +117,43 @@ User Query (Arabic)
 [Confirmation Pre-check] -- pending action? --> yes/no/number --> execute/cancel/disambiguate
       |
       v
-[1. Translate AR -> EN]
+--- Stage 1 (parallel) ---
+      |
+      +---> [Translate AR → EN]       (LLM)
+      +---> [NER Extract]             (BERT)
+      +---> [Smart Router (keywords)] -- match? --> fast path
+      |                                    |
+      v (no match)                         |
+      [THINK - LLM decides strategy]      |
+      |                                    |
+      v  <---------------------------------+
+[Delete Confirmation Gate] -- is_delete_intent()? --> store pending, return confirmation
       |
       v
-[2. Smart Router (keywords)] -- match? --> fast path (skip Think)
-      |                                         |
-      v (no match)                              |
-[3. THINK - LLM decides strategy]              |
-      |                                         |
-      v  <--------------------------------------+
-[Delete Confirmation Gate] -- is_delete_intent()? --> store pending, return confirmation message
-      |                        (only delete/cancel keywords trigger confirmation;
-      |                         all other side-effects execute directly via post-processing)
+--- Stage 2 (parallel) ---
+      |
+      +---> [Specialized Extract]     (LLM) → upsert facts immediately
+      |         5 domain extractors (~200 tokens each)
+      |         mapped by route via ROUTE_TO_EXTRACTOR
+      |
+      +---> [Retrieve]                (graph/vector)
+      |         graph_* routes: FalkorDB queries + hybrid vector
+      |         vector: Qdrant semantic search + graph fallback
+      |         hybrid: both graph + vector
       |
       v
-[4. ACT - Execute retrieval strategy]
-      |   graph_* routes: FalkorDB queries + hybrid vector search
-      |   vector: Qdrant semantic search + graph fallback
-      |   hybrid: both graph + vector
+--- Stage 3 ---
+      |
+[Build Context] -- system memory + conversation turns + filtered chunks (<=15K tokens)
+      |               + extraction summary (what was stored)
+      v
+[Generate Response] -- multi-turn Arabic response with truthful confirmations
       |
       v
-[5. REFLECT + Self-RAG] -- score chunks, filter below threshold (0.3)
-      |
-      v (if !sufficient)
-[6. RETRY] -- flip strategy, merge results (max 1 retry)
-      |
-      v
-[7. Build Context] -- system memory + conversation turns + filtered chunks (<=15K tokens)
-      |
-      v
-[8. Generate Response] -- multi-turn Arabic response
-      |
-      v
-[9. Post-process (background)] -- fact extraction, memory updates, periodic tasks
+[Post-process (background)] -- memory + vector storage, periodic summaries
 ```
+
+**3 LLM calls** per message (translate + extract + respond), down from 8 in the previous pipeline.
 
 ## Smart Router
 
@@ -219,8 +223,8 @@ All settings are in `app/config.py` via Pydantic `BaseSettings` (overridable via
 | `api_port` | 8500 | FastAPI port |
 | `working_memory_size` | 5 | Message pairs in working memory |
 | `max_context_tokens` | 15000 | Token budget for LLM context |
-| `self_rag_threshold` | 0.3 | Minimum chunk relevance score |
-| `agentic_max_retries` | 1 | Max retrieval retries |
+| ~~`self_rag_threshold`~~ | 0.3 | ~~Minimum chunk relevance score~~ (unused — reflect/retry removed in Phase 12) |
+| ~~`agentic_max_retries`~~ | 1 | ~~Max retrieval retries~~ (unused — reflect/retry removed in Phase 12) |
 | `confirmation_enabled` | True | Enable confirmation flow (delete/cancel intents only) |
 | `confirmation_ttl_seconds` | 300 | Pending action TTL |
 | `daily_summary_interval` | 10 | Messages between daily summaries |
@@ -492,7 +496,7 @@ User Query (Arabic)
 POST /chat/stream
       |
       v
-[_prepare_context()] — shared pipeline (translate, route, act, reflect, retry)
+[_prepare_context()] — shared pipeline (Stage 1: translate+NER+route, Stage 2: extract+retrieve)
       |
       v
 [generate_response_stream()] → vLLM SSE → token chunks
