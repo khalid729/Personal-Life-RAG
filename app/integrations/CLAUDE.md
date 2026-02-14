@@ -1,6 +1,6 @@
 # Integrations
 
-3 external interfaces → FastAPI :8500.
+4 external interfaces → FastAPI :8500.
 
 ## Telegram Bot (telegram_bot.py)
 
@@ -14,6 +14,15 @@
 - 21 sync tools via `http://host.docker.internal:8500`
 - chat, search, financial, debts, reminders, projects, tasks, knowledge, inventory, sprints, focus, backup, graph, ingest_url
 - **STATUS detection**: checks `agentic_trace` for `extract.upserted > 0` → `ACTION_EXECUTED` (trace-based, not route-based)
+
+## Open WebUI Pipe (openwebui_pipe.py)
+
+- **Direct streaming** to `/chat/stream` — bypasses wrapper LLM entirely
+- 3 LLM calls (translate + extract + respond) vs 4+ with Tools approach
+- Handles files via `/ingest/file` (base64, Docker paths, multimodal)
+- No STATUS logic needed — streams RAG API response directly
+- No date injection needed — RAG API handles its own prompts
+- Select "Personal RAG" model in Open WebUI to use; regular model uses Filter + Tools
 
 ## Open WebUI Filter (openwebui_filter.py)
 
