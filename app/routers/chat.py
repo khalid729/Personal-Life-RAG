@@ -17,13 +17,14 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, request: Req
 
     pending_confirmation = result.get("pending_confirmation", False)
 
-    # Post-processing in background (memory update, fact extraction, embeddings)
-    # Skip fact extraction when a confirmation prompt was returned or caller requested
+    # Post-processing in background (memory update, vector embeddings)
+    # Fact extraction now happens in the main pipeline (Stage 2)
     background_tasks.add_task(
         retrieval.post_process,
         req.message,
         result["reply"],
         req.session_id,
+        query_en=result.get("query_en"),
         skip_fact_extraction=pending_confirmation or req.skip_fact_extraction,
     )
 
