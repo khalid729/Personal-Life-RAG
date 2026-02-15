@@ -45,13 +45,13 @@ Return a JSON object:
   "key_information": ["point1", "point2"],
   "summary": "brief summary of the content"
 }""",
-    "note": """Extract the content from this note.
+    "note": """Extract ALL content and visual details from this note. Be extremely specific — list every date, number, name, marking, highlight, and annotation you see. Do not summarize; enumerate each item individually.
 Return a JSON object:
 {
-  "content": "full text of the note",
-  "note_type": "handwritten/typed/whiteboard",
+  "content": "full text of the note — transcribe everything visible, list each marked/highlighted item individually with its exact value",
+  "note_type": "handwritten/typed/whiteboard/calendar/table/list",
   "language": "ar/en/mixed",
-  "key_points": ["point1", "point2"],
+  "key_points": ["specific detail 1", "specific detail 2"],
   "action_items": ["item1", "item2"]
 }""",
     "project_file": """Analyze this project-related file/screenshot.

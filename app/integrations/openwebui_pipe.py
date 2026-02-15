@@ -55,7 +55,7 @@ class Pipe:
         "Generate 1-3 broad tags",
     )
 
-    def pipe(self, body: dict, __user__: dict = {}) -> Union[str, Generator]:
+    def pipe(self, body: dict, __user__: dict = {}, __metadata__: dict = {}, __files__: list = []) -> Union[str, Generator]:
         messages = body.get("messages", [])
         if not messages:
             return "لا توجد رسالة."
@@ -73,12 +73,16 @@ class Pipe:
 
         # Process files if any
         if self.valves.auto_process_files:
-            file_context = self._process_files(body, last_msg, user_text)
+            file_context = self._process_files(body, last_msg, user_text, __files__)
             if file_context:
                 user_text = user_text + "\n\n" + file_context
 
         # Use Open WebUI chat_id so each conversation gets fresh working memory
-        session_id = body.get("chat_id") or self.valves.session_id
+        session_id = (
+            __metadata__.get("chat_id")
+            or body.get("chat_id")
+            or self.valves.session_id
+        )
         payload = {"message": user_text, "session_id": session_id}
         stream = body.get("stream", False)
 
@@ -215,9 +219,28 @@ class Pipe:
     # FILE PROCESSING
     # ========================
 
-    def _process_files(self, body: dict, last_msg: dict, user_text: str) -> str:
+    def _process_files(self, body: dict, last_msg: dict, user_text: str, owui_files: list = None) -> str:
         """Detect and process files, return formatted result string."""
         files = []
+
+        # Open WebUI __files__ parameter (primary source)
+        for f in (owui_files or []):
+            meta = f.get("meta", {})
+            data = f.get("data", {})
+            # Try path from meta, then file-level path
+            path = meta.get("path", "") or f.get("path", "")
+            # Try content from data dict
+            content_data = ""
+            if isinstance(data, dict):
+                content_data = data.get("content", "")
+            elif isinstance(data, str):
+                content_data = data
+            files.append({
+                "path": path,
+                "data": content_data,
+                "filename": f.get("filename", meta.get("name", "unknown")),
+                "content_type": meta.get("content_type", f.get("type", "")),
+            })
 
         # Message-level files
         for f in last_msg.get("files", []):
