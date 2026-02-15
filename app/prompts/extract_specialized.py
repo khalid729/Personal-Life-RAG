@@ -26,6 +26,7 @@ ROUTE_TO_EXTRACTOR = {
     "graph_focus_stats": "productivity",
     "graph_timeblock": "productivity",
     "graph_productivity_report": "productivity",
+    "multi_intent": "general",
 }
 
 # --- Extractor system prompts ---
@@ -195,7 +196,7 @@ DebtPayment: amount, currency
 Item: quantity (default 1), location, category, condition, brand
 ItemUsage: quantity_used — reduces item quantity
 ItemMove: to_location (required), from_location (optional)
-Task: priority, estimated_duration (minutes), energy_level
+Task: priority, estimated_duration (minutes), energy_level, status (todo/in_progress/done/cancelled)
 Knowledge: factual info — locations, reference numbers, IDs, accounts
 Sprint: start_date, end_date, goal
 

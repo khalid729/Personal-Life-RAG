@@ -1354,6 +1354,9 @@ class GraphService:
                                 count += 1
                             else:
                                 logger.warning("DebtPayment failed: %s", result["error"])
+                                entity["_failed"] = True
+                        else:
+                            entity["_failed"] = True
                         continue  # Skip relationship creation for pseudo-entity
 
                     if etype == "ItemUsage":
@@ -1363,6 +1366,7 @@ class GraphService:
                             count += 1
                         else:
                             logger.warning("ItemUsage failed: %s", result["error"])
+                            entity["_failed"] = True
                         continue  # Skip relationship creation for pseudo-entity
 
                     if etype == "ItemMove":
@@ -1374,6 +1378,9 @@ class GraphService:
                                 count += 1
                             else:
                                 logger.warning("ItemMove failed: %s", result["error"])
+                                entity["_failed"] = True
+                        else:
+                            entity["_failed"] = True
                         continue  # Skip relationship creation for pseudo-entity
 
                     if etype == "ReminderAction":
@@ -1386,6 +1393,7 @@ class GraphService:
                             logger.info("ReminderAction: %s → %s", reminder_title, action)
                         else:
                             logger.warning("ReminderAction failed: %s", result["error"])
+                            entity["_failed"] = True
                         continue
 
                     if etype == "Expense":
@@ -2834,8 +2842,10 @@ class GraphService:
 
 
 def _now() -> str:
-    return datetime.utcnow().isoformat()
+    tz = timezone(timedelta(hours=get_settings().timezone_offset_hours))
+    return datetime.now(tz).isoformat()
 
 
 def _now_dt() -> datetime:
-    return datetime.utcnow()
+    tz = timezone(timedelta(hours=get_settings().timezone_offset_hours))
+    return datetime.now(tz)

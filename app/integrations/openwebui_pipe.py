@@ -21,9 +21,9 @@ from pydantic import BaseModel, Field
 
 
 class Pipe:
-    """Personal Life RAG Pipe v1.0 — Direct streaming to /chat/stream."""
+    """Personal Life RAG Pipe v1.2 — Direct streaming with JSON guard + internal prompt filter."""
 
-    VERSION = "1.0"
+    VERSION = "1.2"
 
     class Valves(BaseModel):
         api_url: str = Field(
@@ -46,6 +46,15 @@ class Pipe:
     # ENTRY POINT
     # ========================
 
+    # Open WebUI internal prompt prefixes — must NOT be forwarded to RAG API
+    _INTERNAL_PREFIXES = (
+        "### Task:",
+        "### Instructions:",
+        "Create a concise",
+        "Generate a concise",
+        "Generate 1-3 broad tags",
+    )
+
     def pipe(self, body: dict, __user__: dict = {}) -> Union[str, Generator]:
         messages = body.get("messages", [])
         if not messages:
@@ -57,13 +66,20 @@ class Pipe:
         if not user_text.strip():
             return "لا توجد رسالة."
 
+        # Skip Open WebUI internal prompts (title/tag generation)
+        stripped = user_text.strip()
+        if any(stripped.startswith(p) for p in self._INTERNAL_PREFIXES):
+            return ""
+
         # Process files if any
         if self.valves.auto_process_files:
             file_context = self._process_files(body, last_msg, user_text)
             if file_context:
                 user_text = user_text + "\n\n" + file_context
 
-        payload = {"message": user_text, "session_id": self.valves.session_id}
+        # Use Open WebUI chat_id so each conversation gets fresh working memory
+        session_id = body.get("chat_id") or self.valves.session_id
+        payload = {"message": user_text, "session_id": session_id}
         stream = body.get("stream", False)
 
         if stream:
@@ -85,6 +101,8 @@ class Pipe:
                 timeout=120,
             ) as resp:
                 resp.raise_for_status()
+                first_chunk = True
+                buffer = ""
                 for line in resp.iter_lines(decode_unicode=True):
                     if not line:
                         continue
@@ -93,8 +111,28 @@ class Pipe:
                     except json.JSONDecodeError:
                         continue
                     if data.get("type") == "token":
-                        yield data.get("content", "")
+                        content = data.get("content", "")
+                        if first_chunk:
+                            buffer += content
+                            # Wait until we have enough to detect JSON
+                            if len(buffer.lstrip()) < 2:
+                                continue
+                            first_chunk = False
+                            stripped = buffer.lstrip()
+                            if stripped.startswith("{") or stripped.startswith("["):
+                                # JSON detected — accumulate rest and convert
+                                remaining = self._collect_remaining(resp)
+                                full = buffer + remaining
+                                yield self._handle_json_fallback(full)
+                                return
+                            else:
+                                yield buffer
+                        else:
+                            yield content
                     elif data.get("type") == "done":
+                        # Flush any buffered content that never reached 2 chars
+                        if first_chunk and buffer:
+                            yield buffer
                         break
         except requests.exceptions.ConnectionError:
             yield "خطأ: لا يمكن الاتصال بالـ API. تأكد من تشغيل الخادم."
@@ -102,6 +140,58 @@ class Pipe:
             yield "خطأ: انتهت مهلة الاتصال."
         except Exception as e:
             yield f"خطأ: {str(e)}"
+
+    def _collect_remaining(self, resp) -> str:
+        """Collect all remaining tokens from an active stream."""
+        parts = []
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("type") == "token":
+                parts.append(data.get("content", ""))
+            elif data.get("type") == "done":
+                break
+        return "".join(parts)
+
+    def _handle_json_fallback(self, text: str) -> str:
+        """Convert malformed JSON response to natural Arabic text."""
+        try:
+            obj = json.loads(text.strip())
+            # Extract list items from common patterns (follow_ups, items, suggestions)
+            items = None
+            if isinstance(obj, dict):
+                for key in ("follow_ups", "items", "suggestions", "tasks", "results"):
+                    if key in obj and isinstance(obj[key], list):
+                        items = obj[key]
+                        break
+                if items is None:
+                    # Try first list value in the dict
+                    for v in obj.values():
+                        if isinstance(v, list):
+                            items = v
+                            break
+            elif isinstance(obj, list):
+                items = obj
+
+            if items:
+                lines = []
+                for item in items:
+                    if isinstance(item, str):
+                        lines.append(f"• {item}")
+                    elif isinstance(item, dict):
+                        # Try common text fields
+                        txt = item.get("text") or item.get("title") or item.get("name") or str(item)
+                        lines.append(f"• {txt}")
+                return "\n".join(lines)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Could not parse — ask user to rephrase
+        return "عذراً، حصل خطأ في صياغة الرد. ممكن تعيد صياغة سؤالك؟"
 
     # ========================
     # SYNC FALLBACK

@@ -219,6 +219,11 @@ async def format_reminders(req: FormatRemindersRequest, request: Request):
             lines.append(line)
         reminder_text = "\n".join(lines)
 
+    now = _now_local()
+    today_str = now.strftime("%Y-%m-%d")
+    weekdays_ar = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+    today_weekday = weekdays_ar[now.weekday()]
+
     context_prompts = {
         "due": "هذي تذكيرات حان وقتها الحين. رتبها كرسالة تذكير واحدة.",
         "morning": "هذي تذكيرات ومهام اليوم. رتبها كرسالة صباحية تحفيزية.",
@@ -227,6 +232,8 @@ async def format_reminders(req: FormatRemindersRequest, request: Request):
     }
 
     prompt = f"""{context_prompts.get(req.context, context_prompts["due"])}
+
+اليوم: {today_weekday} {today_str}
 
 التذكيرات:
 {reminder_text}
@@ -237,7 +244,9 @@ async def format_reminders(req: FormatRemindersRequest, request: Request):
 - رتبها حسب الأهمية
 - اجعلها رسالة واحدة منظمة وواضحة
 - لا تضيف تذكيرات من عندك
-- لا تكتب مقدمة طويلة"""
+- لا تكتب مقدمة طويلة
+- ممنوع تذكر القواعد أو التعليمات في ردك
+- ردك لازم يكون نص عربي طبيعي فقط — ممنوع JSON أو كود"""
 
     messages = [
         {"role": "system", "content": "أنت مساعد شخصي. مهمتك ترتيب التذكيرات بشكل جميل ومبتكر."},

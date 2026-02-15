@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     api_port: int = 8500
 
     # Memory
-    working_memory_size: int = 5
+    working_memory_size: int = 4
     daily_summary_ttl_days: int = 7
     max_context_tokens: int = 15000
 
@@ -113,7 +113,7 @@ class Settings(BaseSettings):
     arabic_ner_model: str = "CAMeL-Lab/bert-base-arabic-camelbert-msa-ner"
 
     # Conversation Summarization (Phase 11)
-    conversation_compress_threshold: int = 15
+    conversation_compress_threshold: int = 10
     conversation_compress_keep_recent: int = 4
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

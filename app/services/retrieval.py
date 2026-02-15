@@ -191,6 +191,45 @@ INVENTORY_KEYWORDS = re.compile(
 )
 
 
+_KEYWORD_DOMAINS = [
+    (REMINDER_ACTION_KEYWORDS, "reminder"),
+    (REMINDER_KEYWORDS, "reminder"),
+    (FINANCIAL_KEYWORDS, "finance"),
+    (FINANCIAL_REPORT_KEYWORDS, "finance"),
+    (DEBT_PAYMENT_KEYWORDS, "finance"),
+    (DEBT_QUERY_KEYWORDS, "finance"),
+    (INVENTORY_KEYWORDS, "inventory"),
+    (INVENTORY_MOVE_KEYWORDS, "inventory"),
+    (INVENTORY_USAGE_KEYWORDS, "inventory"),
+    (INVENTORY_REPORT_KEYWORDS, "inventory"),
+    (INVENTORY_UNUSED_KEYWORDS, "inventory"),
+    (INVENTORY_DUPLICATE_KEYWORDS, "inventory"),
+    (PERSON_KEYWORDS, "people"),
+    (KNOWLEDGE_KEYWORDS, "people"),
+    (TASK_KEYWORDS, "productivity"),
+    (PROJECT_KEYWORDS, "productivity"),
+    (SPRINT_KEYWORDS, "productivity"),
+    (DAILY_PLAN_KEYWORDS, "productivity"),
+    (FOCUS_KEYWORDS, "productivity"),
+    (TIMEBLOCK_KEYWORDS, "productivity"),
+    (PRODUCTIVITY_KEYWORDS, "productivity"),
+]
+
+
+def _is_multi_intent(text: str) -> bool:
+    """True if message matches keywords from 2+ different domains."""
+    has_reminder_action = bool(REMINDER_ACTION_KEYWORDS.search(text))
+    domains = set()
+    for pattern, domain in _KEYWORD_DOMAINS:
+        if pattern.search(text):
+            # Reminder actions naturally reference tasks ("خلصت المهمة") and
+            # overlap with inventory usage verbs ("خلص") — don't double-count
+            if has_reminder_action and pattern in (TASK_KEYWORDS, INVENTORY_USAGE_KEYWORDS):
+                continue
+            domains.add(domain)
+    return len(domains) >= 2
+
+
 def smart_route(text: str) -> str:
     """Route query to the best source based on keywords.
     More specific routes checked first to avoid false matches.
@@ -391,6 +430,8 @@ class RetrievalService:
             return ""
         lines = []
         for e in facts.get("entities", []):
+            if e.get("_failed"):
+                continue
             etype = e.get("entity_type", "")
             ename = e.get("entity_name", "")
             props = e.get("properties", {})
@@ -497,6 +538,7 @@ class RetrievalService:
         if route == "llm_classify":
             route = smart_route(query_en)
 
+        multi_intent = _is_multi_intent(query_ar)
         used_fast_path = route != "llm_classify"
 
         if used_fast_path:
@@ -504,6 +546,7 @@ class RetrievalService:
                 "step": "route",
                 "method": "fast_path_keyword",
                 "strategy": route,
+                "multi_intent": multi_intent,
             })
             search_queries = [query_en]
         else:
@@ -520,10 +563,11 @@ class RetrievalService:
                 "reasoning": think_result.get("reasoning", ""),
             })
 
-        # --- B. Confirmation (DELETE actions only) ---
+        # --- B. Confirmation (DELETE actions only, skip for multi-intent) ---
         if (
             settings.confirmation_enabled
             and is_delete_intent(query_ar)
+            and not multi_intent
         ):
             target = self._extract_delete_target(query_ar)
             confirm_msg = f"تبيني أحذف: {target}؟" if target else f"تبيني أنفذ: {query_ar}؟"
@@ -548,7 +592,8 @@ class RetrievalService:
             }}
 
         # === Stage 2: Parallel extract + retrieve ===
-        extract_coro = self.llm.extract_facts_specialized(query_en, route, ner_hints)
+        extraction_route = route if not multi_intent else "multi_intent"
+        extract_coro = self.llm.extract_facts_specialized(query_en, extraction_route, ner_hints)
         retrieve_coro = self._execute_retrieval_strategy(route, query_en, search_queries)
 
         facts, (context_parts, sources) = await asyncio.gather(
