@@ -867,6 +867,9 @@ class ToolCallingService:
         messages.extend(history)
         messages.append({"role": "user", "content": message})
 
+        # Track new turns added during tool-calling (for working memory storage)
+        new_turns: list[dict] = []
+
         # 3. Tool calling loop (parallel tool execution)
         tool_results = []
         response = {}
@@ -900,20 +903,25 @@ class ToolCallingService:
             )
 
             # Build messages: one assistant message with all tool_calls, then individual tool results
-            messages.append({
+            assistant_tc_msg = {
                 "role": "assistant",
                 "content": None,
                 "tool_calls": tool_calls,
-            })
+            }
+            messages.append(assistant_tc_msg)
+            new_turns.append(assistant_tc_msg)
+
             for (tc, _), result in zip(parsed_calls, results):
                 if isinstance(result, Exception):
                     result = {"tool": tc["function"]["name"], "success": False, "error": str(result), "executed_at": _now()}
                 tool_results.append(result)
-                messages.append({
+                tool_msg = {
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "content": json.dumps(result, ensure_ascii=False),
-                })
+                }
+                messages.append(tool_msg)
+                new_turns.append(tool_msg)
 
         reply = response.get("content") or ""
         # If LLM returned empty content after tools, use fallback
@@ -922,7 +930,10 @@ class ToolCallingService:
 
         # Post-process in background
         if reply:
-            asyncio.create_task(self.post_process(message, reply, session_id, tool_calls=tool_results))
+            asyncio.create_task(self.post_process(
+                message, reply, session_id,
+                tool_calls=tool_results, new_turns=new_turns,
+            ))
 
         return {
             "reply": reply,
@@ -962,6 +973,7 @@ class ToolCallingService:
 
         # 4. Streaming tool-calling loop
         tool_results = []
+        new_turns: list[dict] = []
         reply_text = ""
 
         for i in range(self.MAX_ITERATIONS):
@@ -1012,20 +1024,25 @@ class ToolCallingService:
                 )
                 logger.info("[stream] iter %d: tools executed in %.1fms", i, (_time.monotonic() - t_exec) * 1000)
 
-                messages.append({
+                assistant_tc_msg = {
                     "role": "assistant",
                     "content": None,
                     "tool_calls": tool_calls_found,
-                })
+                }
+                messages.append(assistant_tc_msg)
+                new_turns.append(assistant_tc_msg)
+
                 for (tc, _), result in zip(parsed_calls, results):
                     if isinstance(result, Exception):
                         result = {"tool": tc["function"]["name"], "success": False, "error": str(result), "executed_at": _now()}
                     tool_results.append(result)
-                    messages.append({
+                    tool_msg = {
                         "role": "tool",
                         "tool_call_id": tc["id"],
                         "content": json.dumps(result, ensure_ascii=False),
-                    })
+                    }
+                    messages.append(tool_msg)
+                    new_turns.append(tool_msg)
                 # Next iteration streams the response with tool results in context
                 continue
 
@@ -1043,7 +1060,10 @@ class ToolCallingService:
 
         # 5. Post-process in background
         if reply_text:
-            asyncio.create_task(self.post_process(message, reply_text, session_id, tool_calls=tool_results))
+            asyncio.create_task(self.post_process(
+                message, reply_text, session_id,
+                tool_calls=tool_results, new_turns=new_turns,
+            ))
 
     # ------------------------------------------------------------------
     # Post-processing (background)
@@ -1067,10 +1087,16 @@ class ToolCallingService:
     async def post_process(
         self, query_ar: str, reply_ar: str, session_id: str,
         tool_calls: list[dict] | None = None,
+        new_turns: list[dict] | None = None,
     ) -> None:
         """Push to working memory + vector store + auto-extraction. Runs in background."""
         try:
+            # Store full tool-calling conversation in working memory so the model
+            # sees the correct pattern (user → tool_calls → tool results → reply)
+            # This prevents hallucinated confirmations in subsequent turns.
             await self.memory.push_message(session_id, "user", query_ar)
+            for turn in (new_turns or []):
+                await self.memory.push_raw(session_id, turn)
             await self.memory.push_message(session_id, "assistant", reply_ar)
 
             # Store as vector embedding (Arabic — BGE-M3 handles multilingual)

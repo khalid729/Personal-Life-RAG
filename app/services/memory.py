@@ -49,6 +49,13 @@ class MemoryService:
         # TTL 24 hours
         await self._redis.expire(key, 86400)
 
+    async def push_raw(self, session_id: str, message: dict) -> None:
+        """Push a raw message dict (supports tool_calls, tool role, etc.)."""
+        key = self._working_key(session_id)
+        await self._redis.rpush(key, json.dumps(message, ensure_ascii=False))
+        await self._redis.ltrim(key, -settings.working_memory_size * 2, -1)
+        await self._redis.expire(key, 86400)
+
     async def get_working_memory(self, session_id: str) -> list[dict]:
         key = self._working_key(session_id)
         raw_messages = await self._redis.lrange(key, 0, -1)
