@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from app.models.schemas import ChatRequest, ChatResponse
@@ -8,54 +8,6 @@ from app.models.schemas import ChatRequest, ChatResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-
-@router.post("/", response_model=ChatResponse)
-async def chat(req: ChatRequest, background_tasks: BackgroundTasks, request: Request):
-    """Legacy pipeline endpoint. Use /chat/v2 instead."""
-    logger.warning("Deprecated: /chat/ called — use /chat/v2 (tool-calling) instead")
-    retrieval = request.app.state.retrieval
-
-    result = await retrieval.retrieve_and_respond(
-        query_ar=req.message,
-        session_id=req.session_id,
-    )
-
-    pending_confirmation = result.get("pending_confirmation", False)
-
-    # Post-processing in background (memory update, vector embeddings)
-    # Fact extraction now happens in the main pipeline (Stage 2)
-    background_tasks.add_task(
-        retrieval.post_process,
-        req.message,
-        result["reply"],
-        req.session_id,
-        query_en=result.get("query_en"),
-        skip_fact_extraction=pending_confirmation or req.skip_fact_extraction,
-    )
-
-    return ChatResponse(
-        reply=result["reply"],
-        sources=result.get("sources", []),
-        route=result.get("route"),
-        agentic_trace=result.get("agentic_trace", []),
-        pending_confirmation=pending_confirmation,
-    )
-
-
-@router.post("/stream")
-async def chat_stream(req: ChatRequest, request: Request):
-    """Legacy streaming endpoint. Use /chat/v2/stream instead."""
-    logger.warning("Deprecated: /chat/stream called — use /chat/v2/stream instead")
-    retrieval = request.app.state.retrieval
-
-    async def event_generator():
-        async for line in retrieval.retrieve_and_respond_stream(
-            req.message, req.session_id
-        ):
-            yield line
-
-    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
 
 @router.post("/v2", response_model=ChatResponse)
@@ -75,7 +27,6 @@ async def chat_v2(req: ChatRequest, request: Request):
         sources=[],
         route=result.get("route"),
         agentic_trace=[{"step": "tool_calls", "tools": result.get("tool_calls", [])}],
-        pending_confirmation=False,
         tool_calls=result.get("tool_calls", []),
     )
 

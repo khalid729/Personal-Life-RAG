@@ -125,7 +125,7 @@ async def create_reminder(text: str) -> str:
     Args:
         text: Natural language description of the reminder (Arabic or English).
     """
-    result = await api_post("/chat/", json={"message": text, "session_id": "mcp"})
+    result = await api_post("/chat/v2", json={"message": text, "session_id": "mcp"})
     return result.get("reply", "")
 
 
@@ -137,7 +137,7 @@ async def record_expense(text: str) -> str:
     Args:
         text: Natural language description of the expense (Arabic or English).
     """
-    result = await api_post("/chat/", json={"message": text, "session_id": "mcp"})
+    result = await api_post("/chat/v2", json={"message": text, "session_id": "mcp"})
     return result.get("reply", "")
 
 
@@ -292,7 +292,7 @@ async def get_knowledge(topic: str = "") -> str:
 @mcp.tool()
 async def daily_plan() -> str:
     """Get today's daily plan — aggregates reminders, tasks, debts, and priorities."""
-    result = await api_post("/chat/", json={"message": "رتب لي يومي", "session_id": "mcp"})
+    result = await api_post("/chat/v2", json={"message": "رتب لي يومي", "session_id": "mcp"})
     return result.get("reply", "No plan available.")
 
 

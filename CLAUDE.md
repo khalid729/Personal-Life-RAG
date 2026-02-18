@@ -20,7 +20,7 @@ app/
 ├── models/schemas.py    # Enums + Pydantic models
 ├── services/            # 8 async services (see services/CLAUDE.md)
 ├── routers/             # 15 REST routers (see routers/CLAUDE.md)
-├── prompts/             # 8 prompt builders (see prompts/CLAUDE.md)
+├── prompts/             # 5 prompt builders (see prompts/CLAUDE.md)
 └── integrations/        # Telegram, Open WebUI, MCP (see integrations/CLAUDE.md)
 ```
 
@@ -29,7 +29,7 @@ app/
 ```bash
 ./venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8500          # Run API
 ./venv/bin/python -c "from app.services.graph import GraphService; print('OK')"  # Import check
-curl -s -X POST http://localhost:8500/chat/ \
+curl -s -X POST http://localhost:8500/chat/v2 \
   -H "Content-Type: application/json" \
   -d '{"message": "test", "session_id": "dev"}'                     # Test chat
 ```
@@ -37,10 +37,8 @@ curl -s -X POST http://localhost:8500/chat/ \
 ## Core Patterns
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
-- **Chat flow (v2, primary)**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 17 tools)
-- **Chat flow (legacy)**: POST /chat → parallel(Translate+NER) → parallel(Extract+Retrieve) → Respond (3 LLM calls)
+- **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 18 tools)
 - **URL ingestion**: POST /ingest/url → GitHub parser (repo/blob/tree) + web fetch → ingest pipeline
-- **Smart routing**: 20 keyword patterns → graph strategy, fallback LLM classify
 - **Entity resolution**: vector dedup (0.85 person, 0.80 default) via `resolve_entity_name()`
 - **Arabic names**: NER → `name_ar` on Person → `_display_name()` = `رهف (Rahaf)`
 - **Auto-extraction**: conversational messages auto-extracted in background (NER + translate + extract)

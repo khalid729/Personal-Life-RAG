@@ -1,17 +1,21 @@
 # Prompts
 
-8 files. Pattern: `build_<name>(args) → list[dict]` (chat messages).
+5 files. Pattern: `build_<name>(args) → list[dict]` (chat messages).
 
 | File | Purpose |
 |------|---------|
-| extract_specialized.py | **Primary** — 5 domain extractors + general fallback (used by chat pipeline) |
+| tool_system.py | System prompt for tool-calling mode (Arabic, date-aware) |
+| extract_specialized.py | **Primary** — 5 domain extractors + general fallback (used by tool-calling auto-extraction) |
 | extract.py | General extraction (17 types, 6 examples) — used by ingest pipeline only |
-| vision.py | Per-file-type vision instructions (9 types) |
-| classify.py | Input categorization (9 categories) |
 | translate.py | AR↔EN with Saudi dialect examples |
-| conversation.py | Confirmation/action detection (regex-based) |
-| agentic.py | Think step (LLM classify fallback) |
+| vision.py | Per-file-type vision instructions (9 types) |
 | file_classify.py | Uploaded file type classification |
+
+## Tool System (tool_system.py)
+
+- `build_tool_system_prompt(memory_context)`: Arabic system prompt with current date/time (UTC+3)
+- Instructions for when to use each of the 18 tools
+- Anti-lying rules: only say "تم" if tool returned success
 
 ## Specialized Extract (extract_specialized.py)
 
@@ -26,13 +30,8 @@
 - `build_extract()` injects today/tomorrow for relative dates
 - NER hints prepended as `[NER hints: ...]`
 
-## Conversation (conversation.py)
-
-- `is_delete_intent()` → confirmation required
-- All non-delete actions execute directly without asking
-
 ## Key Rules
 
 - System + extract prompts MUST include current date/time (UTC+3)
-- Chat pipeline: specialized extraction in Stage 2 (parallel with retrieval)
+- Tool-calling pipeline: `tool_system.py` prompt + 18 tool definitions
 - Ingest pipeline: general extraction via `extract.py`

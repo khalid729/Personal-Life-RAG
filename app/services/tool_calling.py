@@ -282,7 +282,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_projects",
-            "description": "إدارة المشاريع: عرض، إنشاء، تعديل، أو حذف مشروع.",
+            "description": "إدارة المشاريع: عرض، إنشاء، تعديل، أو حذف مشروع. لا تستخدمها للدمج — استخدم merge_projects بدلاً.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -297,6 +297,25 @@ TOOLS = [
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                 },
                 "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "merge_projects",
+            "description": "ادمج مشاريع مكررة في مشروع واحد. ينقل كل المهام للمشروع الهدف ويحذف المشاريع القديمة.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_name": {"type": "string", "description": "اسم المشروع الهدف اللي تبي تدمج فيه"},
+                    "source_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "أسماء المشاريع المراد دمجها وحذفها",
+                    },
+                },
+                "required": ["target_name", "source_names"],
             },
         },
     },
@@ -363,6 +382,7 @@ class ToolCallingService:
             "manage_inventory": self._handle_manage_inventory,
             "manage_tasks": self._handle_manage_tasks,
             "manage_projects": self._handle_manage_projects,
+            "merge_projects": self._handle_merge_projects,
             "get_productivity_stats": self._handle_get_productivity_stats,
         }
 
@@ -741,6 +761,11 @@ class ToolCallingService:
 
         return {"error": f"Unknown action: {action}"}
 
+    async def _handle_merge_projects(
+        self, target_name: str, source_names: list[str],
+    ) -> dict:
+        return await self.graph.merge_projects(source_names, target_name)
+
     async def _handle_get_productivity_stats(self, type: str | None = None) -> dict:
         stat_type = type or "overview"
         if stat_type == "focus":
@@ -820,6 +845,8 @@ class ToolCallingService:
                     parts.append(data.get("tasks", str(data)))
                 elif tool == "manage_projects":
                     parts.append(data.get("projects", str(data)))
+                elif tool == "merge_projects":
+                    parts.append(f"تم دمج {data.get('sources_deleted', 0)} مشاريع ونقل {data.get('tasks_moved', 0)} مهام إلى {data.get('target', '')}")
                 elif tool == "get_productivity_stats":
                     parts.append(str(data))
                 else:
@@ -1026,7 +1053,7 @@ class ToolCallingService:
     _WRITE_TOOLS = {
         "create_reminder", "delete_reminder", "update_reminder",
         "add_expense", "record_debt", "pay_debt", "store_note",
-        "manage_inventory", "manage_tasks", "manage_projects",
+        "manage_inventory", "manage_tasks", "manage_projects", "merge_projects",
     }
 
     # Lightweight keyword check for storable content (Arabic + English)

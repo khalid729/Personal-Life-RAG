@@ -10,7 +10,8 @@
 | GraphService | graph.py (110KB) | FalkorDB :6379 |
 | VectorService | vector.py | Qdrant :6333 + BGE-M3 GPU |
 | MemoryService | memory.py | Redis :6380 (3 layers) |
-| RetrievalService | retrieval.py (49KB) | Orchestrates all above |
+| RetrievalService | retrieval.py | Ingestion + search (llm, graph, vector, memory) |
+| ToolCallingService | tool_calling.py | Tool-calling chat orchestration |
 | FileService | files.py | Image/PDF/audio processing |
 | BackupService | backup.py | Timestamped snapshots |
 | NERService | ner.py | CAMeL-Lab Arabic BERT NER |
@@ -19,6 +20,7 @@
 
 ```
 RetrievalService(llm, graph, vector, memory, ner)
+ToolCallingService(llm, graph, vector, memory, ner)
 FileService(llm, retrieval)
 BackupService(graph, vector, memory)
 GraphService.set_vector_service(vector)  # entity resolution
@@ -40,17 +42,22 @@ GraphService.set_vector_service(vector)  # entity resolution
 - `r.key = $val` only in SET, NOT `CREATE ({...})`
 - Primitives only — dict→str, list[dict]→list[str]
 
+## ToolCallingService (tool_calling.py)
+
+- **18 tools**: search_reminders, create_reminder, delete_reminder, update_reminder, add_expense, get_expense_report, get_debt_summary, record_debt, pay_debt, get_daily_plan, search_knowledge, store_note, get_person_info, manage_inventory, manage_tasks, manage_projects, merge_projects, get_productivity_stats
+- **Chat loop**: LLM picks tools → parallel execution → LLM formats response (max 3 iterations)
+- **Streaming**: `chat_stream()` yields NDJSON, tool calls detected from stream
+- **Post-processing**: memory + vector + auto-extraction (background `asyncio.create_task`)
+- **Auto-extraction**: `_STORABLE_RE` keyword check → NER → translate → extract_facts_specialized → upsert
+- **`_WRITE_TOOLS`**: skip auto-extraction when write tools already executed
+- **Fallback**: `_fallback_reply()` generates simple Arabic from tool results if LLM times out
+
 ## RetrievalService (retrieval.py)
 
-- **Routing**: 20 keyword patterns → fast-path, fallback LLM classify
-- **Pipeline (3 LLM calls)**:
-  - Stage 1: parallel translate + NER + keyword route
-  - Stage 2: parallel specialized extract + retrieve → upsert facts immediately
-  - Stage 3: respond (with extraction summary for truthful confirmations)
-- **Specialized extractors**: 5 domain prompts (~40% of general prompt size) via `extract_specialized.py`
-  - `ROUTE_TO_EXTRACTOR` maps 19 routes → reminder/finance/inventory/people/productivity + general fallback
-- **Post-processing**: memory + vector storage only (extraction moved to Stage 2)
-- **Confirmation**: delete/cancel only
+- **Ingestion only**: `ingest_text()` → translate → chunk → enrich + extract (parallel)
+- **Direct search**: `search_direct()` → translate → vector + graph search
+- **NER**: `_run_ner()` → Arabic NER hints for extraction
+- No routing, no old pipeline — chat goes through ToolCallingService
 
 ## FileService (files.py)
 
@@ -77,5 +84,5 @@ GraphService.set_vector_service(vector)  # entity resolution
 ## NERService
 
 - `CAMeL-Lab/bert-base-arabic-camelbert-msa-ner` (lazy-loaded)
-- Extracts Person/Location/Organization (score ≥ 0.7)
+- Extracts Person/Location/Organization (score >= 0.7)
 - Prepended as `[NER hints: ...]` to extract prompt

@@ -5,14 +5,29 @@ from collections.abc import AsyncGenerator
 import httpx
 
 from app.config import get_settings
-from app.prompts.agentic import build_think
-from app.prompts.classify import build_classify
 from app.prompts.extract import build_context_enrichment, build_extract
 from app.prompts.extract_specialized import build_specialized_extract
 from app.prompts.file_classify import build_file_classify
-from app.prompts.conversation import CLARIFICATION_SYSTEM, CORE_MEMORY_SYSTEM
 from app.prompts.translate import build_translate_ar_to_en, build_translate_en_to_ar
 from app.prompts.vision import build_vision_analysis
+
+CORE_MEMORY_SYSTEM = """Extract user preferences and patterns from the conversation.
+Look for:
+- Preferred currency
+- Common contacts/people they interact with
+- Spending patterns or categories
+- Communication preferences (language mix, formality)
+- Recurring topics or interests
+
+Respond in JSON:
+{
+  "preferences": {
+    "key": "value"
+  }
+}
+
+Only include preferences you are confident about. If none found, return {"preferences": {}}
+"""
 
 logger = logging.getLogger(__name__)
 
@@ -84,15 +99,6 @@ class LLMService:
             logger.warning("Failed to parse extract_facts_specialized JSON: %s", raw[:200])
             return {"entities": []}
 
-    async def classify_input(self, text: str) -> dict:
-        messages = build_classify(text)
-        raw = await self.chat(messages, max_tokens=128, temperature=0.1, json_mode=True)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse classify JSON: %s", raw[:200])
-            return {"category": "general", "confidence": 0.0}
-
     async def add_context_to_chunk(self, chunk: str, full_document: str) -> str:
         messages = build_context_enrichment(chunk, full_document)
         return await self.chat(messages, max_tokens=512, temperature=0.1)
@@ -130,90 +136,6 @@ class LLMService:
         except json.JSONDecodeError:
             logger.warning("Failed to parse analyze_image JSON: %s", raw[:200])
             return {"error": "Failed to parse analysis", "raw": raw[:500]}
-
-    async def think_step(self, query_en: str) -> dict:
-        messages = build_think(query_en)
-        raw = await self.chat(messages, max_tokens=512, temperature=0.1, json_mode=True)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse think_step JSON: %s", raw[:200])
-            return {"strategy": "vector", "search_queries": [query_en], "reasoning": "fallback"}
-
-    async def generate_response(
-        self,
-        query: str,
-        context: str,
-        memory_context: str,
-        conversation_history: list[dict] | None = None,
-        extraction_summary: str = "",
-    ) -> str:
-        from datetime import datetime, timedelta, timezone
-        from app.config import get_settings as _gs
-        riyadh_tz = timezone(timedelta(hours=_gs().timezone_offset_hours))
-        now = datetime.now(riyadh_tz)
-        today_str = now.strftime("%Y-%m-%d")
-        tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-        weekdays_ar = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
-        today_weekday = weekdays_ar[now.weekday()]
-        tomorrow_weekday = weekdays_ar[(now.weekday() + 1) % 7]
-
-        action_block = ""
-        if extraction_summary:
-            has_success = any(not line.startswith("FAILED") for line in extraction_summary.split("\n") if line.strip())
-            has_failure = "FAILED" in extraction_summary
-            if has_success and has_failure:
-                action_block = f"\nنتائج الإجراءات (بعضها نجح وبعضها فشل):\n{extraction_summary}\n"
-            elif has_failure:
-                action_block = f"\nإجراءات فشلت:\n{extraction_summary}\n"
-            else:
-                action_block = f"\nإجراءات تمت بنجاح:\n{extraction_summary}\n"
-
-        system_prompt = f"""أنت مساعد شخصي ذكي. رد بالعربي السعودي العامي. كن مختصر.
-
-الوقت: {now.strftime("%H:%M")} | اليوم: {today_weekday} {today_str} | بكرة: {tomorrow_weekday} {tomorrow_str}
-{action_block}
-ذاكرتك:
-{memory_context}
-
-معلومات متاحة:
-{context}
-
-تعليمات:
-- ردك لازم يكون نص عربي طبيعي — ممنوع ترجع JSON أو كود أو بيانات منظمة
-- لا تضيف أسئلة متابعة أو اقتراحات في نهاية ردك — رد على السؤال فقط وخلاص
-- لو في إجراءات نجحت، أكد للمستخدم بشكل طبيعي
-- لو في إجراءات فشلت (FAILED)، ممنوع تقول "تم" — قول للمستخدم إن الإجراء ما نجح ووضح السبب
-- استخدم المعلومات المتاحة لو موجودة
-- لو ما تعرف، قول ما عندي معلومات
-- لا تخترع معلومات أو أسماء غير موجودة في السياق
-- ممنوع تخترع مبالغ أو مصاريف أو أرقام مالية — اذكر فقط الأرقام الموجودة في المعلومات المتاحة
-- لا تربط شخص بموضوع إلا إذا العلاقة مذكورة صريح في السياق"""
-        messages = [{"role": "system", "content": system_prompt}]
-
-        # Inject conversation history as actual message turns
-        if conversation_history:
-            for turn in conversation_history:
-                messages.append({
-                    "role": turn["role"],
-                    "content": turn["content"],
-                })
-
-        messages.append({"role": "user", "content": query})
-        return await self.chat(messages, max_tokens=2048, temperature=0.7)
-
-    async def check_clarification(self, query_en: str, action_type: str) -> dict:
-        """Check if user message has enough info for the action."""
-        messages = [
-            {"role": "system", "content": CLARIFICATION_SYSTEM},
-            {"role": "user", "content": f"Action type: {action_type}\nUser message: {query_en}"},
-        ]
-        raw = await self.chat(messages, max_tokens=256, temperature=0.1, json_mode=True)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse clarification JSON: %s", raw[:200])
-            return {"complete": True, "missing_fields": [], "clarification_question_ar": ""}
 
     async def extract_core_preferences(self, recent_messages: str) -> dict:
         """Extract user preferences from recent conversation."""
@@ -455,64 +377,6 @@ class LLMService:
                         yield delta
                 except (json.JSONDecodeError, KeyError, IndexError):
                     continue
-
-    async def generate_response_stream(
-        self,
-        query: str,
-        context: str,
-        memory_context: str,
-        conversation_history: list[dict] | None = None,
-        extraction_summary: str = "",
-    ) -> AsyncGenerator[str, None]:
-        from datetime import datetime, timedelta, timezone
-        from app.config import get_settings as _gs
-        riyadh_tz = timezone(timedelta(hours=_gs().timezone_offset_hours))
-        now = datetime.now(riyadh_tz)
-        today_str = now.strftime("%Y-%m-%d")
-        tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-        weekdays_ar = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
-        today_weekday = weekdays_ar[now.weekday()]
-        tomorrow_weekday = weekdays_ar[(now.weekday() + 1) % 7]
-
-        action_block = ""
-        if extraction_summary:
-            has_success = any(not line.startswith("FAILED") for line in extraction_summary.split("\n") if line.strip())
-            has_failure = "FAILED" in extraction_summary
-            if has_success and has_failure:
-                action_block = f"\nنتائج الإجراءات (بعضها نجح وبعضها فشل):\n{extraction_summary}\n"
-            elif has_failure:
-                action_block = f"\nإجراءات فشلت:\n{extraction_summary}\n"
-            else:
-                action_block = f"\nإجراءات تمت بنجاح:\n{extraction_summary}\n"
-
-        system_prompt = f"""أنت مساعد شخصي ذكي. رد بالعربي السعودي العامي. كن مختصر.
-
-الوقت: {now.strftime("%H:%M")} | اليوم: {today_weekday} {today_str} | بكرة: {tomorrow_weekday} {tomorrow_str}
-{action_block}
-ذاكرتك:
-{memory_context}
-
-معلومات متاحة:
-{context}
-
-تعليمات:
-- ردك لازم يكون نص عربي طبيعي — ممنوع ترجع JSON أو كود أو بيانات منظمة
-- لا تضيف أسئلة متابعة أو اقتراحات في نهاية ردك — رد على السؤال فقط وخلاص
-- لو في إجراءات نجحت، أكد للمستخدم بشكل طبيعي
-- لو في إجراءات فشلت (FAILED)، ممنوع تقول "تم" — قول للمستخدم إن الإجراء ما نجح ووضح السبب
-- استخدم المعلومات المتاحة لو موجودة
-- لو ما تعرف، قول ما عندي معلومات
-- لا تخترع معلومات أو أسماء غير موجودة في السياق
-- ممنوع تخترع مبالغ أو مصاريف أو أرقام مالية — اذكر فقط الأرقام الموجودة في المعلومات المتاحة
-- لا تربط شخص بموضوع إلا إذا العلاقة مذكورة صريح في السياق"""
-        messages = [{"role": "system", "content": system_prompt}]
-        if conversation_history:
-            for turn in conversation_history:
-                messages.append({"role": turn["role"], "content": turn["content"]})
-        messages.append({"role": "user", "content": query})
-
-        async for chunk in self.chat_stream(messages, max_tokens=2048, temperature=0.7):
-            yield chunk
 
     # --- Conversation Summarization (Phase 11) ---
 

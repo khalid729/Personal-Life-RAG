@@ -41,6 +41,7 @@ def build_tool_system_prompt(memory_context: str) -> str:
 - لو المستخدم يتكلم عن أغراض أو مخزون، استخدم manage_inventory (search/add/move/use/report).
 - لو المستخدم يتكلم عن مهام أو tasks، استخدم manage_tasks (list/create/update/delete).
 - لو المستخدم يتكلم عن مشاريع، استخدم manage_projects (list/create/update/delete).
+- لو المستخدم يطلب دمج مشاريع مكررة، استخدم merge_projects (أداة منفصلة) — تنقل المهام وتحذف القديمة فعلياً.
 - لو المستخدم يسأل عن إنتاجيته أو تركيزه أو سبرنتات، استخدم get_productivity_stats.
 - لو المستخدم يسلّم أو يسولف، رد بدون أدوات.
 - مهم جداً: لو المستخدم طلب عدة إجراءات، نفذها كلها دفعة وحدة بنداءات أدوات متعددة في نفس الرد. لا تنفذ جزء وتسأل عن الباقي.

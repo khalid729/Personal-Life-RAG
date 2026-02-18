@@ -56,8 +56,6 @@ class Settings(BaseSettings):
     self_rag_threshold: float = 0.3
 
     # Conversation (Phase 4)
-    confirmation_enabled: bool = True
-    confirmation_ttl_seconds: int = 300
     daily_summary_interval: int = 10
     core_memory_interval: int = 20
 

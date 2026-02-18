@@ -83,25 +83,6 @@ class MemoryService:
 
     # --- Pending Actions (Phase 4) ---
 
-    def _pending_key(self, session_id: str) -> str:
-        return f"pending_action:{session_id}"
-
-    async def set_pending_action(self, session_id: str, action: dict) -> None:
-        key = self._pending_key(session_id)
-        await self._redis.set(key, json.dumps(action))
-        await self._redis.expire(key, settings.confirmation_ttl_seconds)
-
-    async def get_pending_action(self, session_id: str) -> dict | None:
-        raw = await self._redis.get(self._pending_key(session_id))
-        if raw:
-            try:
-                return json.loads(raw)
-            except json.JSONDecodeError:
-                return None
-        return None
-
-    async def clear_pending_action(self, session_id: str) -> None:
-        await self._redis.delete(self._pending_key(session_id))
 
     # --- Message Counter (Phase 4) ---
 

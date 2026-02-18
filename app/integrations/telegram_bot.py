@@ -225,7 +225,7 @@ async def chat_api(text: str, sid: str) -> dict:
 async def chat_api_stream(text: str, sid: str, message: Message) -> dict:
     """Stream chat response — edit Telegram message as tokens arrive.
 
-    Returns dict with 'text' (full response) and 'pending_confirmation' (bool).
+    Returns dict with 'text' (full response).
     """
     full_text = ""
     last_edit = 0.0
@@ -268,10 +268,7 @@ async def chat_api_stream(text: str, sid: str, message: Message) -> dict:
         if not full_text:
             # Fallback to non-streaming
             result = await chat_api(text, sid)
-            return {
-                "text": result.get("reply", "خطأ"),
-                "pending_confirmation": result.get("pending_confirmation", False),
-            }
+            return {"text": result.get("reply", "خطأ")}
 
     # Final edit with full text
     if full_text.strip():
@@ -281,10 +278,7 @@ async def chat_api_stream(text: str, sid: str, message: Message) -> dict:
         except Exception:
             pass
 
-    return {
-        "text": full_text,
-        "pending_confirmation": meta.get("pending_confirmation", False),
-    }
+    return {"text": full_text}
 
 
 # --- Commands ---
@@ -825,11 +819,10 @@ async def handle_photo(message: Message):
     skip_facts = bool(result.get("auto_item"))
     try:
         summary_result = await api_post(
-            "/chat/",
+            "/chat/v2",
             json={
                 "message": summary_prompt,
                 "session_id": sid,
-                "skip_fact_extraction": skip_facts,
             },
         )
         ar_summary = summary_result.get("reply", "")
