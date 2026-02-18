@@ -426,15 +426,23 @@ class RetrievalService:
     @staticmethod
     def _build_extraction_summary(facts: dict, count: int) -> str:
         """Build short summary of what was extracted for the responder."""
-        if count == 0:
+        entities = facts.get("entities", [])
+        if not entities:
             return ""
         lines = []
-        for e in facts.get("entities", []):
-            if e.get("_failed"):
-                continue
+        failed_lines = []
+        for e in entities:
             etype = e.get("entity_type", "")
             ename = e.get("entity_name", "")
             props = e.get("properties", {})
+            if e.get("_failed"):
+                if etype == "ReminderAction":
+                    action = props.get("action", "done")
+                    title = props.get("reminder_title", ename)
+                    failed_lines.append(f"FAILED to {action} reminder: {title} (not found)")
+                else:
+                    failed_lines.append(f"FAILED {etype}: {ename}")
+                continue
             if etype == "Reminder":
                 due = props.get("due_date", "")
                 lines.append(f"CREATED reminder: {ename} (due: {due})")
@@ -462,7 +470,7 @@ class RetrievalService:
                 lines.append(f"USED item: {ename} (qty: {qty})")
             else:
                 lines.append(f"STORED {etype}: {ename}")
-        return "\n".join(lines)
+        return "\n".join(lines + failed_lines)
 
     async def _prepare_context(
         self, query_ar: str, session_id: str = "default"
@@ -563,13 +571,27 @@ class RetrievalService:
                 "reasoning": think_result.get("reasoning", ""),
             })
 
-        # --- B. Confirmation (DELETE actions only, skip for multi-intent) ---
+        # --- B. Confirmation (DELETE actions only, skip for multi-intent and reminders) ---
+        # Reminder delete/cancel goes through the LLM extraction pipeline (ReminderAction)
+        is_reminder_route = route in ("graph_reminder", "graph_reminder_action")
+        # Also check if recent conversation context was about reminders
+        if not is_reminder_route and is_delete_intent(query_ar):
+            recent_msgs = await self.memory.get_working_memory(session_id)
+            for msg in reversed(recent_msgs):
+                if msg.get("role") == "assistant":
+                    last_reply = msg.get("content", "")
+                    if any(kw in last_reply for kw in ("تذكير", "موعد", "reminder", "due_date")):
+                        is_reminder_route = True
+                        route = "graph_reminder_action"
+                    break
         if (
             settings.confirmation_enabled
             and is_delete_intent(query_ar)
             and not multi_intent
+            and not is_reminder_route
         ):
             target = self._extract_delete_target(query_ar)
+            target = await self._resolve_delete_target(target, session_id)
             confirm_msg = f"تبيني أحذف: {target}؟" if target else f"تبيني أنفذ: {query_ar}؟"
             pending_action = {
                 "action_type": "delete",
@@ -593,7 +615,14 @@ class RetrievalService:
 
         # === Stage 2: Parallel extract + retrieve ===
         extraction_route = route if not multi_intent else "multi_intent"
-        extract_coro = self.llm.extract_facts_specialized(query_en, extraction_route, ner_hints)
+        # Give extractor conversation context so it can resolve pronouns ("this", "that")
+        conv_context = ""
+        recent_msgs = await self.memory.get_working_memory(session_id)
+        for msg in reversed(recent_msgs):
+            if msg.get("role") == "assistant":
+                conv_context = msg.get("content", "")[:500]
+                break
+        extract_coro = self.llm.extract_facts_specialized(query_en, extraction_route, ner_hints, conversation_context=conv_context)
         retrieve_coro = self._execute_retrieval_strategy(route, query_en, search_queries)
 
         facts, (context_parts, sources) = await asyncio.gather(
@@ -612,10 +641,13 @@ class RetrievalService:
         if facts.get("entities"):
             count = await self.graph.upsert_from_facts(facts)
             extraction_summary = self._build_extraction_summary(facts, count)
+            if extraction_summary:
+                logger.info("Extraction summary for responder: %s", extraction_summary)
             agentic_trace.append({
                 "step": "extract",
                 "entities": len(facts["entities"]),
                 "upserted": count,
+                "extraction_summary": extraction_summary or "(none)",
             })
 
         # --- C. Build context ---
@@ -745,12 +777,44 @@ class RetrievalService:
         r"reminder|expense|item|debt)\s*",
         re.IGNORECASE,
     )
+    _PRONOUN_RE = re.compile(
+        r"^(هذا|هذي|هذه|ذا|ذي|ها[لذ]|this|that|it)$",
+        re.IGNORECASE,
+    )
 
     def _extract_delete_target(self, query_ar: str) -> str:
         """Extract the target name from a delete query by stripping delete keywords."""
         cleaned = self._DELETE_STRIP_RE.sub("", query_ar)
         cleaned = self._DELETE_NOUN_RE.sub("", cleaned)
         return cleaned.strip()
+
+    async def _resolve_delete_target(self, target: str, session_id: str) -> str:
+        """Resolve pronouns like 'هذا' to actual entity name from conversation context."""
+        if target and not self._PRONOUN_RE.match(target):
+            return target
+        # Get last assistant reply from working memory
+        messages = await self.memory.get_working_memory(session_id)
+        last_reply = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                last_reply = msg.get("content", "")
+                break
+        if not last_reply:
+            return target
+        # Extract entity names mentioned in quotes or after known patterns
+        # Look for quoted names first
+        quoted = re.findall(r'[""«]([^""»]+)[""»]', last_reply)
+        if quoted:
+            return quoted[0]
+        # Look for lines with reminder-like content (bullet points, numbered items)
+        for line in last_reply.split("\n"):
+            line = line.strip()
+            if line and any(c in line for c in "•-–●"):
+                # Strip bullet and leading whitespace
+                name = re.sub(r'^[•\-–●\d.)\s]+', '', line).strip()
+                if name and len(name) > 2:
+                    return name
+        return target
 
     async def _execute_confirmed_action(self, pending: dict, session_id: str) -> str:
         """Execute a previously confirmed action."""
@@ -867,12 +931,15 @@ class RetrievalService:
             # Translate target to English (reminders stored with English titles)
             target_en = await self.llm.translate_to_english(target) if target else ""
 
-            # Reminder deletion — try Arabic first, then English
+            # Reminder deletion — try English first (titles stored in English), then Arabic
             if route in ("graph_reminder", "graph_reminder_action"):
-                result = await self.graph.delete_reminder(target or query_ar)
-                deleted = result.get("deleted", [])
-                if not deleted and target_en:
+                result = {}
+                deleted = []
+                if target_en:
                     result = await self.graph.delete_reminder(target_en)
+                    deleted = result.get("deleted", [])
+                if not deleted:
+                    result = await self.graph.delete_reminder(target or query_ar)
                     deleted = result.get("deleted", [])
                 if deleted:
                     return f"تم حذف {len(deleted)} تذكير: {', '.join(deleted)}"

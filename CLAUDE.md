@@ -5,7 +5,7 @@ Arabic-first personal knowledge management: agentic RAG + knowledge graph + mult
 ## Architecture
 
 ```
-FastAPI :8500 → vLLM :8000 (Qwen3-VL-32B-Instruct BF16, 72K ctx)
+FastAPI :8500 → vLLM :8000 (Qwen3-32B BF16, ~47K ctx)
                → FalkorDB :6379 (knowledge graph)
                → Qdrant :6333 (BGE-M3, 1024-dim)
                → Redis :6380 (3-layer memory)
@@ -37,12 +37,14 @@ curl -s -X POST http://localhost:8500/chat/ \
 ## Core Patterns
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
-- **Chat flow**: POST /chat → parallel(Translate+NER) → parallel(Extract+Retrieve) → Respond (3 LLM calls)
+- **Chat flow (v2, primary)**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 17 tools)
+- **Chat flow (legacy)**: POST /chat → parallel(Translate+NER) → parallel(Extract+Retrieve) → Respond (3 LLM calls)
 - **URL ingestion**: POST /ingest/url → GitHub parser (repo/blob/tree) + web fetch → ingest pipeline
 - **Smart routing**: 20 keyword patterns → graph strategy, fallback LLM classify
 - **Entity resolution**: vector dedup (0.85 person, 0.80 default) via `resolve_entity_name()`
 - **Arabic names**: NER → `name_ar` on Person → `_display_name()` = `رهف (Rahaf)`
-- **Confirmation**: ONLY for delete/cancel; all else runs directly
+- **Auto-extraction**: conversational messages auto-extracted in background (NER + translate + extract)
+- **No confirmation flow**: tools execute directly, model reports actual success/failure
 
 ## Key Gotchas
 

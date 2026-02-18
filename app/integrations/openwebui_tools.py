@@ -69,7 +69,6 @@ class Tools:
 
         CRITICAL RULES for interpreting the response:
         - ONLY say an action was completed if the response contains 'STATUS: ACTION_EXECUTED'
-        - If response contains 'STATUS: PENDING_CONFIRMATION' → action NOT done, ask user to confirm
         - If response contains 'STATUS: CONVERSATION' → this is just a conversational reply, no action was taken
         - NEVER claim an action was performed (created/deleted/merged/updated) unless STATUS: ACTION_EXECUTED is present
 
@@ -78,29 +77,20 @@ class Tools:
         :return: The assistant's reply with status prefix.
         """
         sid = session_id or self.valves.default_session_id
-        result = self._post("/chat/", json_data={"message": message, "session_id": sid})
+        result = self._post("/chat/v2", json_data={"message": message, "session_id": sid})
         reply = result.get("reply", "")
-        route = result.get("route", "")
 
-        if result.get("pending_confirmation"):
-            return (
-                "STATUS: PENDING_CONFIRMATION — ACTION NOT YET EXECUTED.\n"
-                "The system is asking for user confirmation before executing this action.\n"
-                "Do NOT tell the user the action was completed.\n\n"
-                + reply
-                + "\n\n⚠️ أرسل 'نعم' للتأكيد أو 'لا' للإلغاء عبر chat tool."
-            )
-
-        # Check if this was a confirmed action or data was extracted/stored
-        agentic_trace = result.get("agentic_trace", [])
-        was_action = any(
-            step.get("step") == "confirmed_action" for step in agentic_trace
+        # Check if any tool calls were executed (tool-calling mode)
+        tool_calls = result.get("tool_calls", [])
+        has_write = any(
+            tc.get("tool") in (
+                "create_reminder", "delete_reminder", "update_reminder",
+                "add_expense", "record_debt", "pay_debt", "store_note",
+                "manage_inventory", "manage_tasks", "manage_projects",
+            ) and tc.get("success")
+            for tc in tool_calls
         )
-        was_extracted = any(
-            step.get("step") == "extract" and step.get("upserted", 0) > 0
-            for step in agentic_trace
-        )
-        if was_action or was_extracted:
+        if has_write:
             return f"STATUS: ACTION_EXECUTED — Data was stored/action was executed.\n\n{reply}"
 
         return f"STATUS: CONVERSATION — This is an informational/conversational reply. No data was modified.\n\n{reply}"
@@ -263,7 +253,7 @@ class Tools:
 
         :return: Today's plan in Arabic.
         """
-        result = self._post("/chat/", json_data={
+        result = self._post("/chat/v2", json_data={
             "message": "رتب لي يومي",
             "session_id": self.valves.default_session_id,
         })

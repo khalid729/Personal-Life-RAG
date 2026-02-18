@@ -37,8 +37,8 @@ mcp = FastMCP(
     instructions=(
         "Personal life management — finances, reminders, projects, tasks, knowledge, "
         "inventory, productivity, backup, graph visualization. "
-        "IMPORTANT: When the chat tool returns 'PENDING_CONFIRMATION', the action has NOT been "
-        "executed yet. Do NOT tell the user it was completed. Ask them to confirm with 'نعم' or 'لا'."
+        "IMPORTANT: When the chat tool returns 'STATUS: ACTION_EXECUTED', the action was completed. "
+        "When it returns 'STATUS: CONVERSATION', no data was modified."
     ),
 )
 
@@ -68,7 +68,6 @@ async def chat(message: str, session_id: str = "mcp") -> str:
 
     CRITICAL RULES for interpreting the response:
     - ONLY say an action was completed if the response contains 'STATUS: ACTION_EXECUTED'
-    - If response contains 'STATUS: PENDING_CONFIRMATION' → action NOT done yet, ask user to confirm
     - If response contains 'STATUS: CONVERSATION' → informational reply only, no data was modified
     - NEVER claim an action was performed (created/deleted/merged/updated) unless STATUS: ACTION_EXECUTED
 
@@ -76,30 +75,23 @@ async def chat(message: str, session_id: str = "mcp") -> str:
         message: The message to send (Arabic or English).
         session_id: Session ID for conversation continuity. Defaults to 'mcp'.
     """
-    result = await api_post("/chat/", json={"message": message, "session_id": session_id})
+    result = await api_post("/chat/v2", json={"message": message, "session_id": session_id})
     reply = result.get("reply", "")
 
     date_ctx = f"[{_current_date_context()}]\n\n"
 
-    if result.get("pending_confirmation"):
-        return (
-            date_ctx
-            + "STATUS: PENDING_CONFIRMATION — ACTION NOT YET EXECUTED.\n"
-            "The system is asking for user confirmation. Do NOT tell the user it was completed.\n\n"
-            + reply
-            + "\n\n⚠️ Ask user to confirm: send 'نعم' (yes) or 'لا' (no) via this chat tool."
-        )
-
-    # Check if this was a confirmed action or data was extracted/stored
-    agentic_trace = result.get("agentic_trace", [])
-    was_action = any(
-        step.get("step") == "confirmed_action" for step in agentic_trace
+    # Check if any write tool was called successfully
+    tool_calls = result.get("tool_calls", [])
+    _WRITE_TOOLS = {
+        "create_reminder", "delete_reminder", "update_reminder",
+        "add_expense", "record_debt", "pay_debt", "store_note",
+        "manage_inventory", "manage_tasks", "manage_projects",
+    }
+    has_write = any(
+        tc.get("tool") in _WRITE_TOOLS and tc.get("success")
+        for tc in tool_calls
     )
-    was_extracted = any(
-        step.get("step") == "extract" and step.get("upserted", 0) > 0
-        for step in agentic_trace
-    )
-    if was_action or was_extracted:
+    if has_write:
         return date_ctx + f"STATUS: ACTION_EXECUTED — Data was stored/action was executed.\n\n{reply}"
 
     return date_ctx + f"STATUS: CONVERSATION — Informational reply. No data was modified.\n\n{reply}"

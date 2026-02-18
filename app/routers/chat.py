@@ -1,13 +1,19 @@
+import logging
+
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
 
 from app.models.schemas import ChatRequest, ChatResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("/", response_model=ChatResponse)
 async def chat(req: ChatRequest, background_tasks: BackgroundTasks, request: Request):
+    """Legacy pipeline endpoint. Use /chat/v2 instead."""
+    logger.warning("Deprecated: /chat/ called — use /chat/v2 (tool-calling) instead")
     retrieval = request.app.state.retrieval
 
     result = await retrieval.retrieve_and_respond(
@@ -39,13 +45,48 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks, request: Req
 
 @router.post("/stream")
 async def chat_stream(req: ChatRequest, request: Request):
-    """Streaming chat endpoint — returns NDJSON lines."""
+    """Legacy streaming endpoint. Use /chat/v2/stream instead."""
+    logger.warning("Deprecated: /chat/stream called — use /chat/v2/stream instead")
     retrieval = request.app.state.retrieval
 
     async def event_generator():
         async for line in retrieval.retrieve_and_respond_stream(
             req.message, req.session_id
         ):
+            yield line
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+
+@router.post("/v2", response_model=ChatResponse)
+async def chat_v2(req: ChatRequest, request: Request):
+    """Tool-calling chat endpoint. Model calls tools, code executes, model formats result."""
+    tool_calling = request.app.state.tool_calling
+
+    result = await tool_calling.chat(
+        message=req.message,
+        session_id=req.session_id,
+    )
+
+    # post_process is called inside tool_calling.chat() via asyncio.create_task
+
+    return ChatResponse(
+        reply=result["reply"],
+        sources=[],
+        route=result.get("route"),
+        agentic_trace=[{"step": "tool_calls", "tools": result.get("tool_calls", [])}],
+        pending_confirmation=False,
+        tool_calls=result.get("tool_calls", []),
+    )
+
+
+@router.post("/v2/stream")
+async def chat_v2_stream(req: ChatRequest, request: Request):
+    """Streaming tool-calling endpoint. Tool execution is non-streaming, final response streams."""
+    tool_calling = request.app.state.tool_calling
+
+    async def event_generator():
+        async for line in tool_calling.chat_stream(req.message, req.session_id):
             yield line
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")

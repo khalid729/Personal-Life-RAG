@@ -347,6 +347,7 @@ class ChatResponse(BaseModel):
     route: Optional[str] = None
     agentic_trace: list[dict] = []
     pending_confirmation: bool = False
+    tool_calls: list[dict] = []
 
 
 class IngestRequest(BaseModel):
@@ -472,6 +473,28 @@ class ProjectUpdateRequest(BaseModel):
     status: Optional[str] = None
     description: Optional[str] = None
     priority: Optional[int] = None
+
+
+class ProjectDeleteRequest(BaseModel):
+    name: str
+
+
+class ProjectMergeRequest(BaseModel):
+    sources: list[str]  # project names to merge FROM
+    target: str  # project name to merge INTO
+
+
+class TaskUpdateRequest(BaseModel):
+    title: str
+    new_title: Optional[str] = None
+    status: Optional[str] = None
+    due_date: Optional[str] = None
+    priority: Optional[int] = None
+    project: Optional[str] = None
+
+
+class TaskDeleteRequest(BaseModel):
+    title: str
 
 
 # --- Inventory ---

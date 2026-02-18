@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # vLLM
     vllm_base_url: str = "http://localhost:8000/v1"
-    vllm_model: str = "Qwen/Qwen3-VL-32B-Instruct"
+    vllm_model: str = "Qwen/Qwen3-32B"
 
     # FalkorDB
     falkordb_host: str = "localhost"

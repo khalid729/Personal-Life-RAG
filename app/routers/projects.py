@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request
 
-from app.models.schemas import ProjectUpdateRequest
+from app.models.schemas import ProjectDeleteRequest, ProjectMergeRequest, ProjectUpdateRequest
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -24,3 +24,15 @@ async def update_project(req: ProjectUpdateRequest, request: Request):
         props["priority"] = req.priority
     await graph.upsert_project(req.name, **props)
     return {"status": "ok", "project": req.name}
+
+
+@router.post("/delete")
+async def delete_project(req: ProjectDeleteRequest, request: Request):
+    graph = request.app.state.retrieval.graph
+    return await graph.delete_project(req.name)
+
+
+@router.post("/merge")
+async def merge_projects(req: ProjectMergeRequest, request: Request):
+    graph = request.app.state.retrieval.graph
+    return await graph.merge_projects(req.sources, req.target)

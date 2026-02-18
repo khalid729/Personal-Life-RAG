@@ -1,9 +1,9 @@
 """
-Open WebUI Pipe for Personal Life RAG — Direct Streaming.
-Version: 1.0
+Open WebUI Pipe for Personal Life RAG — Tool-Calling Architecture.
+Version: 2.0
 
-Bypasses the wrapper LLM entirely: sends user messages straight to /chat/stream.
-Result: 3 LLM calls (translate + extract + respond) instead of 4+.
+Uses /chat/v2 (tool-calling endpoint): LLM picks tools → code executes → real results → LLM responds.
+The model cannot lie because it sees actual tool outcomes before generating its response.
 
 Copy this file's content into Open WebUI Admin → Functions → Add Function (type: Pipe).
 Select "Personal RAG" model in the Open WebUI sidebar to use this pipe.
@@ -21,9 +21,9 @@ from pydantic import BaseModel, Field
 
 
 class Pipe:
-    """Personal Life RAG Pipe v1.2 — Direct streaming with JSON guard + internal prompt filter."""
+    """Personal Life RAG Pipe v2.0 — Tool-calling with JSON guard + internal prompt filter."""
 
-    VERSION = "1.2"
+    VERSION = "2.0"
 
     class Valves(BaseModel):
         api_url: str = Field(
@@ -55,21 +55,39 @@ class Pipe:
         "Generate 1-3 broad tags",
     )
 
+    # Open WebUI internal keywords (anywhere in text)
+    _INTERNAL_KEYWORDS = (
+        "ONLY respond with the title",
+        "ONLY respond with a short",
+        "conversation title",
+        "Generate a succinct",
+    )
+
     def pipe(self, body: dict, __user__: dict = {}, __metadata__: dict = {}, __files__: list = []) -> Union[str, Generator]:
         messages = body.get("messages", [])
         if not messages:
-            return "لا توجد رسالة."
+            return ""
 
         last_msg = messages[-1] if messages else {}
         user_text = self._extract_text(last_msg.get("content", ""))
 
         if not user_text.strip():
-            return "لا توجد رسالة."
+            return ""
 
         # Skip Open WebUI internal prompts (title/tag generation)
         stripped = user_text.strip()
         if any(stripped.startswith(p) for p in self._INTERNAL_PREFIXES):
             return ""
+        if any(kw in stripped for kw in self._INTERNAL_KEYWORDS):
+            return ""
+
+        # Also skip if system prompt looks like internal task
+        sys_msgs = [m.get("content", "") for m in messages if m.get("role") == "system"]
+        for s in sys_msgs:
+            if any(kw in s for kw in self._INTERNAL_KEYWORDS):
+                return ""
+            if any(s.strip().startswith(p) for p in self._INTERNAL_PREFIXES):
+                return ""
 
         # Process files if any
         if self.valves.auto_process_files:
@@ -99,7 +117,7 @@ class Pipe:
         url = self.valves.api_url.rstrip("/")
         try:
             with requests.post(
-                f"{url}/chat/stream",
+                f"{url}/chat/v2/stream",
                 json=payload,
                 stream=True,
                 timeout=120,
@@ -204,7 +222,7 @@ class Pipe:
     def _sync(self, payload: dict) -> str:
         url = self.valves.api_url.rstrip("/")
         try:
-            resp = requests.post(f"{url}/chat/", json=payload, timeout=120)
+            resp = requests.post(f"{url}/chat/v2", json=payload, timeout=120)
             resp.raise_for_status()
             data = resp.json()
             return data.get("reply", "لا توجد إجابة.")

@@ -14,6 +14,7 @@ from app.services.llm import LLMService
 from app.services.memory import MemoryService
 from app.services.ner import NERService
 from app.services.retrieval import RetrievalService
+from app.services.tool_calling import ToolCallingService
 from app.services.vector import VectorService
 
 logging.basicConfig(
@@ -59,6 +60,9 @@ async def lifespan(app: FastAPI):
 
     backup_service = BackupService(graph, vector, memory)
     app.state.backup_service = backup_service
+
+    tool_calling = ToolCallingService(llm, graph, vector, memory, ner=ner)
+    app.state.tool_calling = tool_calling
 
     logger.info("All services started. API is ready.")
     yield

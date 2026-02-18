@@ -1,0 +1,23 @@
+{
+  "_comment_local": "Local — Claude Desktop on the same machine as RAG API",
+  "local": {
+    "personal-rag": {
+      "command": "/home/khalid/Projects/Personal_Rag/venv/bin/python",
+      "args": ["/home/khalid/Projects/Personal_Rag/mcp_server_desktop.py"]
+    }
+  },
+
+  "_comment_remote": "Remote — Claude Desktop on another machine, RAG API on khalid@<SERVER_IP>. Uses SSH so the MCP server runs on the server (localhost API calls, no port exposure needed). Requires SSH key auth.",
+  "remote": {
+    "personal-rag": {
+      "command": "ssh",
+      "args": [
+        "khalid@SERVER_IP",
+        "/home/khalid/Projects/Personal_Rag/venv/bin/python",
+        "/home/khalid/Projects/Personal_Rag/mcp_server_desktop.py"
+      ]
+    }
+  },
+
+  "_usage": "Copy either 'local' or 'remote' into ~/.config/Claude/claude_desktop_config.json under 'mcpServers'. Replace SERVER_IP with the actual IP."
+}

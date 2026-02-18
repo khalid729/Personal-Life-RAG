@@ -40,8 +40,8 @@ Reminder: entity_name = short title (lowercase)
   For recurring: due_date = NEXT future occurrence.
 
 ReminderAction: entity_name = action description
-  Properties: action ("done"|"snooze"|"cancel"), reminder_title (exact title of existing reminder)
-  Use when user finished, received, picked up, or completed something.
+  Properties: action ("done"|"snooze"|"cancel"|"delete"), reminder_title (exact title of existing reminder)
+  Use when user finished, received, picked up, completed, deleted, or removed something.
 
 If you see entities outside your specialty, include them with entity_type and entity_name only.
 
@@ -57,6 +57,10 @@ REMINDER_EXAMPLES = [
     {
         "input": "I received the shipments",
         "output": '{"entities": [{"entity_type": "ReminderAction", "entity_name": "shipments received", "properties": {"action": "done", "reminder_title": "shipments"}, "relationships": []}]}',
+    },
+    {
+        "input": "Delete the family iftar reminder",
+        "output": '{"entities": [{"entity_type": "ReminderAction", "entity_name": "delete family iftar", "properties": {"action": "delete", "reminder_title": "family iftar at home"}, "relationships": []}]}',
     },
 ]
 
@@ -189,7 +193,7 @@ Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, 
 
 Person: relationship, phone, email, company, notes, date_of_birth, id_number, name_ar (Arabic name from NER hints — copy exactly)
 Reminder: reminder_type, recurrence, due_date (YYYY-MM-DD, REQUIRED), time, location, priority, reference_number
-ReminderAction: action ("done"|"snooze"|"cancel"), reminder_title
+ReminderAction: action ("done"|"snooze"|"cancel"|"delete"), reminder_title
 Expense: amount, currency (SAR), category, date, vendor
 Debt: amount, currency, direction ("i_owe"|"owed_to_me"), reason
 DebtPayment: amount, currency
@@ -231,7 +235,7 @@ _EXTRACTORS = {
 }
 
 
-def build_specialized_extract(text: str, route: str, ner_hints: str = "") -> list[dict]:
+def build_specialized_extract(text: str, route: str, ner_hints: str = "", conversation_context: str = "") -> list[dict]:
     """Build chat messages for a specialized extractor based on route.
 
     Picks the correct domain extractor, injects date hints, prepends NER hints.
@@ -255,10 +259,12 @@ def build_specialized_extract(text: str, route: str, ner_hints: str = "") -> lis
         messages.append({"role": "user", "content": ex["input"]})
         messages.append({"role": "assistant", "content": output})
 
-    # Build user content with optional NER hints
+    # Build user content with optional NER hints and conversation context
     user_content = text
     if ner_hints:
         user_content = f"[NER hints: {ner_hints}]\n\n{text}"
+    if conversation_context:
+        user_content = f"[Recent conversation context: {conversation_context}]\n\n{user_content}"
     messages.append({"role": "user", "content": user_content})
 
     return messages

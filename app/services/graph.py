@@ -233,6 +233,57 @@ class GraphService:
         """
         await self._graph.query(q, params={"name": name, "now": _now(), **props})
 
+    async def delete_project(self, name: str) -> dict:
+        """Delete a project and its linked tasks. Returns deleted info or error."""
+        q = """
+        MATCH (p:Project) WHERE toLower(p.name) CONTAINS toLower($name)
+        OPTIONAL MATCH (t:Task)-[:BELONGS_TO]->(p)
+        WITH p, p.name AS pname, collect(t) AS tasks, collect(t.title) AS task_titles
+        DETACH DELETE p
+        FOREACH (t IN tasks | DETACH DELETE t)
+        RETURN pname, task_titles
+        """
+        rows = await self.query(q, {"name": name})
+        if not rows:
+            return {"error": f"No project found matching '{name}'"}
+        pname = rows[0][0]
+        task_titles = [t for t in (rows[0][1] or []) if t]
+        return {"deleted": pname, "tasks_deleted": len(task_titles), "task_titles": task_titles}
+
+    async def merge_projects(self, source_names: list[str], target_name: str) -> dict:
+        """Merge source projects into target. Re-links tasks, deletes sources."""
+        # Ensure target exists
+        await self.upsert_project(target_name)
+        tasks_moved = 0
+        sources_deleted = 0
+
+        for src in source_names:
+            # Re-link tasks from source to target
+            q_relink = """
+            MATCH (t:Task)-[r:BELONGS_TO]->(src:Project)
+            WHERE toLower(src.name) CONTAINS toLower($src_name)
+            MATCH (tgt:Project {name: $target_name})
+            DELETE r
+            MERGE (t)-[:BELONGS_TO]->(tgt)
+            RETURN count(t)
+            """
+            rows = await self.query(q_relink, {"src_name": src, "target_name": target_name})
+            if rows and rows[0][0]:
+                tasks_moved += rows[0][0]
+
+            # Delete source project node
+            q_del = """
+            MATCH (p:Project) WHERE toLower(p.name) CONTAINS toLower($src_name)
+            AND p.name <> $target_name
+            DETACH DELETE p
+            RETURN count(p)
+            """
+            del_rows = await self.query(q_del, {"src_name": src, "target_name": target_name})
+            if del_rows and del_rows[0][0]:
+                sources_deleted += del_rows[0][0]
+
+        return {"target": target_name, "sources_deleted": sources_deleted, "tasks_moved": tasks_moved}
+
     # --- Expense ---
     async def create_expense(self, description: str, amount: float, **props) -> None:
         q = """
@@ -392,6 +443,7 @@ class GraphService:
         1. Direct CONTAINS (original title)
         2. CONTAINS with singular/plural variant
         3. All-keywords match (every word in title found in reminder)
+        4. Vector similarity (fuzzy match for transliteration variants)
         """
         status_clause = ""
         if status_filter:
@@ -426,6 +478,30 @@ class GraphService:
             if rows:
                 logger.info("Reminder matched via keywords %s (original: '%s')", words, title)
                 return rows
+
+        # Strategy 3.5: reverse CONTAINS — search query contains the stored title
+        # Handles cases where user passes long text like "تحقق من التواريخ الهجرية (متأخرة)"
+        # and the stored title is a substring of that query
+        q_rev = f"""
+        MATCH (r:Reminder) WHERE toLower($title) CONTAINS toLower(r.title){status_clause}
+        RETURN r.title, id(r)
+        """
+        rows = await self.query(q_rev, {"title": title})
+        if rows:
+            logger.info("Reminder matched via reverse CONTAINS (original: '%s')", title)
+            return rows
+
+        # Strategy 4: vector similarity (handles transliteration/translation variants)
+        if self._vector_service:
+            try:
+                resolved = await self.resolve_entity_name(title, "Reminder")
+                if resolved and resolved.lower() != title.lower():
+                    rows = await self.query(q, {"title": resolved})
+                    if rows:
+                        logger.info("Reminder matched via vector similarity '%s' (original: '%s')", resolved, title)
+                        return rows
+            except Exception:
+                pass
 
         return []
 
@@ -464,6 +540,13 @@ class GraphService:
                 RETURN r.title, r.status
                 """
                 await self.query(q, {"title": r_title, "now": _now()})
+            elif action == "delete":
+                q = """
+                MATCH (r:Reminder) WHERE r.title = $title
+                DETACH DELETE r
+                RETURN $title AS deleted
+                """
+                await self.query(q, {"title": r_title})
             else:
                 return {"error": f"Unknown action: {action}"}
 
@@ -714,6 +797,170 @@ class GraphService:
         ON MATCH SET t.updated_at = $now {props_str}
         """
         await self._graph.query(q, params={"title": title, "now": _now(), **props})
+
+    async def delete_task(self, title: str) -> dict:
+        """Delete a task by title (fuzzy match). Returns deleted title or error."""
+        q = """
+        MATCH (t:Task) WHERE toLower(t.title) CONTAINS toLower($title)
+        WITH t, t.title AS tname
+        DETACH DELETE t
+        RETURN tname
+        """
+        rows = await self.query(q, {"title": title})
+        if not rows:
+            return {"error": f"No task found matching '{title}'"}
+        deleted = [r[0] for r in rows]
+        return {"deleted": deleted, "count": len(deleted)}
+
+    async def update_task_direct(
+        self, title: str, new_title: str | None = None,
+        status: str | None = None, due_date: str | None = None,
+        priority: int | None = None, project: str | None = None,
+    ) -> dict:
+        """Update task properties by title (fuzzy match)."""
+        sets = []
+        params: dict = {"title": title, "now": _now()}
+        if new_title is not None:
+            sets.append("t.title = $new_title")
+            params["new_title"] = new_title
+        if status is not None:
+            sets.append("t.status = $status")
+            params["status"] = status
+        if due_date is not None:
+            sets.append("t.due_date = $due_date")
+            params["due_date"] = due_date
+        if priority is not None:
+            sets.append("t.priority = $priority")
+            params["priority"] = priority
+        if not sets and project is None:
+            return {"error": "No fields to update"}
+        sets.append("t.updated_at = $now")
+        q = f"""
+        MATCH (t:Task) WHERE toLower(t.title) CONTAINS toLower($title)
+        SET {', '.join(sets)}
+        RETURN t.title, t.status, t.due_date, t.priority
+        """
+        rows = await self.query(q, params)
+        if not rows:
+            return {"error": f"No task found matching '{title}'"}
+        result = {"title": rows[0][0], "status": rows[0][1],
+                  "due_date": rows[0][2], "priority": rows[0][3]}
+        # Re-link to project if requested
+        if project is not None:
+            task_title = rows[0][0]
+            await self.upsert_project(project)
+            try:
+                await self.create_relationship(
+                    "Task", "title", task_title,
+                    "BELONGS_TO", "Project", "name", project,
+                )
+                result["project"] = project
+            except Exception as e:
+                logger.debug("Task-Project link skipped: %s", e)
+        return result
+
+    async def merge_duplicate_tasks(self) -> dict:
+        """Find and merge duplicate tasks. Keeps the one with highest priority / earliest due_date."""
+        q_all = """
+        MATCH (t:Task)
+        WHERE t.status IN ['todo', 'in_progress']
+        OPTIONAL MATCH (t)-[:BELONGS_TO]->(p:Project)
+        RETURN ID(t) AS id, t.title, t.due_date, t.priority, t.status,
+               t.energy_level, t.description, p.name
+        ORDER BY t.title
+        """
+        rows = await self.query(q_all, {})
+        if not rows:
+            return {"merged_groups": [], "total_removed": 0}
+
+        from collections import defaultdict
+        groups: dict[str, list] = defaultdict(list)
+        for row in rows:
+            nid, title = row[0], row[1]
+            key = title.strip().lower()
+            groups[key].append({
+                "id": nid, "title": title, "due_date": row[2],
+                "priority": row[3], "status": row[4],
+                "energy_level": row[5], "description": row[6],
+                "project": row[7],
+            })
+
+        merged_groups = []
+        total_removed = 0
+
+        for key, items in groups.items():
+            if len(items) < 2:
+                continue
+            # Keep: in_progress > todo, highest priority, earliest due_date, lowest ID
+            def sort_key(item):
+                status_rank = 0 if item["status"] == "in_progress" else 1
+                prio = -(item["priority"] or 0)
+                due = item["due_date"] or "9999"
+                return (status_rank, prio, due, item["id"])
+            items.sort(key=sort_key)
+            keep = items[0]
+            remove = items[1:]
+
+            # Merge best properties into keeper
+            best_priority = keep.get("priority") or 0
+            best_description = keep.get("description")
+            best_energy = keep.get("energy_level")
+            best_project = keep.get("project")
+            for item in remove:
+                if (item.get("priority") or 0) > best_priority:
+                    best_priority = item["priority"]
+                if not best_description and item.get("description"):
+                    best_description = item["description"]
+                if not best_energy and item.get("energy_level"):
+                    best_energy = item["energy_level"]
+                if not best_project and item.get("project"):
+                    best_project = item["project"]
+
+            update_sets = ["t.updated_at = $now"]
+            update_params: dict = {"kid": keep["id"], "now": _now()}
+            if best_priority and best_priority != (keep.get("priority") or 0):
+                update_sets.append("t.priority = $priority")
+                update_params["priority"] = best_priority
+            if best_description and best_description != keep.get("description"):
+                update_sets.append("t.description = $description")
+                update_params["description"] = best_description
+            if best_energy and best_energy != keep.get("energy_level"):
+                update_sets.append("t.energy_level = $energy_level")
+                update_params["energy_level"] = best_energy
+
+            q_update = f"""
+            MATCH (t:Task) WHERE ID(t) = $kid
+            SET {', '.join(update_sets)}
+            """
+            await self.query(q_update, update_params)
+
+            # Link keeper to project if found
+            if best_project and not keep.get("project"):
+                try:
+                    await self.create_relationship(
+                        "Task", "title", keep["title"],
+                        "BELONGS_TO", "Project", "name", best_project,
+                    )
+                except Exception:
+                    pass
+
+            # Delete duplicates
+            remove_ids = [item["id"] for item in remove]
+            q_delete = """
+            MATCH (t:Task) WHERE ID(t) IN $ids
+            DETACH DELETE t
+            """
+            await self.query(q_delete, {"ids": remove_ids})
+
+            merged_groups.append({
+                "kept": keep["title"],
+                "kept_id": keep["id"],
+                "removed_count": len(remove),
+                "removed_ids": remove_ids,
+            })
+            total_removed += len(remove)
+
+        return {"merged_groups": merged_groups, "total_removed": total_removed}
 
     # --- Sprint ---
     async def create_sprint(self, name: str, start_date: str | None = None,

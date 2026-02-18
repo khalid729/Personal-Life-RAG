@@ -20,9 +20,6 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import (
     BufferedInputFile,
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     Message,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -73,10 +70,6 @@ def authorized(message: Message) -> bool:
         logger.warning("Unauthorized user: %s (expected %s)", user_id, settings.tg_chat_id)
         return False
     return True
-
-
-def authorized_callback(callback: CallbackQuery) -> bool:
-    return str(callback.from_user.id) == settings.tg_chat_id
 
 
 def session_id(user_id: int) -> str:
@@ -182,15 +175,6 @@ def split_message(text: str) -> list[str]:
     return parts
 
 
-def confirmation_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ نعم", callback_data="confirm_yes"),
-            InlineKeyboardButton(text="❌ لا", callback_data="confirm_no"),
-        ]
-    ])
-
-
 async def send_reply(message: Message, text: str, keyboard=None):
     """Send a reply, splitting if too long."""
     parts = split_message(text)
@@ -235,7 +219,7 @@ async def api_post_file(
 
 
 async def chat_api(text: str, sid: str) -> dict:
-    return await api_post("/chat/", json={"message": text, "session_id": sid})
+    return await api_post("/chat/v2", json={"message": text, "session_id": sid})
 
 
 async def chat_api_stream(text: str, sid: str, message: Message) -> dict:
@@ -250,7 +234,7 @@ async def chat_api_stream(text: str, sid: str, message: Message) -> dict:
     try:
         async with httpx.AsyncClient(base_url=API_BASE, timeout=120.0) as client:
             async with client.stream(
-                "POST", "/chat/stream",
+                "POST", "/chat/v2/stream",
                 json={"message": text, "session_id": sid},
             ) as resp:
                 resp.raise_for_status()
@@ -691,20 +675,6 @@ async def cmd_sprint(message: Message):
         await message.answer("خطأ في جلب السبرنتات.")
 
 
-# --- Callback: Confirmation buttons ---
-
-@router.callback_query(F.data.in_({"confirm_yes", "confirm_no"}))
-async def handle_confirmation(callback: CallbackQuery):
-    if not authorized_callback(callback):
-        return
-    sid = session_id(callback.from_user.id)
-    answer = "نعم" if callback.data == "confirm_yes" else "لا"
-    result = await chat_api(answer, sid)
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer(result["reply"])
-    await callback.answer()
-
-
 # --- Voice messages ---
 
 @router.message(F.voice)
@@ -745,14 +715,10 @@ async def handle_voice(message: Message):
     chat_result = await chat_api(transcript, sid)
     reply = chat_result.get("reply", "")
 
-    keyboard = None
-    if chat_result.get("pending_confirmation"):
-        keyboard = confirmation_keyboard()
-
     reply_parts = [f"🎤 \"{transcript}\""]
     if reply:
         reply_parts.append(reply)
-    await send_reply(message, "\n\n".join(reply_parts), keyboard=keyboard)
+    await send_reply(message, "\n\n".join(reply_parts))
 
 
 # --- Photo messages ---
@@ -819,10 +785,7 @@ async def handle_photo(message: Message):
                     except Exception:
                         pass
             chat_result = await chat_api(query, sid)
-            keyboard = None
-            if chat_result.get("pending_confirmation"):
-                keyboard = confirmation_keyboard()
-            await send_reply(message, chat_result["reply"], keyboard=keyboard)
+            await send_reply(message, chat_result["reply"])
         elif file_type == "inventory_item":
             # Inventory item re-sent without caption — ask chat about it
             file_hash = result.get("file_hash", "")
@@ -994,7 +957,6 @@ async def handle_text(message: Message):
     placeholder = await message.answer("...")
     stream_result = await chat_api_stream(message.text, sid, placeholder)
     reply_text = stream_result.get("text", "")
-    pending = stream_result.get("pending_confirmation", False)
 
     if not reply_text.strip():
         try:
@@ -1003,17 +965,7 @@ async def handle_text(message: Message):
             pass
         # Fallback to non-streaming
         result = await chat_api(message.text, sid)
-        keyboard = None
-        if result.get("pending_confirmation"):
-            keyboard = confirmation_keyboard()
-        await send_reply(message, result["reply"], keyboard=keyboard)
-    elif pending:
-        # Streaming returned a confirmation prompt — add inline keyboard
-        try:
-            await placeholder.edit_reply_markup(reply_markup=confirmation_keyboard())
-        except Exception:
-            # If edit fails, send a new message with keyboard
-            await message.answer("⚠️ تأكيد مطلوب:", reply_markup=confirmation_keyboard())
+        await send_reply(message, result["reply"])
 
 
 # --- Error handler ---
