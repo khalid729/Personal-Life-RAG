@@ -305,8 +305,11 @@ class Pipe:
 
         return "\n".join(results) if results else ""
 
+    # Text file extensions — sent to /ingest/text instead of /ingest/file
+    _TEXT_EXTS = {".md", ".txt", ".csv", ".json", ".yaml", ".yml", ".xml", ".html", ".htm", ".log", ".rst"}
+
     def _send_file(self, file_info: dict, user_text: str) -> str:
-        """Send a single file to /ingest/file, return formatted result."""
+        """Send a single file to /ingest/file or /ingest/text, return formatted result."""
         url = self.valves.api_url.rstrip("/")
         file_data = file_info.get("data", "")
         file_path = file_info.get("path", "")
@@ -349,6 +352,31 @@ class Pipe:
                     resp = requests.post(
                         f"{url}/ingest/file",
                         files={"file": (upload_name, f, content_type)},
+                        data={"context": user_text},
+                        timeout=180,
+                    )
+
+            # Plain text content (Open WebUI extracts text from .md/.txt etc.)
+            elif file_data and isinstance(file_data, str) and len(file_data.strip()) > 0:
+                ext = os.path.splitext(filename)[1].lower()
+                # For text files, use /ingest/text which handles extraction properly
+                if ext in self._TEXT_EXTS or not ext:
+                    resp = requests.post(
+                        f"{url}/ingest/text",
+                        json={
+                            "text": file_data,
+                            "source_type": "file",
+                            "tags": [filename],
+                            "topic": user_text or filename,
+                        },
+                        timeout=180,
+                    )
+                else:
+                    # Non-text file with raw content — send as bytes to /ingest/file
+                    file_bytes = file_data.encode("utf-8")
+                    resp = requests.post(
+                        f"{url}/ingest/file",
+                        files={"file": (filename, file_bytes, "application/octet-stream")},
                         data={"context": user_text},
                         timeout=180,
                     )
