@@ -28,7 +28,7 @@ class GraphService:
         self._vector_service = vector_service
 
     async def resolve_entity_name(self, name: str, entity_type: str, label_key: str = "name") -> str:
-        """Resolve entity name via vector similarity. Returns canonical name or original."""
+        """Resolve entity name via vector similarity + graph fuzzy fallback."""
         if not self._vector_service or not name or not settings.entity_resolution_enabled:
             return name
         if entity_type in ("Expense", "Debt", "Reminder", "Item", "Idea", "Tag"):
@@ -43,30 +43,79 @@ class GraphService:
         }
         threshold = thresholds.get(entity_type, settings.entity_resolution_default_threshold)
 
+        # Strategy 1: Vector similarity
         try:
             results = await self._vector_service.search(
-                name, limit=3, entity_type=entity_type
+                name, limit=10, entity_type=entity_type
             )
+            found_self = False
             for r in results:
                 other_name = r["metadata"].get("entity_name", "")
                 score = r["score"]
-                if other_name and other_name.lower() != name.lower() and score >= threshold:
+                if other_name == name:
+                    found_self = True
+                    continue
+                if other_name and score >= threshold:
                     logger.info(
-                        "Entity resolved: '%s' -> '%s' (%s, score=%.2f)",
+                        "Entity resolved (vector): '%s' -> '%s' (%s, score=%.2f)",
                         name, other_name, entity_type, score,
                     )
+                    self._resolution_cache[cache_key] = other_name
                     await self._store_alias(entity_type, label_key, other_name, name)
                     return other_name
-
-            # No match — register name for future resolution
-            await self._vector_service.upsert_chunks(
-                [name],
-                [{"source_type": "entity", "entity_type": entity_type, "entity_name": name}],
-            )
         except Exception as e:
-            logger.debug("Entity resolution failed for '%s': %s", name, e)
+            found_self = False
+            logger.debug("Entity resolution vector failed for '%s': %s", name, e)
+
+        # Strategy 2: Graph fuzzy match (substring on name + aliases)
+        if len(name) >= 3:
+            canonical = await self._resolve_by_graph_contains(name, entity_type, label_key)
+            if canonical:
+                self._resolution_cache[cache_key] = canonical
+                return canonical
+
+        # No match — register for future vector resolution
+        if not found_self:
+            try:
+                await self._vector_service.upsert_chunks(
+                    [name],
+                    [{"source_type": "entity", "entity_type": entity_type, "entity_name": name}],
+                )
+            except Exception:
+                pass
 
         return name
+
+    async def _resolve_by_graph_contains(
+        self, name: str, entity_type: str, label_key: str = "name",
+    ) -> str | None:
+        """Fallback: find entity by substring match on name or aliases."""
+        try:
+            q = f"""
+            MATCH (n:{entity_type})
+            WHERE toLower(n.{label_key}) CONTAINS toLower($term)
+               OR any(a IN coalesce(n.name_aliases, [])
+                      WHERE toLower(a) CONTAINS toLower($term))
+            RETURN n.{label_key}
+            LIMIT 3
+            """
+            rows = await self.query(q, {"term": name})
+            if len(rows) == 1:
+                canonical = rows[0][0]
+                logger.info(
+                    "Entity resolved (graph CONTAINS): '%s' -> '%s' (%s)",
+                    name, canonical, entity_type,
+                )
+                await self._store_alias(entity_type, label_key, canonical, name)
+                return canonical
+            elif len(rows) > 1:
+                logger.debug(
+                    "Entity resolution ambiguous for '%s': %s",
+                    name, [r[0] for r in rows],
+                )
+        except Exception as e:
+            logger.debug("Graph CONTAINS resolution failed for '%s': %s", name, e)
+        return None
 
     async def _store_alias(self, label: str, key_field: str, canonical: str, alias: str) -> None:
         """Store alias on existing entity node's name_aliases list."""
@@ -114,7 +163,7 @@ class GraphService:
         async def _search_one(idx: int) -> tuple[int, list[dict]]:
             name, etype = to_resolve[idx]
             results = await self._vector_service.search_by_vector(
-                vectors[idx], limit=3, entity_type=etype,
+                vectors[idx], limit=10, entity_type=etype,
             )
             return idx, results
 
@@ -129,11 +178,15 @@ class GraphService:
             name, etype = to_resolve[idx]
             threshold = thresholds.get(etype, default_threshold)
             resolved = name  # default: keep original
+            found_self = False
 
             for r in results:
                 other_name = r["metadata"].get("entity_name", "")
                 score = r["score"]
-                if other_name and other_name.lower() != name.lower() and score >= threshold:
+                if other_name == name:
+                    found_self = True
+                    continue
+                if other_name and score >= threshold:
                     logger.info(
                         "Entity resolved (batch): '%s' -> '%s' (%s, score=%.2f)",
                         name, other_name, etype, score,
@@ -144,8 +197,8 @@ class GraphService:
 
             self._resolution_cache[(name, etype)] = resolved
 
-            if resolved == name:
-                # No match — register for future resolution
+            if resolved == name and not found_self:
+                # No match and not yet registered — register for future resolution
                 new_names.append(name)
                 new_meta.append({"source_type": "entity", "entity_type": etype, "entity_name": name})
 
@@ -2333,6 +2386,39 @@ class GraphService:
         return "\n".join(parts) if parts else "No actionable items for today."
 
     # --- Projects Overview ---
+    async def query_project_details(self, name: str) -> str:
+        """Return all properties and linked tasks for a single project."""
+        name = await self.resolve_entity_name(name, "Project")
+        q = """
+        MATCH (p:Project)
+        WHERE toLower(p.name) CONTAINS toLower($name)
+        OPTIONAL MATCH (t:Task)-[:BELONGS_TO]->(p)
+        RETURN p, collect({title: t.title, status: t.status, priority: t.priority})
+        """
+        rows = await self.query(q, {"name": name})
+        if not rows:
+            return f"No project found matching '{name}'."
+
+        node_props = rows[0][0].properties if hasattr(rows[0][0], "properties") else rows[0][0]
+        tasks = [t for t in (rows[0][1] or []) if t.get("title")]
+
+        parts = [f"Project: {node_props.get('name', name)}"]
+        skip_keys = {"name", "created_at", "updated_at"}
+        for k, v in node_props.items():
+            if k in skip_keys or v is None:
+                continue
+            parts.append(f"  {k}: {v}")
+
+        if tasks:
+            parts.append(f"  Tasks ({len(tasks)}):")
+            for t in tasks:
+                status_tag = f" [{t['status']}]" if t.get("status") else ""
+                parts.append(f"    - {t['title']}{status_tag}")
+        else:
+            parts.append("  No tasks linked.")
+
+        return "\n".join(parts)
+
     async def query_projects_overview(self, status_filter: str | None = None) -> str:
         """Projects with their linked tasks, progress %, and ETA."""
         filter_clause = "WHERE toLower(p.status) = toLower($status)" if status_filter else ""

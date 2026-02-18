@@ -30,6 +30,14 @@ class Pipe:
             default="http://host.docker.internal:8500",
             description="Personal Life RAG API URL",
         )
+        owui_base_url: str = Field(
+            default="http://localhost:8080",
+            description="Open WebUI base URL (for fetching full file content)",
+        )
+        owui_api_key: str = Field(
+            default="",
+            description="Open WebUI API key (needed for full file extraction)",
+        )
         session_id: str = Field(
             default="openwebui",
             description="Session ID for conversation continuity",
@@ -47,8 +55,9 @@ class Pipe:
     # ========================
 
     # Open WebUI internal prompt prefixes — must NOT be forwarded to RAG API
+    # NOTE: "### Task:" removed — Open WebUI also uses it for file-attached messages.
+    # Internal tasks are caught by _INTERNAL_KEYWORDS instead.
     _INTERNAL_PREFIXES = (
-        "### Task:",
         "### Instructions:",
         "Create a concise",
         "Generate a concise",
@@ -61,9 +70,13 @@ class Pipe:
         "ONLY respond with a short",
         "conversation title",
         "Generate a succinct",
+        "Create a concise title",
+        "Generate 1-3 broad tags",
     )
 
-    def pipe(self, body: dict, __user__: dict = {}, __metadata__: dict = {}, __files__: list = []) -> Union[str, Generator]:
+    def pipe(self, body: dict, __user__: dict = {}, __metadata__: dict = {}, __files__: list = None) -> Union[str, Generator]:
+        import sys
+
         messages = body.get("messages", [])
         if not messages:
             return ""
@@ -91,13 +104,22 @@ class Pipe:
 
         # Process files if any
         if self.valves.auto_process_files:
-            file_context = self._process_files(body, last_msg, user_text, __files__)
-            if file_context:
-                user_text = user_text + "\n\n" + file_context
+            owui_files = __files__ or []
+            meta_files = (__metadata__ or {}).get("files", []) or []
+            has_files = len(meta_files) > 0 or len(owui_files) > 0
+
+            if has_files:
+                file_context = self._process_files(
+                    body, last_msg, user_text, owui_files, __metadata__, __user__
+                )
+                if file_context:
+                    # Strip OWUI RAG injection — we ingested the full file ourselves
+                    clean_text = self._strip_owui_rag_context(user_text)
+                    user_text = clean_text + "\n\n" + file_context
 
         # Use Open WebUI chat_id so each conversation gets fresh working memory
         session_id = (
-            __metadata__.get("chat_id")
+            (__metadata__ or {}).get("chat_id")
             or body.get("chat_id")
             or self.valves.session_id
         )
@@ -237,17 +259,38 @@ class Pipe:
     # FILE PROCESSING
     # ========================
 
-    def _process_files(self, body: dict, last_msg: dict, user_text: str, owui_files: list = None) -> str:
+    def _process_files(
+        self, body: dict, last_msg: dict, user_text: str,
+        owui_files: list = None, metadata: dict = None, user: dict = None,
+    ) -> str:
         """Detect and process files, return formatted result string."""
+        import sys
         files = []
 
-        # Open WebUI __files__ parameter (primary source)
+        # Source 1: metadata.files — Open WebUI passes file IDs here for Pipes
+        meta_files = (metadata or {}).get("files", []) or []
+        for f in meta_files:
+            if not isinstance(f, dict):
+                continue
+            file_id = f.get("id", "")
+            filename = f.get("name", f.get("filename", "unknown"))
+            if file_id:
+                # Fetch full file content from Open WebUI API
+                content = self._fetch_owui_file_content(file_id, user)
+                if content:
+                    print(f"[PIPE] fetched {filename}: {len(content)} chars", file=sys.stderr)
+                    files.append({
+                        "path": "",
+                        "data": content,
+                        "filename": filename,
+                        "content_type": f.get("type", f.get("content_type", "")),
+                    })
+
+        # Source 2: __files__ parameter (primary source for filters)
         for f in (owui_files or []):
             meta = f.get("meta", {})
             data = f.get("data", {})
-            # Try path from meta, then file-level path
             path = meta.get("path", "") or f.get("path", "")
-            # Try content from data dict
             content_data = ""
             if isinstance(data, dict):
                 content_data = data.get("content", "")
@@ -422,6 +465,89 @@ class Pipe:
                 parts.append(f"معاينة: {preview[:300]}")
 
         return "\n".join(parts) if parts else f"تمت المعالجة ({status})"
+
+    # ========================
+    # OPEN WEBUI FILE API
+    # ========================
+
+    def _fetch_owui_file_content(self, file_id: str, user: dict = None) -> str:
+        """Fetch full file content from Open WebUI API.
+
+        Tries two endpoints:
+        1. GET /api/v1/files/{id} → data.content (extracted text)
+        2. GET /api/v1/files/{id}/content → raw file bytes
+        """
+        import sys
+        base_url = self.valves.owui_base_url.rstrip("/")
+        api_key = self.valves.owui_api_key or (user or {}).get("token", "")
+
+        if not api_key:
+            print("[PIPE] no OWUI API key — cannot fetch full file", file=sys.stderr)
+            return ""
+
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        try:
+            # Try 1: GET /api/v1/files/{id} — returns JSON with data.content
+            resp = requests.get(
+                f"{base_url}/api/v1/files/{file_id}",
+                headers=headers,
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                file_data = data.get("data", {})
+                if isinstance(file_data, dict):
+                    content = file_data.get("content", "")
+                    if content and len(content.strip()) > 10:
+                        return content
+
+            # Try 2: GET /api/v1/files/{id}/content — returns raw file
+            resp = requests.get(
+                f"{base_url}/api/v1/files/{file_id}/content",
+                headers=headers,
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                # Only use if it looks like text (not binary)
+                ct = resp.headers.get("content-type", "")
+                if "text" in ct or "json" in ct or "markdown" in ct or "xml" in ct:
+                    if len(resp.text.strip()) > 10:
+                        return resp.text
+                else:
+                    # Try decoding anyway — if it's valid UTF-8, it's text
+                    try:
+                        text = resp.content.decode("utf-8")
+                        if text and len(text.strip()) > 10:
+                            return text
+                    except UnicodeDecodeError:
+                        pass
+
+        except Exception as e:
+            print(f"[PIPE] error fetching file {file_id}: {e}", file=sys.stderr)
+
+        return ""
+
+    # Regex to detect OWUI RAG injection: "### Task: ... ### Context: ... ### Query: ..."
+    _RAG_QUERY_RE = re.compile(
+        r"###\s*(?:Task|Instructions?).*?###\s*(?:Query|User|Question)\s*:?\s*\n?(.*)",
+        re.DOTALL | re.IGNORECASE,
+    )
+
+    def _strip_owui_rag_context(self, text: str) -> str:
+        """Strip Open WebUI's RAG context injection, returning the user's original query."""
+        # Pattern 1: "### Task: ... ### Query: <user text>"
+        m = self._RAG_QUERY_RE.search(text)
+        if m:
+            return m.group(1).strip()
+
+        # Pattern 2: "Retrieved source N: ... \n\n<user text>"
+        if "Retrieved source" in text or "retrieved source" in text.lower():
+            parts = text.rsplit("\n\n", 1)
+            if len(parts) == 2 and 5 < len(parts[1].strip()) < len(parts[0]):
+                return parts[1].strip()
+
+        return text
 
     # ========================
     # HELPERS

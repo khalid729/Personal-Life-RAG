@@ -282,14 +282,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_projects",
-            "description": "إدارة المشاريع: عرض، إنشاء، تعديل، أو حذف مشروع. لا تستخدمها للدمج — استخدم merge_projects بدلاً.",
+            "description": "إدارة المشاريع: عرض الكل، تفاصيل مشروع معين، إنشاء، تعديل، أو حذف. لا تستخدمها للدمج — استخدم merge_projects بدلاً.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "create", "update", "delete"],
-                        "description": "list=عرض، create=إنشاء، update=تعديل، delete=حذف",
+                        "enum": ["list", "get", "create", "update", "delete"],
+                        "description": "list=عرض الكل، get=تفاصيل مشروع بالاسم، create=إنشاء، update=تعديل، delete=حذف",
                     },
                     "name": {"type": "string", "description": "اسم المشروع"},
                     "status": {"type": "string", "description": "حالة المشروع (active, completed, on_hold, cancelled)"},
@@ -724,6 +724,12 @@ class ToolCallingService:
     ) -> dict:
         if action == "list":
             text = await self.graph.query_projects_overview(status_filter=status)
+            return {"projects": text}
+
+        if action == "get":
+            if not name:
+                return {"error": "اسم المشروع مطلوب"}
+            text = await self.graph.query_project_details(name)
             return {"projects": text}
 
         if action == "create":
