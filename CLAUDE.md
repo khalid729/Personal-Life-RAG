@@ -20,7 +20,7 @@ app/
 ├── models/schemas.py    # Enums + Pydantic models
 ├── services/            # 8 async services (see services/CLAUDE.md)
 ├── routers/             # 15 REST routers (see routers/CLAUDE.md)
-├── prompts/             # 5 prompt builders (see prompts/CLAUDE.md)
+├── prompts/             # 6 prompt builders (see prompts/CLAUDE.md)
 └── integrations/        # Telegram, Open WebUI, MCP (see integrations/CLAUDE.md)
 ```
 
@@ -39,9 +39,9 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
 - **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 18 tools)
 - **URL ingestion**: POST /ingest/url → GitHub parser (repo/blob/tree) + web fetch → ingest pipeline
-- **Entity resolution**: vector dedup (0.85 person, 0.80 default) via `resolve_entity_name()`
+- **Entity resolution**: vector similarity (0.85 person, 0.80 default) + graph CONTAINS fallback via `resolve_entity_name()`
 - **Arabic names**: NER → `name_ar` on Person → `_display_name()` = `رهف (Rahaf)`
-- **Auto-extraction**: conversational messages auto-extracted in background (NER + translate + extract)
+- **Auto-extraction**: conversational messages → safe types only (Person, Company, Knowledge, Location)
 - **No confirmation flow**: tools execute directly, model reports actual success/failure
 
 ## Key Gotchas

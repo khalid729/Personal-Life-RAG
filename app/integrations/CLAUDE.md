@@ -7,7 +7,7 @@
 - aiogram 3.x + APScheduler
 - **Text**: streams via `/chat/v2/stream`, fallback to `/chat/v2` non-streaming
 - **Voice/Photos/Files**: processed via `/ingest/file`, then result injected into chat
-- **Image analysis summary**: still uses `/chat/` (legacy, needs vision model)
+- **Image analysis summary**: uses `/chat/v2`
 - **No confirmation flow** — tools execute directly
 - Commands: `/help`, `/chat`, `/finance`, `/reminders`, `/projects`, `/tasks`, `/inventory`, `/focus`, `/sprint`, `/backup`, `/graph`
 - Scheduled: morning (7AM), noon (1PM), evening (9PM), reminders (30min), smart alerts (6h)
@@ -23,7 +23,10 @@
 
 - **Direct streaming** to `/chat/v2/stream` — bypasses wrapper LLM entirely
 - 2 LLM calls (tool selection + response) via tool-calling
-- Handles files via `/ingest/file` (base64, Docker paths, multimodal)
+- **Full file extraction**: `_fetch_owui_file_content()` via direct `open_webui.models.files.Files` import
+- **Ingestion cache**: `_ingested_files` set tracks processed file IDs — skips re-ingestion on subsequent messages
+- **RAG context stripping**: `_strip_owui_rag_context()` removes OWUI's injected `### Task/Context/Query` wrapper
+- Handles files via `/ingest/text` (full content) or `/ingest/file` (base64 fallback)
 - No STATUS logic needed — streams RAG API response directly
 - Select "Personal RAG" model in Open WebUI to use; regular model uses Filter + Tools
 

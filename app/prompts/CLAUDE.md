@@ -1,6 +1,6 @@
 # Prompts
 
-5 files. Pattern: `build_<name>(args) → list[dict]` (chat messages).
+6 files. Pattern: `build_<name>(args) → list[dict]` (chat messages).
 
 | File | Purpose |
 |------|---------|
@@ -15,6 +15,7 @@
 
 - `build_tool_system_prompt(memory_context)`: Arabic system prompt with current date/time (UTC+3)
 - Instructions for when to use each of the 18 tools
+- Arabic→English entity name translation instruction (e.g. "الستيفنيس" → "Stiffness")
 - Anti-lying rules: only say "تم" if tool returned success
 
 ## Specialized Extract (extract_specialized.py)

@@ -29,7 +29,9 @@ GraphService.set_vector_service(vector)  # entity resolution
 ## GraphService (graph.py)
 
 - 15+ entity types: Person, Company, Project, Task, Expense, Debt, Reminder, Knowledge, Item, Sprint, etc.
-- `resolve_entity_name(name, label)`: vector similarity → canonical name
+- `resolve_entity_name(name, label)`: vector similarity → graph CONTAINS fallback → canonical name
+- `_resolve_by_graph_contains(name, type)`: substring match on `name` + `name_aliases` in graph
+- `query_project_details(name)`: full project properties + linked tasks
 - `upsert_person()`: auto Hijri→Gregorian for year < 1900
 - `_display_name(props)`: `"رهف (Rahaf)"` if `name_ar` exists
 - `_build_set_clause()`: skips empty strings
@@ -49,6 +51,7 @@ GraphService.set_vector_service(vector)  # entity resolution
 - **Streaming**: `chat_stream()` yields NDJSON, tool calls detected from stream
 - **Post-processing**: memory + vector + auto-extraction (background `asyncio.create_task`)
 - **Auto-extraction**: `_STORABLE_RE` keyword check → NER → translate → extract_facts_specialized → upsert
+- **`_AUTO_EXTRACT_SAFE_TYPES`**: only Person, Company, Knowledge, Location from conversation (no bogus Projects/Tasks)
 - **`_WRITE_TOOLS`**: skip auto-extraction when write tools already executed
 - **Fallback**: `_fallback_reply()` generates simple Arabic from tool results if LLM times out
 
