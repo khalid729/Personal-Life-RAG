@@ -34,6 +34,10 @@ TOOLS = [
                         "enum": ["pending", "done", "snoozed", "all"],
                         "description": "فلتر حسب الحالة. الافتراضي: pending",
                     },
+                    "query": {
+                        "type": "string",
+                        "description": "بحث بالعنوان (اختياري). إذا حُدد، يبحث عن تذكيرات تطابق هذا النص.",
+                    },
                 },
                 "required": [],
             },
@@ -395,7 +399,14 @@ class ToolCallingService:
     # Tool handlers
     # ------------------------------------------------------------------
 
-    async def _handle_search_reminders(self, status: str = "pending") -> dict:
+    async def _handle_search_reminders(self, status: str = "pending", query: str | None = None) -> dict:
+        if query:
+            status_filter = f"['{status}']" if status and status != "all" else ""
+            matches = await self.graph._find_matching_reminders(query, status_filter=status_filter)
+            if not matches:
+                return {"reminders": f"لا توجد تذكيرات تطابق '{query}'"}
+            lines = [f"  - {r[0]}" for r in matches]
+            return {"reminders": "\n".join(lines)}
         if status == "all":
             status = None
         text = await self.graph.query_reminders(status=status)
