@@ -49,6 +49,7 @@ class Pipe:
 
     def __init__(self):
         self.valves = self.Valves()
+        self._ingested_files: set = set()  # track already-ingested file IDs
 
     # ========================
     # ENTRY POINT
@@ -112,10 +113,12 @@ class Pipe:
                 file_context = self._process_files(
                     body, last_msg, user_text, owui_files, __metadata__, __user__
                 )
+                # Strip OWUI RAG injection — data is in our graph (full or already ingested)
+                clean_text = self._strip_owui_rag_context(user_text)
                 if file_context:
-                    # Strip OWUI RAG injection — we ingested the full file ourselves
-                    clean_text = self._strip_owui_rag_context(user_text)
                     user_text = clean_text + "\n\n" + file_context
+                else:
+                    user_text = clean_text
 
         # Use Open WebUI chat_id so each conversation gets fresh working memory
         session_id = (
@@ -274,17 +277,22 @@ class Pipe:
                 continue
             file_id = f.get("id", "")
             filename = f.get("name", f.get("filename", "unknown"))
-            if file_id:
-                # Fetch full file content from Open WebUI API
-                content = self._fetch_owui_file_content(file_id, user)
-                if content:
-                    print(f"[PIPE] fetched {filename}: {len(content)} chars", file=sys.stderr)
-                    files.append({
-                        "path": "",
-                        "data": content,
-                        "filename": filename,
-                        "content_type": f.get("type", f.get("content_type", "")),
-                    })
+            if not file_id:
+                continue
+            # Skip already-ingested files
+            if file_id in self._ingested_files:
+                print(f"[PIPE] skipping {filename} — already ingested", file=sys.stderr)
+                continue
+            content = self._fetch_owui_file_content(file_id, user)
+            if content:
+                print(f"[PIPE] fetched {filename}: {len(content)} chars", file=sys.stderr)
+                files.append({
+                    "path": "",
+                    "data": content,
+                    "filename": filename,
+                    "content_type": f.get("type", f.get("content_type", "")),
+                    "file_id": file_id,
+                })
 
         # Source 2: __files__ parameter (primary source for filters)
         for f in (owui_files or []):
@@ -345,6 +353,10 @@ class Pipe:
             result = self._send_file(f, user_text)
             if result:
                 results.append(result)
+                # Mark file as ingested so we don't re-process on next message
+                fid = f.get("file_id", "")
+                if fid:
+                    self._ingested_files.add(fid)
 
         return "\n".join(results) if results else ""
 
