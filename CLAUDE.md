@@ -46,6 +46,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **Arabic names**: NER → `name_ar` on Person → `_display_name()` = `رهف (Rahaf)`
 - **Auto-extraction**: conversational messages → safe types only (Person, Company, Knowledge, Location)
 - **No confirmation flow**: tools execute directly, model reports actual success/failure
+- **Auto-dismiss reminders**: task marked done → `_auto_dismiss_reminders()` fuzzy-matches pending reminders via `_find_matching_reminders()` and marks them done
 
 ## Key Gotchas
 
