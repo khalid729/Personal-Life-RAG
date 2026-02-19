@@ -57,3 +57,4 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - Hijri dates: auto-convert year < 1900 via `hijri-converter`
 - Extraction chunking uses hardcoded `max_tokens=3000` (retrieval.py:156) — needs larger context than ingestion chunks
 - File re-upload replaces Qdrant chunks (tracked via `file_hash`) + cleans orphaned entities (via `EXTRACTED_FROM`); shared entities survive
+- `ensure_file_stub()` MUST run before `ingest_text()` — `_link_entity_to_file()` uses MATCH not MERGE, so File node must exist first
