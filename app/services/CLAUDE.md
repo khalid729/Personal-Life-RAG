@@ -37,6 +37,8 @@ GraphService.set_vector_service(vector)  # entity resolution
 - `_build_set_clause()`: skips empty strings
 - `_format_graph_context()` / `_3hop()`: multi-hop results for LLM, uses `_display_name()`
 - `query_projects_overview()`: case-insensitive status filter via `toLower()`
+- `find_file_by_filename(name)`: latest File node by filename (for re-upload detection)
+- `supersede_file(new_hash, old_hash)`: `(:File {new})-[:SUPERSEDES]->(:File {old})`
 
 ### FalkorDB Rules
 - `GRAPH.CONSTRAINT CREATE` (not Cypher)
@@ -57,7 +59,10 @@ GraphService.set_vector_service(vector)  # entity resolution
 
 ## RetrievalService (retrieval.py)
 
-- **Ingestion only**: `ingest_text()` → translate → chunk → enrich + extract (parallel)
+- **Ingestion only**: `ingest_text()` → translate → chunk (1500 tokens) → enrich + extract (parallel)
+- **Parallel enrichment**: `_enrich_and_store_chunks()` uses `asyncio.gather` — all chunks enrich simultaneously via vLLM continuous batching
+- **file_hash tracking**: `ingest_text(file_hash=...)` → stored in each Qdrant point's payload for re-upload cleanup
+- **Extraction chunking**: hardcoded 3000 tokens (larger context needed for fact extraction)
 - **Direct search**: `search_direct()` → translate → vector + graph search
 - **NER**: `_run_ner()` → Arabic NER hints for extraction
 - No routing, no old pipeline — chat goes through ToolCallingService
@@ -71,6 +76,9 @@ GraphService.set_vector_service(vector)  # entity resolution
 - **URL**: `process_url()` — GitHub URL parser + generic web fetch → strip HTML → ingest
   - GitHub: repo root → README (main/master fallback), blob → raw file, tree → subpath README
   - Large texts: chunked parallel extraction with entity dedup
+- **Re-upload detection**: `process_file()` checks same-filename via `find_file_by_filename()`
+  - Same hash → duplicate, skip; same name + different hash → ingest new, delete old chunks, `SUPERSEDES` link
+  - Old Qdrant chunks deleted via `delete_by_file_hash(old_hash)`, graph facts preserved
 - Storage: `data/files/{hash[:2]}/{hash}.{ext}`
 
 ## MemoryService — 3 layers
