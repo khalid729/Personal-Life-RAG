@@ -108,6 +108,16 @@ class Pipe:
         meta_files = (__metadata__ or {}).get("files", []) or []
         has_files = self.valves.auto_process_files and (len(meta_files) > 0 or len(owui_files) > 0)
 
+        # Check if ALL files are already ingested (skip file processing entirely)
+        if has_files:
+            all_cached = True
+            for f in meta_files:
+                if isinstance(f, dict) and f.get("id", "") not in self._ingested_files:
+                    all_cached = False
+                    break
+            if all_cached:
+                has_files = False
+
         # Use Open WebUI chat_id so each conversation gets fresh working memory
         session_id = (
             (__metadata__ or {}).get("chat_id")
@@ -123,13 +133,15 @@ class Pipe:
                 session_id,
             )
 
+        # Always strip OWUI RAG injection (OWUI injects it on every message in file conversations)
+        user_text = self._strip_owui_rag_context(user_text)
+
         if has_files:
-            # Strip OWUI RAG injection BEFORE file processing
-            clean_text = self._strip_owui_rag_context(user_text)
             file_context = self._process_files(
-                body, last_msg, clean_text, owui_files, __metadata__, __user__
+                body, last_msg, user_text, owui_files, __metadata__, __user__
             )
-            user_text = (clean_text + "\n\n" + file_context) if file_context else clean_text
+            if file_context:
+                user_text = user_text + "\n\n" + file_context
 
         payload = {"message": user_text, "session_id": session_id}
 
