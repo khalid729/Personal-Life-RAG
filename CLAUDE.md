@@ -39,7 +39,8 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
 - **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 18 tools)
 - **Ingestion**: translate → chunk (1500 tokens) → parallel enrichment via `asyncio.gather` → embed + extract facts
-- **File re-upload**: same hash = skip; same filename + different hash = replace old chunks + `SUPERSEDES` graph link
+- **File re-upload**: same hash = skip; same filename + different hash = replace old chunks + orphan entities + `SUPERSEDES` graph link
+- **Entity provenance**: `(Entity)-[:EXTRACTED_FROM]->(File)` — tracks which file an entity came from; orphans cleaned on re-upload
 - **URL ingestion**: POST /ingest/url → GitHub parser (repo/blob/tree) + web fetch → ingest pipeline
 - **Entity resolution**: vector similarity (0.85 person, 0.80 default) + graph CONTAINS fallback via `resolve_entity_name()`
 - **Arabic names**: NER → `name_ar` on Person → `_display_name()` = `رهف (Rahaf)`
@@ -55,4 +56,4 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - `datetime.utcnow()` deprecated → `datetime.now(timezone(timedelta(hours=3)))`
 - Hijri dates: auto-convert year < 1900 via `hijri-converter`
 - Extraction chunking uses hardcoded `max_tokens=3000` (retrieval.py:156) — needs larger context than ingestion chunks
-- File re-upload replaces Qdrant chunks (tracked via `file_hash`) but graph facts are preserved (shared across sources)
+- File re-upload replaces Qdrant chunks (tracked via `file_hash`) + cleans orphaned entities (via `EXTRACTED_FROM`); shared entities survive

@@ -39,6 +39,10 @@ GraphService.set_vector_service(vector)  # entity resolution
 - `query_projects_overview()`: case-insensitive status filter via `toLower()`
 - `find_file_by_filename(name)`: latest File node by filename (for re-upload detection)
 - `supersede_file(new_hash, old_hash)`: `(:File {new})-[:SUPERSEDES]->(:File {old})`
+- `_link_entity_to_file(type, name, hash)`: `MERGE (e)-[:EXTRACTED_FROM]->(f:File)` — skips pseudo-entities
+- `cleanup_file_entities(old_hash)`: deletes entities ONLY linked to old file (no other source); `DETACH DELETE`
+- `_unlink_file_entities(hash)`: removes all `EXTRACTED_FROM` edges for a file
+- `upsert_from_facts(facts, file_hash=)`: links entities to source File after upsert
 
 ### FalkorDB Rules
 - `GRAPH.CONSTRAINT CREATE` (not Cypher)
@@ -62,6 +66,7 @@ GraphService.set_vector_service(vector)  # entity resolution
 - **Ingestion only**: `ingest_text()` → translate → chunk (1500 tokens) → enrich + extract (parallel)
 - **Parallel enrichment**: `_enrich_and_store_chunks()` uses `asyncio.gather` — all chunks enrich simultaneously via vLLM continuous batching
 - **file_hash tracking**: `ingest_text(file_hash=...)` → stored in each Qdrant point's payload for re-upload cleanup
+- **Entity provenance**: `_extract_and_store_facts(text, file_hash=)` → `upsert_from_facts(facts, file_hash=)` → `EXTRACTED_FROM` links
 - **Extraction chunking**: hardcoded 3000 tokens (larger context needed for fact extraction)
 - **Direct search**: `search_direct()` → translate → vector + graph search
 - **NER**: `_run_ner()` → Arabic NER hints for extraction
@@ -78,7 +83,8 @@ GraphService.set_vector_service(vector)  # entity resolution
   - Large texts: chunked parallel extraction with entity dedup
 - **Re-upload detection**: `process_file()` checks same-filename via `find_file_by_filename()`
   - Same hash → duplicate, skip; same name + different hash → ingest new, delete old chunks, `SUPERSEDES` link
-  - Old Qdrant chunks deleted via `delete_by_file_hash(old_hash)`, graph facts preserved
+  - Old Qdrant chunks deleted via `delete_by_file_hash(old_hash)`, orphan entities via `cleanup_file_entities(old_hash)`
+  - Shared entities (linked to multiple files) survive cleanup
 - Storage: `data/files/{hash[:2]}/{hash}.{ext}`
 
 ## MemoryService — 3 layers
