@@ -890,6 +890,24 @@ class GraphService:
         deleted = [r[0] for r in rows]
         return {"deleted": deleted, "count": len(deleted)}
 
+    async def _auto_dismiss_reminders(self, task_title: str) -> list[str]:
+        """Auto-dismiss pending reminders matching a completed task title."""
+        matches = await self._find_matching_reminders(task_title, status_filter="['pending']")
+        if not matches:
+            return []
+        dismissed = []
+        for r_title, _ in matches:
+            q = """
+            MATCH (r:Reminder) WHERE r.title = $title AND r.status = 'pending'
+            SET r.status = 'done', r.completed_at = $now
+            """
+            await self.query(q, {"title": r_title, "now": _now()})
+            dismissed.append(r_title)
+        if dismissed:
+            logger.info("Task '%s' done → auto-dismissed %d reminder(s): %s",
+                        task_title, len(dismissed), dismissed)
+        return dismissed
+
     async def update_task_direct(
         self, title: str, new_title: str | None = None,
         status: str | None = None, due_date: str | None = None,
@@ -923,6 +941,11 @@ class GraphService:
             return {"error": f"No task found matching '{title}'"}
         result = {"title": rows[0][0], "status": rows[0][1],
                   "due_date": rows[0][2], "priority": rows[0][3]}
+        # Auto-dismiss related reminders when task is done
+        if status == "done" and rows:
+            dismissed = await self._auto_dismiss_reminders(rows[0][0])
+            if dismissed:
+                result["dismissed_reminders"] = dismissed
         # Re-link to project if requested
         if project is not None:
             task_title = rows[0][0]
