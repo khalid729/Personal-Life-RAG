@@ -471,24 +471,51 @@ class Pipe:
     # ========================
 
     def _fetch_owui_file_content(self, file_id: str, user: dict = None) -> str:
-        """Fetch full file content from Open WebUI API.
+        """Fetch full file content from Open WebUI.
 
-        Tries two endpoints:
-        1. GET /api/v1/files/{id} → data.content (extracted text)
-        2. GET /api/v1/files/{id}/content → raw file bytes
+        Strategy 1: Direct import (pipe runs inside OWUI process — no auth needed)
+        Strategy 2: HTTP API fallback (needs owui_api_key valve)
         """
         import sys
-        base_url = self.valves.owui_base_url.rstrip("/")
-        api_key = self.valves.owui_api_key or (user or {}).get("token", "")
 
+        # Strategy 1: Direct import from Open WebUI internals (preferred)
+        try:
+            from open_webui.models.files import Files
+            file_obj = Files.get_file_by_id(file_id)
+            if file_obj:
+                # Try extracted text content
+                file_data = file_obj.data or {}
+                if isinstance(file_data, dict):
+                    content = file_data.get("content", "")
+                    if content and len(content.strip()) > 10:
+                        print(f"[PIPE] got file via direct import: {len(content)} chars", file=sys.stderr)
+                        return content
+                # Try reading from file path
+                meta = file_obj.meta or {}
+                path = meta.get("path", "")
+                if path:
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            text = f.read()
+                        if text and len(text.strip()) > 10:
+                            print(f"[PIPE] got file from path {path}: {len(text)} chars", file=sys.stderr)
+                            return text
+                    except Exception:
+                        pass
+        except ImportError:
+            print("[PIPE] open_webui.models.files not available, trying HTTP", file=sys.stderr)
+        except Exception as e:
+            print(f"[PIPE] direct import error: {e}", file=sys.stderr)
+
+        # Strategy 2: HTTP API fallback
+        base_url = self.valves.owui_base_url.rstrip("/")
+        api_key = self.valves.owui_api_key
         if not api_key:
-            print("[PIPE] no OWUI API key — cannot fetch full file", file=sys.stderr)
+            print("[PIPE] no OWUI API key — cannot fetch file via HTTP", file=sys.stderr)
             return ""
 
         headers = {"Authorization": f"Bearer {api_key}"}
-
         try:
-            # Try 1: GET /api/v1/files/{id} — returns JSON with data.content
             resp = requests.get(
                 f"{base_url}/api/v1/files/{file_id}",
                 headers=headers,
@@ -502,29 +529,15 @@ class Pipe:
                     if content and len(content.strip()) > 10:
                         return content
 
-            # Try 2: GET /api/v1/files/{id}/content — returns raw file
             resp = requests.get(
                 f"{base_url}/api/v1/files/{file_id}/content",
                 headers=headers,
                 timeout=30,
             )
-            if resp.status_code == 200:
-                # Only use if it looks like text (not binary)
-                ct = resp.headers.get("content-type", "")
-                if "text" in ct or "json" in ct or "markdown" in ct or "xml" in ct:
-                    if len(resp.text.strip()) > 10:
-                        return resp.text
-                else:
-                    # Try decoding anyway — if it's valid UTF-8, it's text
-                    try:
-                        text = resp.content.decode("utf-8")
-                        if text and len(text.strip()) > 10:
-                            return text
-                    except UnicodeDecodeError:
-                        pass
-
+            if resp.status_code == 200 and len(resp.text.strip()) > 10:
+                return resp.text
         except Exception as e:
-            print(f"[PIPE] error fetching file {file_id}: {e}", file=sys.stderr)
+            print(f"[PIPE] HTTP fallback error: {e}", file=sys.stderr)
 
         return ""
 
