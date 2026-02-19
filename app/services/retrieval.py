@@ -80,6 +80,7 @@ class RetrievalService:
         source_type: str = "note",
         tags: list[str] | None = None,
         topic: str | None = None,
+        file_hash: str | None = None,
     ) -> dict:
         """Full Contextual Retrieval ingestion pipeline.
 
@@ -99,7 +100,7 @@ class RetrievalService:
 
         # Steps 3-5 in parallel
         enrichment_task = self._enrich_and_store_chunks(
-            chunks, text_en, text, source_type, tags, topic
+            chunks, text_en, text, source_type, tags, topic, file_hash
         )
         facts_task = self._extract_and_store_facts(text_en)
 
@@ -121,26 +122,26 @@ class RetrievalService:
         source_type: str,
         tags: list[str] | None,
         topic: str | None,
+        file_hash: str | None = None,
     ) -> int:
-        # Contextual enrichment — enrich each chunk with document context
-        enriched = []
-        for chunk in chunks:
+        # Contextual enrichment — enrich all chunks in parallel (vLLM continuous batching)
+        async def _enrich_one(chunk: str) -> str:
             try:
-                enriched_chunk = await self.llm.add_context_to_chunk(chunk, full_doc_en)
-                enriched.append(enriched_chunk)
+                return await self.llm.add_context_to_chunk(chunk, full_doc_en)
             except Exception as e:
                 logger.warning("Chunk enrichment failed, using raw: %s", e)
-                enriched.append(chunk)
+                return chunk
 
-        metadata_list = [
-            {
-                "source_type": source_type,
-                "tags": tags or [],
-                "topic": topic or "",
-                "original_text_ar": original_ar[:500],
-            }
-            for _ in enriched
-        ]
+        enriched = list(await asyncio.gather(*[_enrich_one(c) for c in chunks]))
+
+        base_meta = {
+            "source_type": source_type,
+            "tags": tags or [],
+            "topic": topic or "",
+            "original_text_ar": original_ar[:500],
+            **({"file_hash": file_hash} if file_hash else {}),
+        }
+        metadata_list = [dict(base_meta) for _ in enriched]
 
         return await self.vector.upsert_chunks(enriched, metadata_list)
 

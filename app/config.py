@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     max_context_tokens: int = 15000
 
     # Chunking
-    chunk_max_tokens: int = 3000
-    chunk_overlap_tokens: int = 150
+    chunk_max_tokens: int = 1500
+    chunk_overlap_tokens: int = 100
 
     # File Processing
     file_storage_path: str = "data/files"

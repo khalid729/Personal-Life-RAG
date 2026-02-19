@@ -65,7 +65,7 @@ class FileService:
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         ext = Path(filename).suffix.lower() or self._guess_ext(content_type)
 
-        # Dedup: skip re-processing if this file was already ingested
+        # Dedup: skip re-processing if this exact file was already ingested
         existing = await self.retrieval.graph.find_file_by_hash(file_hash)
         if existing:
             logger.info("File %s already processed (hash=%s…), skipping.", filename, file_hash[:12])
@@ -80,24 +80,28 @@ class FileService:
                 "processing_steps": ["duplicate_skipped"],
             }
 
+        # Re-upload detection: same filename, different content → file update
+        old_file = await self.retrieval.graph.find_file_by_filename(filename)
+        old_file_hash = old_file["file_hash"] if old_file else None
+
         # Save file to disk
         file_path = await self._save_file(file_bytes, file_hash, ext)
         steps = [f"saved:{file_path}"]
 
         if content_type in IMAGE_MIMES:
-            return await self._process_image(
+            result = await self._process_image(
                 file_bytes, filename, content_type, file_hash, user_context, tags, topic, steps
             )
         elif content_type in PDF_MIMES or ext == ".pdf":
-            return await self._process_pdf(
+            result = await self._process_pdf(
                 file_path, filename, file_hash, user_context, tags, topic, steps
             )
         elif content_type in AUDIO_MIMES or ext in (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac"):
-            return await self._process_audio(
+            result = await self._process_audio(
                 file_path, filename, file_hash, user_context, tags, topic, steps
             )
         elif content_type in TEXT_MIMES or ext in TEXT_EXTS:
-            return await self._process_text(
+            result = await self._process_text(
                 file_bytes, filename, file_hash, user_context, tags, topic, steps
             )
         else:
@@ -111,6 +115,20 @@ class FileService:
                 "facts_extracted": 0,
                 "processing_steps": steps + ["unsupported_content_type"],
             }
+
+        # Clean up old chunks if this is a file update
+        if old_file_hash and old_file_hash != file_hash and result.get("status") == "ok":
+            try:
+                await self.retrieval.vector.delete_by_file_hash(old_file_hash)
+                await self.retrieval.graph.supersede_file(file_hash, old_file_hash)
+                result.setdefault("processing_steps", []).append(f"superseded:{old_file_hash[:12]}")
+                logger.info("File updated: %s — old hash %s… superseded by %s…",
+                            filename, old_file_hash[:12], file_hash[:12])
+            except Exception as e:
+                logger.warning("Old chunk cleanup failed for %s: %s", filename, e)
+                result.setdefault("processing_steps", []).append(f"cleanup_error:{e}")
+
+        return result
 
     # ========================
     # URL PROCESSING
@@ -306,6 +324,7 @@ class FileService:
             source_type=f"file_{file_type}",
             tags=tags,
             topic=topic,
+            file_hash=file_hash,
         )
         steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
 
@@ -469,6 +488,7 @@ class FileService:
             source_type="file_pdf_document",
             tags=tags,
             topic=topic,
+            file_hash=file_hash,
         )
         steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
 
@@ -734,6 +754,7 @@ class FileService:
             source_type="file_text_document",
             tags=tags,
             topic=topic,
+            file_hash=file_hash,
         )
         steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
 

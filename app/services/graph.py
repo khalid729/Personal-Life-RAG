@@ -1582,6 +1582,34 @@ class GraphService:
             return {"file_type": props.get("file_type"), "properties": props}
         return None
 
+    async def find_file_by_filename(self, filename: str) -> dict | None:
+        """Find the most recent File node with this filename."""
+        q = """
+        MATCH (f:File)
+        WHERE f.filename = $filename
+        RETURN f
+        ORDER BY f.updated_at DESC, f.created_at DESC
+        LIMIT 1
+        """
+        rows = await self.query(q, {"filename": filename})
+        if rows and rows[0]:
+            node = rows[0][0]
+            props = node.properties if hasattr(node, "properties") else {}
+            return {"file_hash": props.get("file_hash"), "properties": props}
+        return None
+
+    async def supersede_file(self, new_hash: str, old_hash: str) -> None:
+        """Mark old file as superseded by new file."""
+        q = """
+        MATCH (old:File {file_hash: $old_hash})
+        MATCH (new:File {file_hash: $new_hash})
+        SET old.superseded_by = $new_hash, old.updated_at = $now
+        MERGE (new)-[:SUPERSEDES]->(old)
+        """
+        await self._graph.query(
+            q, params={"old_hash": old_hash, "new_hash": new_hash, "now": _now()}
+        )
+
     # --- Relationships ---
     async def create_relationship(
         self,

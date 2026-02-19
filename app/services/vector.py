@@ -8,6 +8,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    PayloadSchemaType,
     PointStruct,
     VectorParams,
 )
@@ -50,6 +51,16 @@ class VectorService:
             )
             logger.info("Created Qdrant collection: %s", settings.qdrant_collection)
 
+        # Ensure payload index on file_hash for fast filtering
+        try:
+            await self._client.create_payload_index(
+                collection_name=settings.qdrant_collection,
+                field_name="file_hash",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass  # Index already exists
+
     async def stop(self):
         if self._client:
             await self._client.close()
@@ -88,6 +99,17 @@ class VectorService:
             points=points,
         )
         return len(points)
+
+    async def delete_by_file_hash(self, file_hash: str) -> int:
+        """Delete all Qdrant points with the given file_hash in their payload."""
+        result = await self._client.delete(
+            collection_name=settings.qdrant_collection,
+            points_selector=Filter(
+                must=[FieldCondition(key="file_hash", match=MatchValue(value=file_hash))]
+            ),
+        )
+        logger.info("Deleted chunks with file_hash=%s…: %s", file_hash[:12], result)
+        return 1  # Qdrant delete doesn't return count, signal success
 
     async def search(
         self,
