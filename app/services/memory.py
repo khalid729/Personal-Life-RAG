@@ -155,6 +155,22 @@ class MemoryService:
         """Returns working memory messages as structured turns for multi-turn prompting."""
         return await self.get_working_memory(session_id)
 
+    # --- Active Project Context ---
+
+    def _active_project_key(self, session_id: str) -> str:
+        return f"session_meta:{session_id}:active_project"
+
+    async def set_active_project(self, session_id: str, project_name: str) -> None:
+        key = self._active_project_key(session_id)
+        await self._redis.set(key, project_name)
+        await self._redis.expire(key, 86400)  # 24h TTL
+
+    async def get_active_project(self, session_id: str) -> str | None:
+        return await self._redis.get(self._active_project_key(session_id))
+
+    async def clear_active_project(self, session_id: str) -> None:
+        await self._redis.delete(self._active_project_key(session_id))
+
     # --- Conversation Summarization (Phase 11) ---
 
     def _summary_key(self, session_id: str) -> str:

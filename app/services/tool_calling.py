@@ -282,19 +282,24 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_projects",
-            "description": "إدارة المشاريع: عرض الكل، تفاصيل مشروع معين، إنشاء، تعديل، أو حذف. لا تستخدمها للدمج — استخدم merge_projects بدلاً.",
+            "description": "إدارة المشاريع: عرض الكل، تفاصيل، إنشاء، تعديل، حذف، تركيز (focus/unfocus). لا تستخدمها للدمج — استخدم merge_projects.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "get", "create", "update", "delete"],
-                        "description": "list=عرض الكل، get=تفاصيل مشروع بالاسم، create=إنشاء، update=تعديل، delete=حذف",
+                        "enum": ["list", "get", "create", "update", "delete", "focus", "unfocus"],
+                        "description": "list=عرض الكل، get=تفاصيل، create=إنشاء، update=تعديل، delete=حذف، focus=تركيز على مشروع، unfocus=إلغاء التركيز",
                     },
                     "name": {"type": "string", "description": "اسم المشروع"},
                     "status": {"type": "string", "description": "حالة المشروع (active, completed, on_hold, cancelled)"},
                     "description": {"type": "string", "description": "وصف المشروع"},
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "aliases": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "أسماء بديلة للمشروع (عربي/إنجليزي مختصرة)",
+                    },
                 },
                 "required": ["action"],
             },
@@ -720,7 +725,8 @@ class ToolCallingService:
     async def _handle_manage_projects(
         self, action: str, name: str | None = None,
         status: str | None = None, description: str | None = None,
-        priority: int | None = None,
+        priority: int | None = None, aliases: list[str] | None = None,
+        _session_id: str | None = None,
     ) -> dict:
         if action == "list":
             text = await self.graph.query_projects_overview(status_filter=status)
@@ -743,7 +749,10 @@ class ToolCallingService:
             if priority is not None:
                 props["priority"] = priority
             await self.graph.upsert_project(name, **props)
-            return {"status": "created", "name": name, **props}
+            if aliases:
+                await self.graph.set_project_aliases(name, aliases)
+                await self.graph.register_aliases_in_vector(name, aliases)
+            return {"status": "created", "name": name, "aliases": aliases or [], **props}
 
         if action == "update":
             if not name:
@@ -755,15 +764,36 @@ class ToolCallingService:
                 props["description"] = description
             if priority is not None:
                 props["priority"] = priority
-            if not props:
+            if aliases:
+                await self.graph.set_project_aliases(name, aliases)
+                await self.graph.register_aliases_in_vector(name, aliases)
+            if not props and not aliases:
                 return {"error": "لا توجد حقول للتعديل"}
-            await self.graph.upsert_project(name, **props)
-            return {"status": "updated", "name": name, **props}
+            if props:
+                await self.graph.upsert_project(name, **props)
+            return {"status": "updated", "name": name, "aliases": aliases or [], **props}
 
         if action == "delete":
             if not name:
                 return {"error": "اسم المشروع مطلوب"}
             return await self.graph.delete_project(name)
+
+        if action == "focus":
+            if not name:
+                return {"error": "اسم المشروع مطلوب"}
+            resolved = await self.graph.resolve_entity_name(name, "Project")
+            # Verify project exists
+            details = await self.graph.query_project_details(resolved)
+            if details.startswith("No project found"):
+                return {"error": f"ما لقيت مشروع باسم '{name}'"}
+            if _session_id:
+                await self.memory.set_active_project(_session_id, resolved)
+            return {"status": "focused", "name": resolved}
+
+        if action == "unfocus":
+            if _session_id:
+                await self.memory.clear_active_project(_session_id)
+            return {"status": "unfocused"}
 
         return {"error": f"Unknown action: {action}"}
 
@@ -793,12 +823,16 @@ class ToolCallingService:
     # Tool executor with validation wrapper
     # ------------------------------------------------------------------
 
-    async def _execute_tool(self, name: str, arguments: dict) -> dict:
+    _SESSION_AWARE_TOOLS = {"manage_projects"}
+
+    async def _execute_tool(self, name: str, arguments: dict, session_id: str | None = None) -> dict:
         """Execute a tool and return validated result."""
         handler = self._TOOL_HANDLERS.get(name)
         if not handler:
             return {"tool": name, "success": False, "error": f"Unknown tool: {name}", "executed_at": _now()}
         try:
+            if session_id and name in self._SESSION_AWARE_TOOLS:
+                arguments = {**arguments, "_session_id": session_id}
             result = await handler(**arguments)
             success = "error" not in result if isinstance(result, dict) else True
             return {"tool": name, "success": success, "data": result, "executed_at": _now()}
@@ -850,7 +884,12 @@ class ToolCallingService:
                 elif tool == "manage_tasks":
                     parts.append(data.get("tasks", str(data)))
                 elif tool == "manage_projects":
-                    parts.append(data.get("projects", str(data)))
+                    if data.get("status") == "focused":
+                        parts.append(f"تم التركيز على مشروع: {data.get('name', '')}")
+                    elif data.get("status") == "unfocused":
+                        parts.append("تم إلغاء التركيز على المشروع")
+                    else:
+                        parts.append(data.get("projects", str(data)))
                 elif tool == "merge_projects":
                     parts.append(f"تم دمج {data.get('sources_deleted', 0)} مشاريع ونقل {data.get('tasks_moved', 0)} مهام إلى {data.get('target', '')}")
                 elif tool == "get_productivity_stats":
@@ -865,7 +904,8 @@ class ToolCallingService:
         """Non-streaming tool-calling chat."""
         # 1. Build system prompt
         memory_context = await self.memory.build_system_memory_context(session_id)
-        system_prompt = build_tool_system_prompt(memory_context)
+        active_project = await self.memory.get_active_project(session_id)
+        system_prompt = build_tool_system_prompt(memory_context, active_project=active_project)
 
         # 2. Load conversation history
         history = await self.memory.get_working_memory(session_id)
@@ -900,11 +940,11 @@ class ToolCallingService:
             parsed_calls = []
             for tc in tool_calls:
                 raw_args = tc["function"]["arguments"]
-                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                args = json.loads(raw_args) if isinstance(raw_args, str) and raw_args.strip() else (raw_args if isinstance(raw_args, dict) else {})
                 parsed_calls.append((tc, args))
 
             results = await asyncio.gather(
-                *(self._execute_tool(tc["function"]["name"], args) for tc, args in parsed_calls),
+                *(self._execute_tool(tc["function"]["name"], args, session_id=session_id) for tc, args in parsed_calls),
                 return_exceptions=True,
             )
 
@@ -930,8 +970,9 @@ class ToolCallingService:
                 new_turns.append(tool_msg)
 
         reply = response.get("content") or ""
-        # If LLM returned empty content after tools, use fallback
-        if not reply.strip() and tool_results:
+        # If LLM returned empty/junk content after tools, use fallback
+        stripped_reply = reply.strip()
+        if tool_results and (not stripped_reply or stripped_reply in ("{}", "[]", "{{}}")):
             reply = self._fallback_reply(tool_results)
 
         # Post-process in background
@@ -964,7 +1005,8 @@ class ToolCallingService:
 
         # 1. Build system prompt
         memory_context = await self.memory.build_system_memory_context(session_id)
-        system_prompt = build_tool_system_prompt(memory_context)
+        active_project = await self.memory.get_active_project(session_id)
+        system_prompt = build_tool_system_prompt(memory_context, active_project=active_project)
 
         # 2. Load conversation history
         history = await self.memory.get_working_memory(session_id)
@@ -986,6 +1028,8 @@ class ToolCallingService:
             streamed_text = []
             tool_calls_found = None
             t_llm = _time.monotonic()
+            # After tool execution, buffer response to detect junk (e.g. "{}")
+            buffer_mode = bool(tool_results)
 
             try:
                 first_token = True
@@ -995,7 +1039,8 @@ class ToolCallingService:
                             logger.info("[stream] iter %d: first token in %.1fms", i, (_time.monotonic() - t_llm) * 1000)
                             first_token = False
                         streamed_text.append(event["content"])
-                        yield json.dumps({"type": "token", "content": event["content"]}) + "\n"
+                        if not buffer_mode:
+                            yield json.dumps({"type": "token", "content": event["content"]}) + "\n"
                     elif event["type"] == "tool_calls":
                         logger.info("[stream] iter %d: tool_calls detected in %.1fms — %s",
                                     i, (_time.monotonic() - t_llm) * 1000,
@@ -1010,9 +1055,17 @@ class ToolCallingService:
 
             # Text was streamed directly — done
             if streamed_text:
+                reply_text = "".join(streamed_text)
+                # If post-tool response is junk, replace with fallback
+                if buffer_mode and reply_text.strip() in ("{}", "[]", "{{}}"):
+                    logger.warning("[stream] iter %d: junk response '%s', using fallback", i, reply_text.strip())
+                    reply_text = self._fallback_reply(tool_results)
+                    yield json.dumps({"type": "token", "content": reply_text}) + "\n"
+                elif buffer_mode:
+                    # Buffered text is valid — flush it now
+                    yield json.dumps({"type": "token", "content": reply_text}) + "\n"
                 logger.info("[stream] iter %d: text streamed, %d chars in %.1fms",
                             i, sum(len(c) for c in streamed_text), (_time.monotonic() - t_llm) * 1000)
-                reply_text = "".join(streamed_text)
                 break
 
             if tool_calls_found:
@@ -1020,12 +1073,12 @@ class ToolCallingService:
                 parsed_calls = []
                 for tc in tool_calls_found:
                     raw_args = tc["function"]["arguments"]
-                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    args = json.loads(raw_args) if isinstance(raw_args, str) and raw_args.strip() else (raw_args if isinstance(raw_args, dict) else {})
                     parsed_calls.append((tc, args))
 
                 t_exec = _time.monotonic()
                 results = await asyncio.gather(
-                    *(self._execute_tool(tc["function"]["name"], args) for tc, args in parsed_calls),
+                    *(self._execute_tool(tc["function"]["name"], args, session_id=session_id) for tc, args in parsed_calls),
                     return_exceptions=True,
                 )
                 logger.info("[stream] iter %d: tools executed in %.1fms", i, (_time.monotonic() - t_exec) * 1000)
@@ -1057,8 +1110,9 @@ class ToolCallingService:
 
         logger.info("[stream] total: %.1fms", (_time.monotonic() - t0) * 1000)
 
-        # If loop ended without streaming any text (fallback)
-        if not reply_text and tool_results:
+        # If loop ended without streaming any text, or streamed junk (e.g. "{}"), use fallback
+        stripped_reply = reply_text.strip()
+        if tool_results and (not stripped_reply or stripped_reply in ("{}", "[]", "{{}}")):
             reply_text = self._fallback_reply(tool_results)
             yield json.dumps({"type": "token", "content": reply_text}) + "\n"
 

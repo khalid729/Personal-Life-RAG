@@ -303,6 +303,31 @@ class GraphService:
         task_titles = [t for t in (rows[0][1] or []) if t]
         return {"deleted": pname, "tasks_deleted": len(task_titles), "task_titles": task_titles}
 
+    async def set_project_aliases(self, name: str, aliases: list[str]) -> None:
+        """Set aliases on a project node (deduped via _store_alias)."""
+        name = await self.resolve_entity_name(name, "Project")
+        for alias in aliases:
+            if alias and alias != name:
+                await self._store_alias("Project", "name", name, alias)
+
+    async def register_aliases_in_vector(
+        self, canonical_name: str, aliases: list[str], entity_type: str = "Project",
+    ) -> None:
+        """Register each alias in vector store pointing to canonical_name."""
+        if not self._vector_service:
+            return
+        for alias in aliases:
+            if not alias or alias == canonical_name:
+                continue
+            try:
+                await self._vector_service.upsert_chunks(
+                    [alias],
+                    [{"source_type": "entity", "entity_type": entity_type, "entity_name": canonical_name}],
+                )
+                logger.info("Alias vector registered: '%s' -> '%s' (%s)", alias, canonical_name, entity_type)
+            except Exception as e:
+                logger.debug("Alias vector registration failed for '%s': %s", alias, e)
+
     async def merge_projects(self, source_names: list[str], target_name: str) -> dict:
         """Merge source projects into target. Re-links tasks, deletes sources."""
         # Ensure target exists
@@ -2403,7 +2428,10 @@ class GraphService:
         tasks = [t for t in (rows[0][1] or []) if t.get("title")]
 
         parts = [f"Project: {node_props.get('name', name)}"]
-        skip_keys = {"name", "created_at", "updated_at"}
+        skip_keys = {"name", "created_at", "updated_at", "name_aliases"}
+        aliases = node_props.get("name_aliases")
+        if aliases:
+            parts.append(f"  aliases: {', '.join(aliases)}")
         for k, v in node_props.items():
             if k in skip_keys or v is None:
                 continue

@@ -7,7 +7,7 @@ from app.config import get_settings
 settings = get_settings()
 
 
-def build_tool_system_prompt(memory_context: str) -> str:
+def build_tool_system_prompt(memory_context: str, active_project: str | None = None) -> str:
     """Build Arabic system prompt for tool-calling mode."""
     riyadh_tz = timezone(timedelta(hours=settings.timezone_offset_hours))
     now = datetime.now(riyadh_tz)
@@ -20,13 +20,22 @@ def build_tool_system_prompt(memory_context: str) -> str:
     today_weekday = weekdays_ar[now.weekday()]
     tomorrow_weekday = weekdays_ar[(now.weekday() + 1) % 7]
 
+    active_project_section = ""
+    if active_project:
+        active_project_section = f"""
+المشروع النشط: {active_project}
+- كل المهام والملاحظات تتعلق بهذا المشروع ما لم يحدد المستخدم غير كذا
+- لا تنشئ مشاريع جديدة — كل شيء يخص "{active_project}"
+- لو المستخدم يبي يلغي التركيز، استخدم manage_projects مع action=unfocus
+"""
+
     return f"""أنت مساعد شخصي ذكي. رد بالعربي السعودي العامي.
 
 الوقت: {now.strftime("%H:%M")} | اليوم: {today_weekday} {today_str} | بكرة: {tomorrow_weekday} {tomorrow_str}
 
 ذاكرتك:
 {memory_context}
-
+{active_project_section}
 تعليمات:
 - عندك أدوات (tools) تقدر تستخدمها. لو المستخدم يبي إجراء (تذكير، مصروف، حذف، دين)، استخدم الأداة المناسبة.
 - لو المستخدم يسأل سؤال عام أو يبي معلومات، استخدم search_knowledge.
@@ -40,7 +49,10 @@ def build_tool_system_prompt(memory_context: str) -> str:
 - لو المستخدم يسأل عن شخص بالاسم، استخدم get_person_info.
 - لو المستخدم يتكلم عن أغراض أو مخزون، استخدم manage_inventory (search/add/move/use/report).
 - لو المستخدم يتكلم عن مهام أو tasks، استخدم manage_tasks (list/create/update/delete).
-- لو المستخدم يتكلم عن مشاريع، استخدم manage_projects (list/create/update/delete).
+- لو المستخدم يتكلم عن مشاريع، استخدم manage_projects (list/create/update/delete/focus/unfocus).
+- لو المستخدم قال "نتكلم عن مشروع X" أو "ركز على مشروع X"، استخدم manage_projects مع action=focus.
+- لو المستخدم قال "خلاص خلصنا" أو "شيل التركيز"، استخدم manage_projects مع action=unfocus.
+- لو المستخدم أنشأ مشروع جديد، اقترح أسماء بديلة (aliases) عربي وإنجليزي مختصرة.
 - لو المستخدم يطلب دمج مشاريع مكررة، استخدم merge_projects (أداة منفصلة) — تنقل المهام وتحذف القديمة فعلياً.
 - مهم: لو المستخدم ذكر اسم مشروع أو شخص أو أي كيان بالعربي، حاول تترجم الاسم للإنجليزي عند استدعاء الأداة. مثلاً: "الستيفنيس" → "Stiffness"، "مشروع الأنابيب" → "Pipe project".
 - لو المستخدم يسأل عن إنتاجيته أو تركيزه أو سبرنتات، استخدم get_productivity_stats.
