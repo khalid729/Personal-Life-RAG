@@ -1129,6 +1129,12 @@ class ToolCallingService:
         except Exception as e:
             logger.error("Tool-calling post-processing failed: %s", e)
 
+    # Entity types safe for auto-extraction from conversational messages.
+    # Excludes Project, Task, Idea, Sprint, etc. which need explicit user intent.
+    _AUTO_EXTRACT_SAFE_TYPES = {
+        "Person", "Company", "Knowledge", "Location",
+    }
+
     async def _auto_extract(self, query_ar: str) -> None:
         """Background extraction of storable facts from conversational messages."""
         try:
@@ -1141,6 +1147,14 @@ class ToolCallingService:
             facts = await self.llm.extract_facts_specialized(query_en, "general", ner_hints=ner_hints)
 
             if facts.get("entities"):
+                # Filter out entity types that shouldn't be auto-created
+                # from casual conversation (Projects, Tasks, Ideas, etc.)
+                facts["entities"] = [
+                    e for e in facts["entities"]
+                    if e.get("entity_type") in self._AUTO_EXTRACT_SAFE_TYPES
+                ]
+                if not facts["entities"]:
+                    return
                 count = await self.graph.upsert_from_facts(facts)
                 if count:
                     logger.info("Auto-extracted %d entities from conversational message", count)
