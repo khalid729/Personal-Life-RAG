@@ -104,21 +104,9 @@ class Pipe:
                 return ""
 
         # Process files if any
-        if self.valves.auto_process_files:
-            owui_files = __files__ or []
-            meta_files = (__metadata__ or {}).get("files", []) or []
-            has_files = len(meta_files) > 0 or len(owui_files) > 0
-
-            if has_files:
-                file_context = self._process_files(
-                    body, last_msg, user_text, owui_files, __metadata__, __user__
-                )
-                # Strip OWUI RAG injection — data is in our graph (full or already ingested)
-                clean_text = self._strip_owui_rag_context(user_text)
-                if file_context:
-                    user_text = clean_text + "\n\n" + file_context
-                else:
-                    user_text = clean_text
+        owui_files = __files__ or []
+        meta_files = (__metadata__ or {}).get("files", []) or []
+        has_files = self.valves.auto_process_files and (len(meta_files) > 0 or len(owui_files) > 0)
 
         # Use Open WebUI chat_id so each conversation gets fresh working memory
         session_id = (
@@ -126,8 +114,24 @@ class Pipe:
             or body.get("chat_id")
             or self.valves.session_id
         )
-        payload = {"message": user_text, "session_id": session_id}
         stream = body.get("stream", False)
+
+        if has_files and stream:
+            # Stream mode with files: yield progress while processing, then stream chat
+            return self._stream_with_files(
+                body, last_msg, user_text, owui_files, __metadata__, __user__,
+                session_id,
+            )
+
+        if has_files:
+            # Strip OWUI RAG injection BEFORE file processing
+            clean_text = self._strip_owui_rag_context(user_text)
+            file_context = self._process_files(
+                body, last_msg, clean_text, owui_files, __metadata__, __user__
+            )
+            user_text = (clean_text + "\n\n" + file_context) if file_context else clean_text
+
+        payload = {"message": user_text, "session_id": session_id}
 
         if stream:
             return self._stream(payload)
@@ -137,6 +141,54 @@ class Pipe:
     # ========================
     # STREAMING
     # ========================
+
+    def _stream_with_files(
+        self, body, last_msg, user_text, owui_files, metadata, user, session_id,
+    ) -> Generator:
+        """Process files while yielding progress tokens, then stream chat response."""
+        import sys
+
+        yield "جاري معالجة الملف"
+
+        clean_text = self._strip_owui_rag_context(user_text)
+        file_context = self._process_files(
+            body, last_msg, clean_text, owui_files, metadata, user
+        )
+
+        final_text = (clean_text + "\n\n" + file_context) if file_context else clean_text
+        payload = {"message": final_text, "session_id": session_id}
+
+        yield "...\n\n"
+
+        # Now stream the chat response
+        url = self.valves.api_url.rstrip("/")
+        try:
+            with requests.post(
+                f"{url}/chat/v2/stream",
+                json=payload,
+                stream=True,
+                timeout=120,
+            ) as resp:
+                if resp.status_code != 200:
+                    yield f"\n\nخطأ: HTTP {resp.status_code}"
+                    return
+
+                for line in resp.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    try:
+                        import json
+                        event = json.loads(line)
+                        etype = event.get("type", "")
+                        if etype == "token":
+                            yield event.get("content", "")
+                        elif etype == "done":
+                            break
+                    except Exception:
+                        continue
+        except Exception as e:
+            print(f"[PIPE] stream error: {e}", file=sys.stderr)
+            yield f"\n\nخطأ في الاتصال: {str(e)}"
 
     def _stream(self, payload: dict) -> Generator:
         url = self.valves.api_url.rstrip("/")
@@ -283,16 +335,29 @@ class Pipe:
             if file_id in self._ingested_files:
                 print(f"[PIPE] skipping {filename} — already ingested", file=sys.stderr)
                 continue
-            content = self._fetch_owui_file_content(file_id, user)
-            if content:
-                print(f"[PIPE] fetched {filename}: {len(content)} chars", file=sys.stderr)
+            # Try to get Docker path directly (preferred — raw file)
+            file_path = self._get_owui_file_path(file_id)
+            if file_path:
+                print(f"[PIPE] using Docker path for {filename}: {file_path}", file=sys.stderr)
                 files.append({
-                    "path": "",
-                    "data": content,
+                    "path": file_path,
+                    "data": "",
                     "filename": filename,
                     "content_type": f.get("type", f.get("content_type", "")),
                     "file_id": file_id,
                 })
+            else:
+                # Fallback: read content via OWUI API
+                content = self._fetch_owui_file_content(file_id, user)
+                if content:
+                    print(f"[PIPE] fetched {filename} via content: {len(content)} chars", file=sys.stderr)
+                    files.append({
+                        "path": "",
+                        "data": content,
+                        "filename": filename,
+                        "content_type": f.get("type", f.get("content_type", "")),
+                        "file_id": file_id,
+                    })
 
         # Source 2: __files__ parameter (primary source for filters)
         for f in (owui_files or []):
@@ -398,6 +463,12 @@ class Pipe:
                     ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                     ".png": "image/png", ".gif": "image/gif",
                     ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+                    ".md": "text/markdown", ".markdown": "text/markdown",
+                    ".txt": "text/plain", ".text": "text/plain",
+                    ".csv": "text/plain", ".log": "text/plain",
+                    ".json": "application/json", ".xml": "application/xml",
+                    ".yaml": "text/plain", ".yml": "text/plain",
+                    ".py": "text/plain", ".js": "text/plain", ".ts": "text/plain",
                 }
                 content_type = ct_map.get(ext, "application/octet-stream")
                 with open(file_path, "rb") as f:
@@ -475,6 +546,31 @@ class Pipe:
     # OPEN WEBUI FILE API
     # ========================
 
+    def _get_owui_file_path(self, file_id: str) -> str:
+        """Get Docker filesystem path for an OWUI file (without reading content)."""
+        import sys
+        try:
+            from open_webui.models.files import Files
+            file_obj = Files.get_file_by_id(file_id)
+            if file_obj:
+                meta = file_obj.meta or {}
+                # Check meta.path first (some OWUI versions store it)
+                path = meta.get("path", "")
+                if path and os.path.exists(path):
+                    return path
+                # Build path from OWUI convention: /app/backend/data/uploads/{id}_{filename}
+                filename = file_obj.filename or meta.get("name", "")
+                if filename:
+                    built_path = f"/app/backend/data/uploads/{file_id}_{filename}"
+                    if os.path.exists(built_path):
+                        print(f"[PIPE] built path: {built_path}", file=sys.stderr)
+                        return built_path
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[PIPE] _get_owui_file_path error: {e}", file=sys.stderr)
+        return ""
+
     def _fetch_owui_file_content(self, file_id: str, user: dict = None) -> str:
         """Fetch full file content from Open WebUI.
 
@@ -491,7 +587,12 @@ class Pipe:
                 # Prefer raw file from path (OWUI's data.content may be queries/summaries)
                 meta = file_obj.meta or {}
                 path = meta.get("path", "")
-                if path:
+                # Build path from OWUI convention if meta.path is empty
+                if not path:
+                    filename = file_obj.filename or meta.get("name", "")
+                    if filename:
+                        path = f"/app/backend/data/uploads/{file_id}_{filename}"
+                if path and os.path.exists(path):
                     try:
                         with open(path, "rb") as f:
                             raw = f.read()
