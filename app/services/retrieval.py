@@ -21,6 +21,15 @@ def count_tokens(text: str) -> int:
     return len(_enc.encode(text))
 
 
+def _is_mostly_english(text: str, sample_size: int = 500) -> bool:
+    """Check if text is mostly English/ASCII (skip translation for English docs)."""
+    sample = text[:sample_size]
+    if not sample:
+        return True
+    arabic_count = sum(1 for c in sample if '\u0600' <= c <= '\u06FF')
+    return arabic_count / len(sample) < 0.1
+
+
 def chunk_text(
     text: str,
     max_tokens: int = settings.chunk_max_tokens,
@@ -90,8 +99,11 @@ class RetrievalService:
         4. Embed + store in Qdrant
         5. Extract facts + store in FalkorDB (parallel with step 3-4)
         """
-        # Step 1: Translate
-        text_en = await self.llm.translate_to_english(text)
+        # Step 1: Translate (skip if text is already mostly English)
+        if _is_mostly_english(text):
+            text_en = text
+        else:
+            text_en = await self.llm.translate_to_english(text)
 
         # Step 2: Chunk
         chunks = chunk_text(text_en)

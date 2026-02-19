@@ -1,56 +1,44 @@
 """
 Open WebUI Filter for Personal Life RAG.
-Version: 2.0
+Version: 2.1
 
-Directly processes uploaded files via the RAG API — no LLM tool-calling needed.
-The filter detects files in inlet(), sends them to /ingest/file or /ingest/text,
-and injects the results into the message. The LLM just presents what was found.
+File-processing-only filter — designed to work alongside the Pipe (openwebui_pipe.py).
+
+The Pipe handles chat routing (sends to /chat/v2), while this Filter handles file
+ingestion only: detects uploaded files in inlet(), reads raw bytes from Docker path,
+sends to /ingest/file, and injects results into the user message.
 
 Copy this file's content into Open WebUI Admin → Functions → Add Function (type: Filter).
+Attach both this Filter AND the Pipe to the same model. Set Pipe's auto_process_files = False.
 
 Changelog:
   v1.0 — Initial: date/time injection + anti-lying STATUS rules
   v1.1-1.3 — store_document LLM tool-calling approach (replaced in v2.0)
   v2.0 — Direct API file processing: filter calls /ingest/file directly, no LLM tool-calling needed
+  v2.1 — File-only filter for Pipe pairing: removed system prompt injection, Strategy 2, text fallback.
+         Added text MIME types (.md, .txt, .csv, .log, .json, .xml, .yaml, .yml, .py, .js, .ts).
 """
 
 import base64
 import re
 import requests
-from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
 class Filter:
-    """Personal Life RAG Filter v2.0 — Direct API file processing + date/time injection + STATUS rules."""
+    """Personal Life RAG Filter v2.1 — File processing only (pairs with Pipe for chat)."""
 
-    VERSION = "2.0"
+    VERSION = "2.1"
 
     class Valves(BaseModel):
         api_url: str = Field(
             default="http://host.docker.internal:8500",
             description="Personal Life RAG API URL",
         )
-        timezone_offset_hours: int = Field(
-            default=3,
-            description="User timezone offset from UTC (e.g. 3 for Asia/Riyadh)",
-        )
-        prepend_date: bool = Field(
-            default=True,
-            description="Prepend current date/time to system prompt",
-        )
-        arabic_context: bool = Field(
-            default=True,
-            description="Add Arabic-specific instructions to system prompt",
-        )
         auto_process: bool = Field(
             default=True,
             description="Automatically process uploaded files via API",
-        )
-        file_text_threshold: int = Field(
-            default=500,
-            description="Min chars in message to treat as injected file text (fallback)",
         )
         debug_mode: bool = Field(
             default=False,
@@ -59,10 +47,6 @@ class Filter:
 
     def __init__(self):
         self.valves = self.Valves()
-
-    def _now(self) -> datetime:
-        tz = timezone(timedelta(hours=self.valves.timezone_offset_hours))
-        return datetime.now(tz)
 
     # ========================
     # FILE EXTRACTION
@@ -197,6 +181,13 @@ class Filter:
                         ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                         ".png": "image/png", ".gif": "image/gif",
                         ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+                        ".md": "text/markdown", ".markdown": "text/markdown",
+                        ".txt": "text/plain", ".text": "text/plain",
+                        ".csv": "text/plain", ".log": "text/plain",
+                        ".json": "application/json",
+                        ".xml": "application/xml",
+                        ".yaml": "text/plain", ".yml": "text/plain",
+                        ".py": "text/plain", ".js": "text/plain", ".ts": "text/plain",
                     }
                     content_type = ct_map.get(ext, "application/octet-stream")
 
@@ -222,79 +213,6 @@ class Filter:
             return {"status": "error", "error": "Request timeout — file may be too large"}
         except Exception as e:
             return {"status": "error", "error": str(e)}
-
-    def _process_text_via_api(self, text: str) -> Optional[dict]:
-        """Fallback: send extracted text to /ingest/text."""
-        try:
-            response = requests.post(
-                f"{self.valves.api_url}/ingest/text",
-                json={
-                    "text": text,
-                    "source_type": "document",
-                },
-                timeout=120,
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                return {"status": "error", "error": f"HTTP {response.status_code}"}
-
-        except requests.exceptions.Timeout:
-            return {"status": "error", "error": "Request timeout"}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-    # ========================
-    # OPEN WEBUI FILE DETECTION
-    # ========================
-
-    def _detect_openwebui_file_context(self, body: dict, messages: list, user_text: str) -> Optional[str]:
-        """
-        Detect file content injected by Open WebUI's RAG pipeline.
-
-        Open WebUI processes PDFs/files internally, then injects the extracted text
-        into the conversation as system messages or augmented user messages.
-        This method scans all messages to find that injected content.
-
-        Returns the file text if detected, None otherwise.
-        """
-        # Collect all non-user-text content from messages
-        # (Open WebUI injects file content in system messages or prepended to user message)
-        file_text_parts = []
-
-        for msg in messages:
-            role = msg.get("role", "")
-            content = self._extract_text_from_content(msg.get("content", ""))
-
-            # Skip empty or short messages
-            if len(content) < 50:
-                continue
-
-            # System messages with file content markers
-            if role == "system":
-                # Open WebUI injects RAG context with source references
-                if any(marker in content for marker in [
-                    "file-",           # Open WebUI file IDs (file-xxxxx)
-                    "source:",         # Source attribution
-                    "<source>",        # XML source tags
-                    "Retrieved",       # "Retrieved N sources"
-                    ".pdf",            # PDF filename references
-                ]):
-                    file_text_parts.append(content)
-
-            # User messages that are much longer than what user typed
-            # (Open WebUI prepends RAG context to user message)
-            elif role == "user" and len(content) > len(user_text) + self.valves.file_text_threshold:
-                # The extra content is likely injected file text
-                extra = content.replace(user_text, "").strip()
-                if len(extra) > self.valves.file_text_threshold:
-                    file_text_parts.append(extra)
-
-        if file_text_parts:
-            return "\n\n".join(file_text_parts)
-
-        return None
 
     # ========================
     # RESULT FORMATTING
@@ -386,7 +304,7 @@ class Filter:
     # ========================
 
     def inlet(self, body: dict, __user__: dict = {}) -> dict:
-        """Modify request before it goes to the LLM."""
+        """Process uploaded files before the message goes to the Pipe/LLM."""
         # Debug: send full body to API for inspection
         if self.valves.debug_mode:
             try:
@@ -398,138 +316,68 @@ class Filter:
             except Exception:
                 pass
 
-        if not self.valves.prepend_date:
+        if not self.valves.auto_process:
             return body
 
-        now = self._now()
-
-        # Day names in Arabic
-        day_names_ar = {
-            0: "الإثنين",
-            1: "الثلاثاء",
-            2: "الأربعاء",
-            3: "الخميس",
-            4: "الجمعة",
-            5: "السبت",
-            6: "الأحد",
-        }
-        day_ar = day_names_ar.get(now.weekday(), "")
-
-        # Month names in Arabic
-        month_names_ar = {
-            1: "يناير", 2: "فبراير", 3: "مارس", 4: "أبريل",
-            5: "مايو", 6: "يونيو", 7: "يوليو", 8: "أغسطس",
-            9: "سبتمبر", 10: "أكتوبر", 11: "نوفمبر", 12: "ديسمبر",
-        }
-        month_ar = month_names_ar.get(now.month, "")
-
-        tomorrow = now + timedelta(days=1)
-        tomorrow_ar = day_names_ar.get(tomorrow.weekday(), "")
-
-        date_context = (
-            f"التاريخ والوقت الحالي: {day_ar} {now.day} {month_ar} {now.year}، "
-            f"الساعة {now.strftime('%H:%M')} (توقيت الرياض UTC+{self.valves.timezone_offset_hours})\n"
-            f"بكرة = {tomorrow_ar} {tomorrow.day} {month_ar if tomorrow.month == now.month else month_names_ar.get(tomorrow.month, '')} {tomorrow.year}\n"
-        )
-
-        arabic_instructions = ""
-        if self.valves.arabic_context:
-            arabic_instructions = (
-                "أنت مساعد شخصي متصل بنظام Personal Life RAG عبر أدوات (tools).\n\n"
-
-                "=== قواعد صارمة ===\n"
-                "1. اعرض البيانات كما هي — لا تعدل تواريخ أو أرقام أو أسماء.\n"
-                "2. رد بالعربي إلا لو المستخدم تكلم إنجليزي.\n"
-                "3. حالات رد الأداة:\n"
-                "   - 'STATUS: ACTION_EXECUTED' = تم التنفيذ فعلاً (حفظ بيانات أو تنفيذ إجراء).\n"
-                "   - 'STATUS: PENDING_CONFIRMATION' = يطلب تأكيد قبل الحذف.\n"
-                "   - 'STATUS: CONVERSATION' = رد محادثة عادي، ما تم حفظ شي.\n"
-                "4. ممنوع تقول 'تم' إلا إذا شفت 'ACTION_EXECUTED'.\n"
-                "5. لا تختلق معلومات أو أسماء أو ألقاب غير موجودة في رد الأداة.\n"
-                "6. لا تسأل 'هل تريد أن أضيف؟' — أرسل مباشرة لأداة chat.\n"
-                "7. لا تولّد 'STATUS:' من عندك.\n"
-                "8. عند رفع ملف، اعرض المعلومات المستخرجة فقط.\n"
-                "9. لو المستخدم أرسل رابط (URL) وطلب سحب/تخزين/تحليل محتواه، استخدم أداة ingest_url مباشرة. تدعم روابط GitHub وصفحات الويب.\n"
-                "   بعد ما الأداة ترجع النتيجة، اعرض للمستخدم ملخص واضح: عدد الأجزاء والحقائق، وقائمة المعلومات المستخرجة (الأنواع والأسماء). لا تكتفي بـ'تم' فقط.\n"
-            )
-
-        prefix = date_context + arabic_instructions
-
-        # --- Direct file processing ---
         messages = body.get("messages", [])
         if not messages:
             return body
 
         last_message = messages[-1] if messages[-1].get("role") == "user" else None
 
-        if last_message and self.valves.auto_process:
-            user_text = self._extract_text_from_content(last_message.get("content", ""))
-            file_results = []
+        if not last_message:
+            return body
 
-            # === Strategy 1: Direct file attachments (base64, path, multimodal) ===
-            files = self._extract_files(last_message)
+        user_text = self._extract_text_from_content(last_message.get("content", ""))
+        file_results = []
 
-            # Also check body-level files (Open WebUI structure)
-            # Open WebUI sends: body["files"] = [{"type":"file", "file":{"path":"/app/backend/data/uploads/..."}, "name":"...", "content_type":"..."}]
-            if not files and body.get("files"):
-                for f in body["files"]:
-                    file_obj = f.get("file", {})
-                    file_data = {
-                        "type": f.get("content_type", f.get("type", "unknown")),
-                        "filename": f.get("name", file_obj.get("filename", "unknown")),
-                    }
-                    # Open WebUI stores file at file.path (Docker path)
-                    file_path = file_obj.get("path", "") or f.get("path", "")
-                    if file_path:
-                        file_data["path"] = file_path
-                    if f.get("data") and isinstance(f["data"], str):
-                        file_data["data"] = f["data"]
-                    files.append(file_data)
+        # Direct file attachments (base64, path, multimodal)
+        files = self._extract_files(last_message)
 
-            if files:
-                for file_info in files:
-                    result = self._process_file_via_api(file_info, user_text)
-                    if result:
-                        file_results.append(self._format_result(result))
+        # Also check body-level files (Open WebUI structure)
+        # Open WebUI sends: body["files"] = [{"type":"file", "file":{"path":"/app/backend/data/uploads/..."}, "name":"...", "content_type":"..."}]
+        if not files and body.get("files"):
+            for f in body["files"]:
+                file_obj = f.get("file", {})
+                file_data = {
+                    "type": f.get("content_type", f.get("type", "unknown")),
+                    "filename": f.get("name", file_obj.get("filename", "unknown")),
+                }
+                # Open WebUI stores file at file.path (Docker path)
+                file_path = file_obj.get("path", "") or f.get("path", "")
+                if file_path:
+                    file_data["path"] = file_path
+                if f.get("data") and isinstance(f["data"], str):
+                    file_data["data"] = f["data"]
+                files.append(file_data)
 
-            # === Strategy 2: Open WebUI RAG-injected file content ===
-            # Open WebUI processes PDFs internally and injects the extracted text
-            # as a system/user message with "user_context" or RAG context.
-            # We detect this and send the text to our API for proper fact extraction.
-            if not file_results:
-                injected_text = self._detect_openwebui_file_context(body, messages, user_text)
-                if injected_text:
-                    result = self._process_text_via_api(injected_text)
-                    if result:
-                        file_results.append(self._format_result(result))
+        if files:
+            for file_info in files:
+                result = self._process_file_via_api(file_info, user_text)
+                if result:
+                    file_results.append(self._format_result(result))
 
-            # Inject results into user message
-            if file_results:
-                result_text = "\n\n".join(file_results)
-                injection = f"\n\n---\nنتيجة معالجة الملف:\n{result_text}\n---"
+        # Inject results into user message
+        if file_results:
+            result_text = "\n\n".join(file_results)
+            injection = f"\n\n---\nنتيجة معالجة الملف:\n{result_text}\n---"
 
-                content = last_message.get("content", "")
-                if isinstance(content, list):
-                    text_updated = False
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "text" and not text_updated:
-                            item["text"] = item.get("text", "") + injection
-                            text_updated = True
-                    if not text_updated:
-                        content.append({"type": "text", "text": injection})
-                    last_message["content"] = content
-                else:
-                    last_message["content"] = str(content) + injection
-
-        # Find or create system message
-        if messages and messages[0].get("role") == "system":
-            messages[0]["content"] = prefix + "\n" + messages[0]["content"]
-        else:
-            messages.insert(0, {"role": "system", "content": prefix})
+            content = last_message.get("content", "")
+            if isinstance(content, list):
+                text_updated = False
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text" and not text_updated:
+                        item["text"] = item.get("text", "") + injection
+                        text_updated = True
+                if not text_updated:
+                    content.append({"type": "text", "text": injection})
+                last_message["content"] = content
+            else:
+                last_message["content"] = str(content) + injection
 
         body["messages"] = messages
         return body
 
     def outlet(self, body: dict, __user__: dict = {}) -> dict:
-        """Modify response after LLM generates it (no-op for now)."""
+        """Modify response after LLM generates it (no-op)."""
         return body

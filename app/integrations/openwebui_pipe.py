@@ -21,9 +21,9 @@ from pydantic import BaseModel, Field
 
 
 class Pipe:
-    """Personal Life RAG Pipe v2.0 — Tool-calling with JSON guard + internal prompt filter."""
+    """Personal Life RAG Pipe v2.1 — Tool-calling with JSON guard + internal prompt filter."""
 
-    VERSION = "2.0"
+    VERSION = "2.1"
 
     class Valves(BaseModel):
         api_url: str = Field(
@@ -360,9 +360,6 @@ class Pipe:
 
         return "\n".join(results) if results else ""
 
-    # Text file extensions — sent to /ingest/text instead of /ingest/file
-    _TEXT_EXTS = {".md", ".txt", ".csv", ".json", ".yaml", ".yml", ".xml", ".html", ".htm", ".log", ".rst"}
-
     def _send_file(self, file_info: dict, user_text: str) -> str:
         """Send a single file to /ingest/file or /ingest/text, return formatted result."""
         url = self.valves.api_url.rstrip("/")
@@ -414,27 +411,23 @@ class Pipe:
             # Plain text content (Open WebUI extracts text from .md/.txt etc.)
             elif file_data and isinstance(file_data, str) and len(file_data.strip()) > 0:
                 ext = os.path.splitext(filename)[1].lower()
-                # For text files, use /ingest/text which handles extraction properly
-                if ext in self._TEXT_EXTS or not ext:
-                    resp = requests.post(
-                        f"{url}/ingest/text",
-                        json={
-                            "text": file_data,
-                            "source_type": "file",
-                            "tags": [filename],
-                            "topic": user_text or filename,
-                        },
-                        timeout=180,
-                    )
-                else:
-                    # Non-text file with raw content — send as bytes to /ingest/file
-                    file_bytes = file_data.encode("utf-8")
-                    resp = requests.post(
-                        f"{url}/ingest/file",
-                        files={"file": (filename, file_bytes, "application/octet-stream")},
-                        data={"context": user_text},
-                        timeout=180,
-                    )
+                ct_text_map = {
+                    ".md": "text/markdown", ".markdown": "text/markdown",
+                    ".txt": "text/plain", ".text": "text/plain",
+                    ".csv": "text/plain", ".log": "text/plain",
+                    ".json": "text/plain", ".yaml": "text/plain",
+                    ".yml": "text/plain", ".xml": "text/plain",
+                    ".html": "text/plain", ".htm": "text/plain",
+                    ".rst": "text/plain",
+                }
+                content_type = ct_text_map.get(ext, "application/octet-stream")
+                file_bytes = file_data.encode("utf-8")
+                resp = requests.post(
+                    f"{url}/ingest/file",
+                    files={"file": (filename, file_bytes, content_type)},
+                    data={"context": user_text},
+                    timeout=180,
+                )
             else:
                 return ""
 
@@ -495,25 +488,30 @@ class Pipe:
             from open_webui.models.files import Files
             file_obj = Files.get_file_by_id(file_id)
             if file_obj:
-                # Try extracted text content
-                file_data = file_obj.data or {}
-                if isinstance(file_data, dict):
-                    content = file_data.get("content", "")
-                    if content and len(content.strip()) > 10:
-                        print(f"[PIPE] got file via direct import: {len(content)} chars", file=sys.stderr)
-                        return content
-                # Try reading from file path
+                # Prefer raw file from path (OWUI's data.content may be queries/summaries)
                 meta = file_obj.meta or {}
                 path = meta.get("path", "")
                 if path:
                     try:
-                        with open(path, "r", encoding="utf-8") as f:
-                            text = f.read()
+                        with open(path, "rb") as f:
+                            raw = f.read()
+                        # Try UTF-8 first, fall back to latin-1
+                        try:
+                            text = raw.decode("utf-8")
+                        except UnicodeDecodeError:
+                            text = raw.decode("latin-1")
                         if text and len(text.strip()) > 10:
                             print(f"[PIPE] got file from path {path}: {len(text)} chars", file=sys.stderr)
                             return text
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[PIPE] path read failed: {e}", file=sys.stderr)
+                # Fallback: extracted text content
+                file_data = file_obj.data or {}
+                if isinstance(file_data, dict):
+                    content = file_data.get("content", "")
+                    if content and len(content.strip()) > 10:
+                        print(f"[PIPE] got file via data.content: {len(content)} chars", file=sys.stderr)
+                        return content
         except ImportError:
             print("[PIPE] open_webui.models.files not available, trying HTTP", file=sys.stderr)
         except Exception as e:

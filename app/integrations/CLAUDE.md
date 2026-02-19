@@ -26,16 +26,19 @@
 - **Full file extraction**: `_fetch_owui_file_content()` via direct `open_webui.models.files.Files` import
 - **Ingestion cache**: `_ingested_files` set tracks processed file IDs — skips re-ingestion on subsequent messages
 - **RAG context stripping**: `_strip_owui_rag_context()` removes OWUI's injected `### Task/Context/Query` wrapper
-- Handles files via `/ingest/text` (full content) or `/ingest/file` (base64 fallback)
+- All files → `/ingest/file` (raw bytes, includes text types like .md/.txt)
 - No STATUS logic needed — streams RAG API response directly
-- Select "Personal RAG" model in Open WebUI to use; regular model uses Filter + Tools
+- **Pairing with Filter**: set `auto_process_files = False` when Filter handles files
+- Select "Personal RAG" model in Open WebUI to use
 
 ## Open WebUI Filter (openwebui_filter.py)
 
-- Inlet: detects files → `/ingest/file` → injects results
-- Prepends date/time + Arabic rules to system prompt
-- Anti-lying: STATUS prefix (`ACTION_EXECUTED | CONVERSATION`)
-- Key rules: no fake "تم", no invented names, no asking "هل تريد أن أضيف?"
+- **v2.1**: File-processing-only filter — pairs with Pipe for chat
+- Inlet: detects files (base64, Docker path, body-level) → `/ingest/file` → injects results into message
+- Supports text MIME types: .md, .txt, .csv, .log, .json, .xml, .yaml, .py, .js, .ts
+- No system prompt injection (Pipe + `/chat/v2` handles date/rules)
+- No Strategy 2 fallback (removed `/ingest/text` path)
+- Attach both Filter + Pipe to same model; set Pipe `auto_process_files = False`
 
 ## MCP Server — Open WebUI (:8600)
 
