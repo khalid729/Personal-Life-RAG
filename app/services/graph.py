@@ -1550,6 +1550,14 @@ class GraphService:
             logger.debug("Tag link skipped: %s", e)
 
     # --- File ---
+    async def ensure_file_stub(self, file_hash: str, filename: str) -> None:
+        """Create minimal File node so EXTRACTED_FROM links can target it during ingestion."""
+        q = """
+        MERGE (f:File {file_hash: $fhash})
+        ON CREATE SET f.filename = $fn, f.created_at = $now
+        """
+        await self._graph.query(q, params={"fhash": file_hash, "fn": filename, "now": _now()})
+
     async def upsert_file_node(
         self, file_hash: str, filename: str, file_type: str, analysis: dict
     ) -> None:

@@ -88,6 +88,9 @@ class FileService:
         file_path = await self._save_file(file_bytes, file_hash, ext)
         steps = [f"saved:{file_path}"]
 
+        # Create minimal File node so EXTRACTED_FROM links work during ingestion
+        await self.retrieval.graph.ensure_file_stub(file_hash, filename)
+
         if content_type in IMAGE_MIMES:
             result = await self._process_image(
                 file_bytes, filename, content_type, file_hash, user_context, tags, topic, steps
@@ -121,6 +124,7 @@ class FileService:
             try:
                 await self.retrieval.vector.delete_by_file_hash(old_file_hash)
                 await self.retrieval.graph.cleanup_file_entities(old_file_hash)
+                await self.retrieval.graph._unlink_file_entities(old_file_hash)
                 await self.retrieval.graph.supersede_file(file_hash, old_file_hash)
                 result.setdefault("processing_steps", []).append(f"superseded:{old_file_hash[:12]}")
                 logger.info("File updated: %s — old hash %s… superseded by %s…",
