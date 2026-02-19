@@ -114,7 +114,7 @@ class RetrievalService:
         enrichment_task = self._enrich_and_store_chunks(
             chunks, text_en, text, source_type, tags, topic, file_hash
         )
-        facts_task = self._extract_and_store_facts(text_en)
+        facts_task = self._extract_and_store_facts(text_en, file_hash=file_hash)
 
         chunks_stored, (facts_stored, entities) = await asyncio.gather(
             enrichment_task, facts_task
@@ -157,12 +157,12 @@ class RetrievalService:
 
         return await self.vector.upsert_chunks(enriched, metadata_list)
 
-    async def _extract_and_store_facts(self, text_en: str) -> tuple[int, list[dict]]:
+    async def _extract_and_store_facts(self, text_en: str, file_hash: str | None = None) -> tuple[int, list[dict]]:
         # For large texts, extract from each chunk individually then merge
         tokens = count_tokens(text_en)
         if tokens <= 3000:
             facts = await self.llm.extract_facts(text_en)
-            count = await self.graph.upsert_from_facts(facts)
+            count = await self.graph.upsert_from_facts(facts, file_hash=file_hash)
             return count, facts.get("entities", [])
 
         # Chunk and extract in parallel
@@ -184,7 +184,7 @@ class RetrievalService:
                     merged_entities.append(entity)
 
         merged = {"entities": merged_entities}
-        count = await self.graph.upsert_from_facts(merged)
+        count = await self.graph.upsert_from_facts(merged, file_hash=file_hash)
         return count, merged_entities
 
     # ========================

@@ -120,6 +120,7 @@ class FileService:
         if old_file_hash and old_file_hash != file_hash and result.get("status") == "ok":
             try:
                 await self.retrieval.vector.delete_by_file_hash(old_file_hash)
+                await self.retrieval.graph.cleanup_file_entities(old_file_hash)
                 await self.retrieval.graph.supersede_file(file_hash, old_file_hash)
                 result.setdefault("processing_steps", []).append(f"superseded:{old_file_hash[:12]}")
                 logger.info("File updated: %s — old hash %s… superseded by %s…",

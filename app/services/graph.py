@@ -1610,6 +1610,31 @@ class GraphService:
             q, params={"old_hash": old_hash, "new_hash": new_hash, "now": _now()}
         )
 
+    async def cleanup_file_entities(self, old_file_hash: str) -> int:
+        """Delete entities that were ONLY extracted from the old file (no other source)."""
+        q = """
+        MATCH (e)-[:EXTRACTED_FROM]->(old:File {file_hash: $old_hash})
+        OPTIONAL MATCH (e)-[:EXTRACTED_FROM]->(other:File)
+        WHERE other.file_hash <> $old_hash
+        WITH e, old, other
+        WHERE other IS NULL
+        DETACH DELETE e
+        RETURN count(e) as deleted
+        """
+        result = await self._graph.query(q, params={"old_hash": old_file_hash})
+        deleted = result.result_set[0][0] if result.result_set else 0
+        if deleted > 0:
+            logger.info("Cleaned up %d orphaned entities from file %s…", deleted, old_file_hash[:12])
+        return deleted
+
+    async def _unlink_file_entities(self, file_hash: str) -> None:
+        """Remove all EXTRACTED_FROM edges pointing to a file."""
+        q = """
+        MATCH (e)-[r:EXTRACTED_FROM]->(f:File {file_hash: $fhash})
+        DELETE r
+        """
+        await self._graph.query(q, params={"fhash": file_hash})
+
     # --- Relationships ---
     async def create_relationship(
         self,
@@ -1628,8 +1653,21 @@ class GraphService:
         """
         await self._graph.query(q, params={"from_val": from_value, "to_val": to_value})
 
+    # --- Entity-to-File linking ---
+    _PSEUDO_ENTITY_TYPES = {"DebtPayment", "ItemUsage", "ItemMove", "ReminderAction"}
+
+    async def _link_entity_to_file(self, entity_type: str, entity_name: str, file_hash: str) -> None:
+        """Create EXTRACTED_FROM relationship between entity and File node."""
+        key_field = "name" if entity_type not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
+        q = f"""
+        MATCH (e:{entity_type} {{{key_field}: $ename}})
+        MATCH (f:File {{file_hash: $fhash}})
+        MERGE (e)-[:EXTRACTED_FROM]->(f)
+        """
+        await self._graph.query(q, params={"ename": entity_name, "fhash": file_hash})
+
     # --- Upsert from LLM-extracted facts ---
-    async def upsert_from_facts(self, facts: dict) -> int:
+    async def upsert_from_facts(self, facts: dict, file_hash: str | None = None) -> int:
         # Pre-resolve all entity names in batch (one embed + parallel searches)
         names_to_resolve: set[tuple[str, str]] = set()
         for entity in facts.get("entities", []):
@@ -1663,6 +1701,12 @@ class GraphService:
                         end_date = props.pop("end_date", None)
                         await self.create_sprint(ename, start_date, end_date, **props)
                         count += 1
+                        # Link to source file
+                        if file_hash:
+                            try:
+                                await self._link_entity_to_file(etype, ename, file_hash)
+                            except Exception as e:
+                                logger.debug("EXTRACTED_FROM link skipped for %s/%s: %s", etype, ename, e)
                         # Create relationships for Sprint
                         for rel in rels:
                             target_type = rel.get("target_type", "")
@@ -1771,6 +1815,13 @@ class GraphService:
                     elif handler:
                         await handler(ename, **props)
                         count += 1
+
+                    # Link entity to source file
+                    if file_hash and etype not in self._PSEUDO_ENTITY_TYPES:
+                        try:
+                            await self._link_entity_to_file(etype, ename, file_hash)
+                        except Exception as e:
+                            logger.debug("EXTRACTED_FROM link skipped for %s/%s: %s", etype, ename, e)
 
                     # Auto-tag Knowledge by category
                     if etype == "Knowledge":
