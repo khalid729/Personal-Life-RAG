@@ -39,6 +39,7 @@ GraphService.set_vector_service(vector)  # entity resolution
 - `query_projects_overview()`: case-insensitive status filter via `toLower()`
 - `find_file_by_filename(name)`: latest File node by filename (for re-upload detection)
 - `supersede_file(new_hash, old_hash)`: `(:File {new})-[:SUPERSEDES]->(:File {old})`
+- `ensure_file_stub(hash, filename)`: creates minimal File node before ingestion so EXTRACTED_FROM links work
 - `_link_entity_to_file(type, name, hash)`: `MERGE (e)-[:EXTRACTED_FROM]->(f:File)` — skips pseudo-entities
 - `cleanup_file_entities(old_hash)`: deletes entities ONLY linked to old file (no other source); `DETACH DELETE`
 - `_unlink_file_entities(hash)`: removes all `EXTRACTED_FROM` edges for a file
