@@ -589,11 +589,16 @@ class GraphService:
         return "\n".join(parts)
 
     async def delete_list(self, list_name: str) -> dict:
+        # Delete entries first, then the list node
+        q_entries = """
+        MATCH (l:List {name: $name})-[:HAS_ENTRY]->(e:ListEntry)
+        DETACH DELETE e
+        RETURN count(e)
+        """
+        await self.query(q_entries, {"name": list_name})
         q = """
         MATCH (l:List {name: $name})
-        OPTIONAL MATCH (l)-[:HAS_ENTRY]->(e:ListEntry)
         DETACH DELETE l
-        FOREACH (entry IN collect(e) | DETACH DELETE entry)
         RETURN $name
         """
         rows = await self.query(q, {"name": list_name})
