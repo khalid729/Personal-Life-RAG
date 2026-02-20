@@ -38,6 +38,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
 - **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 19 tools)
+- **search_knowledge**: 3 parallel searches — `search_sections()` (section name + entity-in-section matches) → `search_nodes()` (global graph) → vector search; section results shown first for structured project content
 - **search_reminders**: supports optional `query` param for fuzzy title search via `_find_matching_reminders()`, combined with `status` filter
 - **Ingestion**: translate → chunk (1500 tokens) → parallel enrichment via `asyncio.gather` → embed + extract facts
 - **File re-upload**: same hash = skip; same filename + different hash = replace old chunks + orphan entities + `SUPERSEDES` graph link; section assignments (`IN_SECTION`) are snapshotted before cleanup and restored on matching new entities via `get_file_section_map()` + `restore_section_links()`
