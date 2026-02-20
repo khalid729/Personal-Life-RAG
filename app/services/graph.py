@@ -2877,7 +2877,8 @@ class GraphService:
             q_sec = """
             MATCH (s:Section {name: $sname})<-[:IN_SECTION]-(e)
             MATCH (:Project {name: $pname})-[:HAS_SECTION]->(s)
-            RETURN labels(e)[0], e.name, e.title, e.status
+            RETURN labels(e)[0], e.name, e.title, e.status,
+                   left(coalesce(e.description, ''), 120)
             LIMIT 50
             """
             sec_rows = await self.query(q_sec, {"sname": sname, "pname": node_props.get("name", name)})
@@ -2886,7 +2887,8 @@ class GraphService:
                     elabel = sr[0]
                     ename = sr[1] or sr[2] or "?"
                     estatus = f" [{sr[3]}]" if sr[3] else ""
-                    parts.append(f"    - [{elabel}] {ename}{estatus}")
+                    edesc = f" — {sr[4]}" if sr[4] else ""
+                    parts.append(f"    - [{elabel}] {ename}{estatus}{edesc}")
             else:
                 parts.append("    (empty)")
 
