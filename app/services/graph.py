@@ -1910,6 +1910,40 @@ class GraphService:
         """
         await self._graph.query(q, params={"fhash": file_hash})
 
+    async def get_file_section_map(self, file_hash: str) -> list[dict]:
+        """Snapshot section assignments for entities linked to a file."""
+        q = """
+        MATCH (e)-[:EXTRACTED_FROM]->(f:File {file_hash: $fhash})
+        MATCH (e)-[:IN_SECTION]->(s:Section)
+        RETURN labels(e)[0] AS etype,
+               COALESCE(e.title, e.name) AS ename,
+               s.name AS section_name
+        """
+        result = await self._graph.query(q, params={"fhash": file_hash})
+        return [{"entity_type": r[0], "entity_name": r[1], "section_name": r[2]}
+                for r in result.result_set if r[0] and r[1] and r[2]]
+
+    async def restore_section_links(self, section_map: list[dict]) -> int:
+        """Re-link entities to sections based on a saved section map."""
+        restored = 0
+        for entry in section_map:
+            etype = entry["entity_type"]
+            ename = entry["entity_name"]
+            sname = entry["section_name"]
+            key_field = "name" if etype not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
+            q = f"""
+            MATCH (e:{etype} {{{key_field}: $ename}})
+            MATCH (s:Section {{name: $sname}})
+            MERGE (e)-[:IN_SECTION]->(s)
+            RETURN e.{key_field}
+            """
+            rows = await self._graph.query(q, params={"ename": ename, "sname": sname})
+            if rows.result_set:
+                restored += 1
+        if restored:
+            logger.info("Restored %d/%d section links after re-upload", restored, len(section_map))
+        return restored
+
     # --- Relationships ---
     async def create_relationship(
         self,

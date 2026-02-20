@@ -126,10 +126,15 @@ class FileService:
         # Clean up old chunks if this is a file update
         if old_file_hash and old_file_hash != file_hash and result.get("status") == "ok":
             try:
+                section_map = await self.retrieval.graph.get_file_section_map(old_file_hash)
                 await self.retrieval.vector.delete_by_file_hash(old_file_hash)
                 await self.retrieval.graph.cleanup_file_entities(old_file_hash)
                 await self.retrieval.graph._unlink_file_entities(old_file_hash)
                 await self.retrieval.graph.supersede_file(file_hash, old_file_hash)
+                if section_map:
+                    restored = await self.retrieval.graph.restore_section_links(section_map)
+                    if restored:
+                        result.setdefault("processing_steps", []).append(f"sections_restored:{restored}")
                 result.setdefault("processing_steps", []).append(f"superseded:{old_file_hash[:12]}")
                 logger.info("File updated: %s — old hash %s… superseded by %s…",
                             filename, old_file_hash[:12], file_hash[:12])
