@@ -40,7 +40,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 19 tools)
 - **search_reminders**: supports optional `query` param for fuzzy title search via `_find_matching_reminders()`, combined with `status` filter
 - **Ingestion**: translate → chunk (1500 tokens) → parallel enrichment via `asyncio.gather` → embed + extract facts
-- **File re-upload**: same hash = skip; same filename + different hash = replace old chunks + orphan entities + `SUPERSEDES` graph link
+- **File re-upload**: same hash = skip; same filename + different hash = replace old chunks + orphan entities + `SUPERSEDES` graph link; section assignments (`IN_SECTION`) are snapshotted before cleanup and restored on matching new entities via `get_file_section_map()` + `restore_section_links()`
 - **Entity provenance**: `(Entity)-[:EXTRACTED_FROM]->(File)` — tracks which file an entity came from; orphans cleaned on re-upload
 - **URL ingestion**: POST /ingest/url → GitHub parser (repo/blob/tree) + web fetch → ingest pipeline
 - **Entity resolution**: vector similarity (0.85 person, 0.80 default) + graph CONTAINS fallback via `resolve_entity_name()`
@@ -62,7 +62,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - `datetime.utcnow()` deprecated → `datetime.now(timezone(timedelta(hours=3)))`
 - Hijri dates: auto-convert year < 1900 via `hijri-converter`
 - Extraction chunking uses hardcoded `max_tokens=3000` (retrieval.py:156) — needs larger context than ingestion chunks
-- File re-upload replaces Qdrant chunks (tracked via `file_hash`) + cleans orphaned entities (via `EXTRACTED_FROM`); shared entities survive
+- File re-upload replaces Qdrant chunks (tracked via `file_hash`) + cleans orphaned entities (via `EXTRACTED_FROM`); shared entities survive; `IN_SECTION` links are preserved via snapshot/restore
 - `ensure_file_stub()` MUST run before `ingest_text()` — `_link_entity_to_file()` uses MATCH not MERGE, so File node must exist first
 - Sections/Lists: `_TOOL_ONLY_TYPES = {Section, ListEntry}` — skipped during extraction, created via tools only
 - `delete_project()` cascades: deletes linked tasks, sections, lists, and list entries
