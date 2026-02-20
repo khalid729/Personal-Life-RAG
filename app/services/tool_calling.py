@@ -566,11 +566,14 @@ class ToolCallingService:
         return {"plan": text}
 
     async def _handle_search_knowledge(self, query: str) -> dict:
-        vector_results, graph_results = await asyncio.gather(
+        vector_results, graph_results, section_results = await asyncio.gather(
             self.vector.search(query, limit=5),
             self.graph.search_nodes(query, limit=10),
+            self.graph.search_sections(query, limit=15),
         )
         parts = []
+        if section_results:
+            parts.append(section_results)
         if graph_results:
             parts.append(graph_results)
         if vector_results:

@@ -3062,6 +3062,76 @@ class GraphService:
             parts.append(f"  [{r[0]}] {r[1]}")
         return "\n".join(parts)
 
+    async def search_sections(self, text: str, limit: int = 15) -> str:
+        """Search project sections by name, and entities within sections by name/description."""
+        text_lower = text.lower()
+
+        # Query 1: Section name matches → return project + all entities in that section
+        q_by_section = """
+        MATCH (p:Project)-[:HAS_SECTION]->(s:Section)
+        WHERE toLower(s.name) CONTAINS $text
+        OPTIONAL MATCH (e)-[:IN_SECTION]->(s)
+        RETURN p.name AS project, s.name AS section,
+               collect(DISTINCT [labels(e)[0], coalesce(e.name, e.title, ''),
+                       coalesce(e.status, ''), left(coalesce(e.description, ''), 80)]) AS entities
+        LIMIT $limit
+        """
+
+        # Query 2: Entity inside a section matches → return entity with project/section context
+        q_by_entity = """
+        MATCH (e)-[:IN_SECTION]->(s:Section)<-[:HAS_SECTION]-(p:Project)
+        WHERE toLower(coalesce(e.name, e.title, '')) CONTAINS $text
+           OR toLower(coalesce(e.description, '')) CONTAINS $text
+        RETURN p.name AS project, s.name AS section,
+               labels(e)[0] AS label, coalesce(e.name, e.title) AS name,
+               coalesce(e.status, '') AS status, left(coalesce(e.description, ''), 80) AS desc
+        LIMIT $limit
+        """
+
+        params = {"text": text_lower, "limit": limit}
+        rows_section, rows_entity = await asyncio.gather(
+            self.query(q_by_section, params),
+            self.query(q_by_entity, params),
+        )
+
+        parts: list[str] = []
+        seen: set[str] = set()
+
+        # Format section-name matches (grouped)
+        if rows_section:
+            for r in rows_section:
+                project, section, entities = r[0], r[1], r[2]
+                header = f"[{project}] Section: {section}"
+                if header not in seen:
+                    seen.add(header)
+                    lines = [header]
+                    for ent in entities:
+                        lbl, name, status, desc = ent[0], ent[1], ent[2], ent[3]
+                        if not name:
+                            continue
+                        key = f"{lbl}:{name}"
+                        seen.add(key)
+                        status_tag = f" ({status})" if status else ""
+                        desc_tag = f" — {desc}" if desc else ""
+                        lines.append(f"  [{lbl}] {name}{status_tag}{desc_tag}")
+                    parts.append("\n".join(lines))
+
+        # Format entity-in-section matches (individual)
+        if rows_entity:
+            for r in rows_entity:
+                project, section, label, name, status, desc = r[0], r[1], r[2], r[3], r[4], r[5]
+                key = f"{label}:{name}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                status_tag = f" ({status})" if status else ""
+                desc_tag = f" — {desc}" if desc else ""
+                parts.append(f"[{project}] {section} → [{label}] {name}{status_tag}{desc_tag}")
+
+        if not parts:
+            return ""
+        return "Section search results:\n" + "\n".join(parts)
+
     async def _detect_similar_ideas(self, title: str, description: str = "") -> None:
         """Embed idea text into Qdrant and create SIMILAR_TO edges for similar ideas."""
         if not self._vector_service:
