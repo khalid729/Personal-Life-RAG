@@ -68,3 +68,5 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - Sections/Lists: `_TOOL_ONLY_TYPES = {Section, ListEntry}` — skipped during extraction, created via tools only
 - `delete_project()` cascades: deletes linked tasks, sections, lists, and list entries
 - `merge_projects()` re-links sections (`HAS_SECTION`) and lists (`BELONGS_TO`) to target before deleting source
+- OWUI internal messages (follow-ups, titles, chat history analysis) must be blocked by Pipe — `_INTERNAL_KEYWORDS` list; `#### Tools Available` block stripped by `_TOOLS_AVAILABLE_RE` in `_strip_owui_rag_context()`
+- `post_process()` stores every conversation turn in Qdrant (`source_type=conversation`) — if OWUI garbage leaks through, it pollutes all future searches
