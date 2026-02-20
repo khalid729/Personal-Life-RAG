@@ -73,6 +73,10 @@ class Pipe:
         "Generate a succinct",
         "Create a concise title",
         "Generate 1-3 broad tags",
+        "follow-up questions or prompts",
+        "Suggest 3-5 relevant follow-up",
+        "summarizing the chat history",
+        "word title with an emoji",
     )
 
     def pipe(self, body: dict, __user__: dict = {}, __metadata__: dict = {}, __files__: list = None) -> Union[str, Generator]:
@@ -673,6 +677,12 @@ class Pipe:
         re.DOTALL | re.IGNORECASE,
     )
 
+    # Regex to strip OWUI's "#### Tools Available" injection from user messages
+    _TOOLS_AVAILABLE_RE = re.compile(
+        r"\s*#{2,4}\s*Tools?\s*Available.*",
+        re.DOTALL | re.IGNORECASE,
+    )
+
     def _strip_owui_rag_context(self, text: str) -> str:
         """Strip Open WebUI's RAG context injection, returning the user's original query."""
         # Pattern 1: "### Task: ... ### Query: <user text>"
@@ -685,6 +695,9 @@ class Pipe:
             parts = text.rsplit("\n\n", 1)
             if len(parts) == 2 and 5 < len(parts[1].strip()) < len(parts[0]):
                 return parts[1].strip()
+
+        # Pattern 3: Strip "#### Tools Available ..." block appended by OWUI
+        text = self._TOOLS_AVAILABLE_RE.sub("", text).strip()
 
         return text
 
