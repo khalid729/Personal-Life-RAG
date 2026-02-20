@@ -37,7 +37,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 ## Core Patterns
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
-- **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 18 tools)
+- **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 19 tools)
 - **search_reminders**: supports optional `query` param for fuzzy title search via `_find_matching_reminders()`, combined with `status` filter
 - **Ingestion**: translate → chunk (1500 tokens) → parallel enrichment via `asyncio.gather` → embed + extract facts
 - **File re-upload**: same hash = skip; same filename + different hash = replace old chunks + orphan entities + `SUPERSEDES` graph link
@@ -49,6 +49,9 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **No confirmation flow**: tools execute directly, model reports actual success/failure
 - **Auto-dismiss reminders**: task marked done → `_auto_dismiss_reminders()` fuzzy-matches pending reminders via `_find_matching_reminders()` and marks them done
 - **Active project ingestion**: `session_id` from callers → router resolves `project_name` via `memory.get_active_project()` → threaded through files/retrieval/llm/graph → extract prompt suppresses rogue Projects + auto-links Task/Knowledge/Idea/Sprint via BELONGS_TO
+- **Project sections**: `(Project)-[:HAS_SECTION]->(Section)` + `(Entity)-[:IN_SECTION]->(Section)` — topic or phase sections; `create_project_with_phases()` creates 4 default phases (Planning→Preparation→Execution→Review)
+- **Lists**: standalone `List` + `ListEntry` nodes — `(List)-[:HAS_ENTRY]->(ListEntry)`, optional `(List)-[:BELONGS_TO]->(Project)`. Types: shopping, ideas, checklist, reference
+- **manage_lists tool**: list/get/create/add_entry/check_entry/uncheck_entry/remove_entry/delete — bulk add via `entries` array
 
 ## Key Gotchas
 
@@ -61,3 +64,6 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - Extraction chunking uses hardcoded `max_tokens=3000` (retrieval.py:156) — needs larger context than ingestion chunks
 - File re-upload replaces Qdrant chunks (tracked via `file_hash`) + cleans orphaned entities (via `EXTRACTED_FROM`); shared entities survive
 - `ensure_file_stub()` MUST run before `ingest_text()` — `_link_entity_to_file()` uses MATCH not MERGE, so File node must exist first
+- Sections/Lists: `_TOOL_ONLY_TYPES = {Section, ListEntry}` — skipped during extraction, created via tools only
+- `delete_project()` cascades: deletes linked tasks, sections, lists, and list entries
+- `merge_projects()` re-links sections (`HAS_SECTION`) and lists (`BELONGS_TO`) to target before deleting source
