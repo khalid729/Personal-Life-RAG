@@ -21,6 +21,7 @@ async def upload_file(
     context: str = Form(""),
     tags: str = Form(""),
     topic: str = Form(""),
+    session_id: str = Form(""),
 ):
     file_service = request.app.state.file_service
 
@@ -36,6 +37,15 @@ async def upload_file(
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    # Resolve active project from session
+    project_name = None
+    if session_id:
+        try:
+            memory = request.app.state.retrieval.memory
+            project_name = await memory.get_active_project(session_id)
+        except Exception:
+            pass
+
     # Parse tags from comma-separated string
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
@@ -46,6 +56,7 @@ async def upload_file(
         user_context=context,
         tags=tag_list,
         topic=topic or None,
+        project_name=project_name,
     )
 
     return FileUploadResponse(**result)
@@ -54,11 +65,22 @@ async def upload_file(
 @router.post("/url", response_model=IngestResponse)
 async def ingest_url(req: URLIngestRequest, request: Request):
     file_service = request.app.state.file_service
+
+    # Resolve active project from session
+    project_name = None
+    if req.session_id:
+        try:
+            memory = request.app.state.retrieval.memory
+            project_name = await memory.get_active_project(req.session_id)
+        except Exception:
+            pass
+
     result = await file_service.process_url(
         url=req.url,
         user_context=req.context,
         tags=req.tags,
         topic=req.topic,
+        project_name=project_name,
     )
     return IngestResponse(
         status=result["status"],

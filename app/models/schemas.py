@@ -356,6 +356,7 @@ class URLIngestRequest(BaseModel):
     context: str = ""
     tags: list[str] = []
     topic: Optional[str] = None
+    session_id: str = ""
 
 
 class FileUploadResponse(BaseModel):

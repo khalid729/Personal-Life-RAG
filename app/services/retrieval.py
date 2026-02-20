@@ -90,6 +90,7 @@ class RetrievalService:
         tags: list[str] | None = None,
         topic: str | None = None,
         file_hash: str | None = None,
+        project_name: str | None = None,
     ) -> dict:
         """Full Contextual Retrieval ingestion pipeline.
 
@@ -114,7 +115,7 @@ class RetrievalService:
         enrichment_task = self._enrich_and_store_chunks(
             chunks, text_en, text, source_type, tags, topic, file_hash
         )
-        facts_task = self._extract_and_store_facts(text_en, file_hash=file_hash)
+        facts_task = self._extract_and_store_facts(text_en, file_hash=file_hash, project_name=project_name)
 
         chunks_stored, (facts_stored, entities) = await asyncio.gather(
             enrichment_task, facts_task
@@ -157,12 +158,12 @@ class RetrievalService:
 
         return await self.vector.upsert_chunks(enriched, metadata_list)
 
-    async def _extract_and_store_facts(self, text_en: str, file_hash: str | None = None) -> tuple[int, list[dict]]:
+    async def _extract_and_store_facts(self, text_en: str, file_hash: str | None = None, project_name: str | None = None) -> tuple[int, list[dict]]:
         # For large texts, extract from each chunk individually then merge
         tokens = count_tokens(text_en)
         if tokens <= 3000:
-            facts = await self.llm.extract_facts(text_en)
-            count = await self.graph.upsert_from_facts(facts, file_hash=file_hash)
+            facts = await self.llm.extract_facts(text_en, project_name=project_name)
+            count = await self.graph.upsert_from_facts(facts, file_hash=file_hash, project_name=project_name)
             return count, facts.get("entities", [])
 
         # Chunk and extract in parallel
@@ -170,7 +171,7 @@ class RetrievalService:
         logger.info("Large text (%d tokens) → %d chunks for extraction", tokens, len(chunks))
 
         chunk_facts = await asyncio.gather(
-            *[self.llm.extract_facts(chunk) for chunk in chunks]
+            *[self.llm.extract_facts(chunk, project_name=project_name) for chunk in chunks]
         )
 
         # Merge and dedup entities by (entity_type, entity_name)
@@ -184,7 +185,7 @@ class RetrievalService:
                     merged_entities.append(entity)
 
         merged = {"entities": merged_entities}
-        count = await self.graph.upsert_from_facts(merged, file_hash=file_hash)
+        count = await self.graph.upsert_from_facts(merged, file_hash=file_hash, project_name=project_name)
         return count, merged_entities
 
     # ========================

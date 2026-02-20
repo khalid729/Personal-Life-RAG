@@ -1686,6 +1686,7 @@ class GraphService:
 
     # --- Entity-to-File linking ---
     _PSEUDO_ENTITY_TYPES = {"DebtPayment", "ItemUsage", "ItemMove", "ReminderAction"}
+    _PROJECT_LINKABLE_TYPES = {"Task", "Knowledge", "Idea", "Sprint"}
 
     async def _link_entity_to_file(self, entity_type: str, entity_name: str, file_hash: str) -> None:
         """Create EXTRACTED_FROM relationship between entity and File node."""
@@ -1698,7 +1699,7 @@ class GraphService:
         await self._graph.query(q, params={"ename": entity_name, "fhash": file_hash})
 
     # --- Upsert from LLM-extracted facts ---
-    async def upsert_from_facts(self, facts: dict, file_hash: str | None = None) -> int:
+    async def upsert_from_facts(self, facts: dict, file_hash: str | None = None, project_name: str | None = None) -> int:
         # Pre-resolve all entity names in batch (one embed + parallel searches)
         names_to_resolve: set[tuple[str, str]] = set()
         for entity in facts.get("entities", []):
@@ -1723,6 +1724,11 @@ class GraphService:
                 rels = entity.get("relationships", [])
 
                 if not etype or not ename:
+                    continue
+
+                # Suppress rogue Project creation when active project is set
+                if etype == "Project" and project_name:
+                    logger.info("Suppressed Project entity '%s' — active project is '%s'", ename, project_name)
                     continue
 
                 try:
@@ -1853,6 +1859,22 @@ class GraphService:
                             await self._link_entity_to_file(etype, ename, file_hash)
                         except Exception as e:
                             logger.debug("EXTRACTED_FROM link skipped for %s/%s: %s", etype, ename, e)
+
+                    # Auto-link to active project if entity type is linkable
+                    if project_name and etype in self._PROJECT_LINKABLE_TYPES:
+                        has_project_rel = any(
+                            r.get("target_type") == "Project" for r in rels
+                        )
+                        if not has_project_rel:
+                            key_field = "name" if etype not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
+                            try:
+                                await self.create_relationship(
+                                    etype, key_field, ename,
+                                    "BELONGS_TO", "Project", "name", project_name,
+                                )
+                                logger.info("Auto-linked %s '%s' to active project '%s'", etype, ename, project_name)
+                            except Exception as e:
+                                logger.debug("Active project link skipped for %s/%s: %s", etype, ename, e)
 
                     # Auto-tag Knowledge by category
                     if etype == "Knowledge":

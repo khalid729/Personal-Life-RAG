@@ -80,8 +80,8 @@ class LLMService:
         messages = build_translate_en_to_ar(text)
         return await self.chat(messages, max_tokens=1024, temperature=0.1)
 
-    async def extract_facts(self, text: str, ner_hints: str = "") -> dict:
-        messages = build_extract(text, ner_hints=ner_hints)
+    async def extract_facts(self, text: str, ner_hints: str = "", project_name: str | None = None) -> dict:
+        messages = build_extract(text, ner_hints=ner_hints, project_name=project_name)
         raw = await self.chat(messages, max_tokens=2048, temperature=0.1, json_mode=True)
         try:
             return json.loads(raw)

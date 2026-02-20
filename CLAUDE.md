@@ -48,6 +48,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **Auto-extraction**: conversational messages → safe types only (Person, Company, Knowledge, Location)
 - **No confirmation flow**: tools execute directly, model reports actual success/failure
 - **Auto-dismiss reminders**: task marked done → `_auto_dismiss_reminders()` fuzzy-matches pending reminders via `_find_matching_reminders()` and marks them done
+- **Active project ingestion**: `session_id` from callers → router resolves `project_name` via `memory.get_active_project()` → threaded through files/retrieval/llm/graph → extract prompt suppresses rogue Projects + auto-links Task/Knowledge/Idea/Sprint via BELONGS_TO
 
 ## Key Gotchas
 

@@ -72,7 +72,7 @@ Respond with ONLY the contextualized chunk in this format:
 """
 
 
-def build_extract(text: str, ner_hints: str = "") -> list[dict]:
+def build_extract(text: str, ner_hints: str = "", project_name: str | None = None) -> list[dict]:
     from datetime import datetime, timedelta, timezone
     from app.config import get_settings as _gs
     riyadh_tz = timezone(timedelta(hours=_gs().timezone_offset_hours))
@@ -81,7 +81,19 @@ def build_extract(text: str, ner_hints: str = "") -> list[dict]:
     tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     date_hint = f"\n\nToday's date: {today}. Tomorrow: {tomorrow}. Use these to resolve relative dates like 'بكرة', 'tomorrow', 'next week', etc."
 
-    messages = [{"role": "system", "content": EXTRACT_SYSTEM + date_hint}]
+    system_content = EXTRACT_SYSTEM + date_hint
+
+    if project_name:
+        system_content += f"""
+
+=== Active Project Context ===
+The user is currently focused on the project: "{project_name}".
+- Do NOT create new Project entities. The project already exists.
+- For entities related to this project (Task, Knowledge, Idea, Sprint), add a relationship:
+  {{"type": "BELONGS_TO", "target_type": "Project", "target_name": "{project_name}"}}
+- Other entity types (Person, Company, Expense, etc.) are global — extract normally."""
+
+    messages = [{"role": "system", "content": system_content}]
     for ex in EXTRACT_EXAMPLES:
         messages.append({"role": "user", "content": ex["input"]})
         messages.append({"role": "assistant", "content": ex["output"]})

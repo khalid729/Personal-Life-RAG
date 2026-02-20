@@ -138,7 +138,8 @@ class Pipe:
 
         if has_files:
             file_context = self._process_files(
-                body, last_msg, user_text, owui_files, __metadata__, __user__
+                body, last_msg, user_text, owui_files, __metadata__, __user__,
+                session_id=session_id,
             )
             if file_context:
                 user_text = user_text + "\n\n" + file_context
@@ -164,7 +165,8 @@ class Pipe:
 
         clean_text = self._strip_owui_rag_context(user_text)
         file_context = self._process_files(
-            body, last_msg, clean_text, owui_files, metadata, user
+            body, last_msg, clean_text, owui_files, metadata, user,
+            session_id=session_id,
         )
 
         final_text = (clean_text + "\n\n" + file_context) if file_context else clean_text
@@ -329,6 +331,7 @@ class Pipe:
     def _process_files(
         self, body: dict, last_msg: dict, user_text: str,
         owui_files: list = None, metadata: dict = None, user: dict = None,
+        session_id: str = "",
     ) -> str:
         """Detect and process files, return formatted result string."""
         import sys
@@ -427,7 +430,7 @@ class Pipe:
 
         results = []
         for f in files:
-            result = self._send_file(f, user_text)
+            result = self._send_file(f, user_text, session_id=session_id)
             if result:
                 results.append(result)
                 # Mark file as ingested so we don't re-process on next message
@@ -437,7 +440,7 @@ class Pipe:
 
         return "\n".join(results) if results else ""
 
-    def _send_file(self, file_info: dict, user_text: str) -> str:
+    def _send_file(self, file_info: dict, user_text: str, session_id: str = "") -> str:
         """Send a single file to /ingest/file or /ingest/text, return formatted result."""
         url = self.valves.api_url.rstrip("/")
         file_data = file_info.get("data", "")
@@ -462,7 +465,7 @@ class Pipe:
                 resp = requests.post(
                     f"{url}/ingest/file",
                     files={"file": (upload_name, file_bytes, mime_type)},
-                    data={"context": user_text},
+                    data={"context": user_text, "session_id": session_id},
                     timeout=180,
                 )
 
@@ -487,7 +490,7 @@ class Pipe:
                     resp = requests.post(
                         f"{url}/ingest/file",
                         files={"file": (upload_name, f, content_type)},
-                        data={"context": user_text},
+                        data={"context": user_text, "session_id": session_id},
                         timeout=180,
                     )
 
@@ -508,7 +511,7 @@ class Pipe:
                 resp = requests.post(
                     f"{url}/ingest/file",
                     files={"file": (filename, file_bytes, content_type)},
-                    data={"context": user_text},
+                    data={"context": user_text, "session_id": session_id},
                     timeout=180,
                 )
             else:

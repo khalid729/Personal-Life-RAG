@@ -682,12 +682,13 @@ async def handle_voice(message: Message):
     await bot.download_file(file.file_path, file_data)
     file_bytes = file_data.getvalue()
 
+    sid = session_id(message.from_user.id)
     result = await api_post_file(
         "/ingest/file",
         file_bytes=file_bytes,
         filename="voice.ogg",
         content_type="audio/ogg",
-        data={"context": "", "tags": "", "topic": ""},
+        data={"context": "", "tags": "", "topic": "", "session_id": sid},
     )
 
     analysis = result.get("analysis", {})
@@ -731,12 +732,13 @@ async def handle_photo(message: Message):
     file_bytes = file_data.getvalue()
 
     context = message.caption or ""
+    sid = session_id(message.from_user.id)
     result = await api_post_file(
         "/ingest/file",
         file_bytes=file_bytes,
         filename="photo.jpg",
         content_type="image/jpeg",
-        data={"context": context, "tags": "", "topic": ""},
+        data={"context": context, "tags": "", "topic": "", "session_id": sid},
     )
 
     # Handle duplicate files — still useful if user has a question or wants to update
@@ -894,12 +896,13 @@ async def handle_document(message: Message):
     file_bytes = file_data.getvalue()
 
     context = message.caption or ""
+    sid = session_id(message.from_user.id)
     result = await api_post_file(
         "/ingest/file",
         file_bytes=file_bytes,
         filename=doc.file_name or "document",
         content_type=doc.mime_type or "application/octet-stream",
-        data={"context": context, "tags": "", "topic": ""},
+        data={"context": context, "tags": "", "topic": "", "session_id": sid},
     )
 
     reply_parts = [f"📁 {doc.file_name}"]

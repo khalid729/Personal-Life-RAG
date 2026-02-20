@@ -60,6 +60,7 @@ class FileService:
         user_context: str = "",
         tags: list[str] | None = None,
         topic: str | None = None,
+        project_name: str | None = None,
     ) -> dict:
         """Route file to appropriate processor based on content type."""
         file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -93,19 +94,22 @@ class FileService:
 
         if content_type in IMAGE_MIMES:
             result = await self._process_image(
-                file_bytes, filename, content_type, file_hash, user_context, tags, topic, steps
+                file_bytes, filename, content_type, file_hash, user_context, tags, topic, steps,
+                project_name=project_name,
             )
         elif content_type in PDF_MIMES or ext == ".pdf":
             result = await self._process_pdf(
-                file_path, filename, file_hash, user_context, tags, topic, steps
+                file_path, filename, file_hash, user_context, tags, topic, steps,
+                project_name=project_name,
             )
         elif content_type in AUDIO_MIMES or ext in (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac"):
             result = await self._process_audio(
-                file_path, filename, file_hash, user_context, tags, topic, steps
+                file_path, filename, file_hash, user_context, tags, topic, steps,
             )
         elif content_type in TEXT_MIMES or ext in TEXT_EXTS:
             result = await self._process_text(
-                file_bytes, filename, file_hash, user_context, tags, topic, steps
+                file_bytes, filename, file_hash, user_context, tags, topic, steps,
+                project_name=project_name,
             )
         else:
             return {
@@ -189,6 +193,7 @@ class FileService:
         user_context: str = "",
         tags: list[str] | None = None,
         topic: str | None = None,
+        project_name: str | None = None,
     ) -> dict:
         """Fetch content from a URL (GitHub or generic web) and ingest it."""
         steps = []
@@ -271,6 +276,7 @@ class FileService:
             source_type="web_url",
             tags=tags,
             topic=topic,
+            project_name=project_name,
         )
         steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
 
@@ -304,6 +310,7 @@ class FileService:
         tags: list[str] | None,
         topic: str | None,
         steps: list[str],
+        project_name: str | None = None,
     ) -> dict:
         # Encode to base64
         image_b64 = base64.b64encode(file_bytes).decode("utf-8")
@@ -330,6 +337,7 @@ class FileService:
             tags=tags,
             topic=topic,
             file_hash=file_hash,
+            project_name=project_name,
         )
         steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
 
@@ -440,6 +448,7 @@ class FileService:
         tags: list[str] | None,
         topic: str | None,
         steps: list[str],
+        project_name: str | None = None,
     ) -> dict:
         # Extract markdown from PDF in thread pool
         loop = asyncio.get_event_loop()
@@ -494,6 +503,7 @@ class FileService:
             tags=tags,
             topic=topic,
             file_hash=file_hash,
+            project_name=project_name,
         )
         steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
 
@@ -715,6 +725,7 @@ class FileService:
         tags: list[str] | None,
         topic: str | None,
         steps: list[str],
+        project_name: str | None = None,
     ) -> dict:
         # Decode text content
         for encoding in ("utf-8", "utf-8-sig", "cp1256", "latin-1"):
@@ -760,6 +771,7 @@ class FileService:
             tags=tags,
             topic=topic,
             file_hash=file_hash,
+            project_name=project_name,
         )
         steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
 
