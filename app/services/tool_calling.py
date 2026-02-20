@@ -286,14 +286,15 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_projects",
-            "description": "إدارة المشاريع: عرض الكل، تفاصيل، إنشاء، تعديل، حذف، تركيز (focus/unfocus). لا تستخدمها للدمج — استخدم merge_projects.",
+            "description": "إدارة المشاريع: عرض، تفاصيل، إنشاء (مع مراحل)، تعديل، حذف، تركيز، أقسام ومراحل. لا تستخدمها للدمج — استخدم merge_projects.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "get", "create", "update", "delete", "focus", "unfocus"],
-                        "description": "list=عرض الكل، get=تفاصيل، create=إنشاء، update=تعديل، delete=حذف، focus=تركيز على مشروع، unfocus=إلغاء التركيز",
+                        "enum": ["list", "get", "create", "update", "delete", "focus", "unfocus",
+                                 "add_section", "update_section", "delete_section", "assign_section", "set_phase"],
+                        "description": "list=عرض الكل، get=تفاصيل، create=إنشاء، update=تعديل، delete=حذف، focus=تركيز، unfocus=إلغاء التركيز، add_section=إضافة قسم، update_section=تعديل قسم، delete_section=حذف قسم، assign_section=ربط عنصر بقسم، set_phase=تحديد المرحلة النشطة",
                     },
                     "name": {"type": "string", "description": "اسم المشروع"},
                     "status": {"type": "string", "description": "حالة المشروع (active, completed, on_hold, cancelled)"},
@@ -304,6 +305,39 @@ TOOLS = [
                         "items": {"type": "string"},
                         "description": "أسماء بديلة للمشروع (عربي/إنجليزي مختصرة)",
                     },
+                    "section_name": {"type": "string", "description": "اسم القسم أو المرحلة"},
+                    "section_type": {"type": "string", "enum": ["topic", "phase"], "description": "نوع القسم: topic=موضوع, phase=مرحلة"},
+                    "order": {"type": "integer", "description": "ترتيب القسم (للمراحل)"},
+                    "entity_type": {"type": "string", "description": "نوع العنصر المراد ربطه بالقسم (Task, Knowledge, etc.)"},
+                    "entity_name": {"type": "string", "description": "اسم العنصر المراد ربطه بالقسم"},
+                    "with_phases": {"type": "boolean", "description": "إنشاء المشروع مع مراحل افتراضية (Planning, Preparation, Execution, Review)"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_lists",
+            "description": "إدارة القوائم: قائمة بقالة، مشتريات، أفكار، إلخ. إنشاء، إضافة عناصر، تعليم كمنجز، حذف.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "get", "create", "add_entry", "check_entry", "uncheck_entry", "remove_entry", "delete"],
+                        "description": "list=عرض كل القوائم، get=تفاصيل قائمة، create=إنشاء، add_entry=إضافة عنصر، check_entry=تعليم كمنجز، uncheck_entry=إلغاء التعليم، remove_entry=حذف عنصر، delete=حذف القائمة",
+                    },
+                    "name": {"type": "string", "description": "اسم القائمة"},
+                    "list_type": {"type": "string", "enum": ["shopping", "ideas", "checklist", "reference"], "description": "نوع القائمة"},
+                    "entry": {"type": "string", "description": "محتوى العنصر"},
+                    "entries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "عناصر متعددة للإضافة دفعة وحدة",
+                    },
+                    "project": {"type": "string", "description": "ربط القائمة بمشروع (اختياري)"},
                 },
                 "required": ["action"],
             },
@@ -391,6 +425,7 @@ class ToolCallingService:
             "manage_inventory": self._handle_manage_inventory,
             "manage_tasks": self._handle_manage_tasks,
             "manage_projects": self._handle_manage_projects,
+            "manage_lists": self._handle_manage_lists,
             "merge_projects": self._handle_merge_projects,
             "get_productivity_stats": self._handle_get_productivity_stats,
         }
@@ -737,6 +772,9 @@ class ToolCallingService:
         self, action: str, name: str | None = None,
         status: str | None = None, description: str | None = None,
         priority: int | None = None, aliases: list[str] | None = None,
+        section_name: str | None = None, section_type: str | None = None,
+        order: int | None = None, entity_type: str | None = None,
+        entity_name: str | None = None, with_phases: bool = False,
         _session_id: str | None = None,
     ) -> dict:
         if action == "list":
@@ -759,6 +797,13 @@ class ToolCallingService:
                 props["description"] = description
             if priority is not None:
                 props["priority"] = priority
+            if with_phases:
+                result = await self.graph.create_project_with_phases(name, **props)
+                if aliases:
+                    await self.graph.set_project_aliases(name, aliases)
+                    await self.graph.register_aliases_in_vector(name, aliases)
+                result["aliases"] = aliases or []
+                return result
             await self.graph.upsert_project(name, **props)
             if aliases:
                 await self.graph.set_project_aliases(name, aliases)
@@ -805,6 +850,96 @@ class ToolCallingService:
             if _session_id:
                 await self.memory.clear_active_project(_session_id)
             return {"status": "unfocused"}
+
+        if action == "add_section":
+            if not name or not section_name:
+                return {"error": "اسم المشروع والقسم مطلوبين"}
+            props = {}
+            if section_type:
+                props["section_type"] = section_type
+            if order is not None:
+                props["order"] = order
+            return await self.graph.create_section(name, section_name, **props)
+
+        if action == "update_section":
+            if not name or not section_name:
+                return {"error": "اسم المشروع والقسم مطلوبين"}
+            props = {}
+            if description:
+                props["description"] = description
+            if status:
+                props["status"] = status
+            if order is not None:
+                props["order"] = order
+            return await self.graph.update_section(name, section_name, **props)
+
+        if action == "delete_section":
+            if not name or not section_name:
+                return {"error": "اسم المشروع والقسم مطلوبين"}
+            return await self.graph.delete_section(name, section_name)
+
+        if action == "assign_section":
+            if not name or not section_name or not entity_type or not entity_name:
+                return {"error": "اسم المشروع والقسم ونوع واسم العنصر مطلوبين"}
+            return await self.graph.assign_to_section(name, section_name, entity_type, entity_name)
+
+        if action == "set_phase":
+            if not name or not section_name:
+                return {"error": "اسم المشروع والمرحلة مطلوبين"}
+            return await self.graph.set_active_phase(name, section_name)
+
+        return {"error": f"Unknown action: {action}"}
+
+    async def _handle_manage_lists(
+        self, action: str, name: str | None = None,
+        list_type: str | None = None, entry: str | None = None,
+        entries: list[str] | None = None, project: str | None = None,
+    ) -> dict:
+        if action == "list":
+            text = await self.graph.query_lists_overview(project_name=project)
+            return {"lists": text}
+
+        if action == "get":
+            if not name:
+                return {"error": "اسم القائمة مطلوب"}
+            text = await self.graph.query_list(name)
+            return {"list": text}
+
+        if action == "create":
+            if not name:
+                return {"error": "اسم القائمة مطلوب"}
+            return await self.graph.create_list(name, list_type=list_type or "checklist", project_name=project)
+
+        if action == "add_entry":
+            if not name:
+                return {"error": "اسم القائمة مطلوب"}
+            if entries:
+                for e in entries:
+                    await self.graph.add_list_entry(name, e)
+                return {"status": "added", "list": name, "entries_added": len(entries)}
+            if not entry:
+                return {"error": "محتوى العنصر مطلوب"}
+            return await self.graph.add_list_entry(name, entry)
+
+        if action == "check_entry":
+            if not name or not entry:
+                return {"error": "اسم القائمة والعنصر مطلوبين"}
+            return await self.graph.check_list_entry(name, entry, checked=True)
+
+        if action == "uncheck_entry":
+            if not name or not entry:
+                return {"error": "اسم القائمة والعنصر مطلوبين"}
+            return await self.graph.check_list_entry(name, entry, checked=False)
+
+        if action == "remove_entry":
+            if not name or not entry:
+                return {"error": "اسم القائمة والعنصر مطلوبين"}
+            return await self.graph.remove_list_entry(name, entry)
+
+        if action == "delete":
+            if not name:
+                return {"error": "اسم القائمة مطلوب"}
+            return await self.graph.delete_list(name)
 
         return {"error": f"Unknown action: {action}"}
 
@@ -901,6 +1036,13 @@ class ToolCallingService:
                         parts.append("تم إلغاء التركيز على المشروع")
                     else:
                         parts.append(data.get("projects", str(data)))
+                elif tool == "manage_lists":
+                    if data.get("list"):
+                        parts.append(data["list"])
+                    elif data.get("lists"):
+                        parts.append(data["lists"])
+                    else:
+                        parts.append(str(data))
                 elif tool == "merge_projects":
                     parts.append(f"تم دمج {data.get('sources_deleted', 0)} مشاريع ونقل {data.get('tasks_moved', 0)} مهام إلى {data.get('target', '')}")
                 elif tool == "get_productivity_stats":
@@ -1145,6 +1287,7 @@ class ToolCallingService:
         "create_reminder", "delete_reminder", "update_reminder",
         "add_expense", "record_debt", "pay_debt", "store_note",
         "manage_inventory", "manage_tasks", "manage_projects", "merge_projects",
+        "manage_lists",
     }
 
     # Lightweight keyword check for storable content (Arabic + English)

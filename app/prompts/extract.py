@@ -1,7 +1,7 @@
 EXTRACT_SYSTEM = """You are a fact extraction engine for a personal knowledge graph.
 Extract entities and relationships from the user's text. Be thorough — extract ALL details, numbers, dates, and references.
 
-Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, ReminderAction, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove, Sprint
+Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, ReminderAction, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove, Sprint, Section, List
 
 === Entity details ===
 
@@ -27,6 +27,10 @@ ItemUsage: item name, quantity_used — reduces item quantity
 ItemMove: item name, to_location (required), from_location (optional)
 Task: priority, estimated_duration (minutes), energy_level (high/medium/low)
 Sprint: name, start_date, end_date, goal — link to Project via BELONGS_TO
+Section: entity_name = section name, section_type ("topic"|"phase"), order (for phases), description
+  Relationships: HAS_SECTION from Project, IN_SECTION from other entities
+List: entity_name = list name, list_type ("shopping"|"ideas"|"checklist"|"reference")
+  Relationships: BELONGS_TO → Project (optional)
 
 === Output format ===
 

@@ -157,7 +157,7 @@ PEOPLE_EXAMPLES = [
 
 PRODUCTIVITY_SYSTEM = """You are a fact extraction engine for tasks and projects.
 
-Entity types: Task, Project, Sprint, Idea
+Entity types: Task, Project, Sprint, Idea, Section, List
 
 Task: entity_name = task title
   Properties: priority (1-5), estimated_duration (minutes), energy_level (high/medium/low), status (todo/in_progress/done/cancelled)
@@ -172,6 +172,11 @@ Sprint: entity_name = sprint name
 
 Idea: entity_name = idea title
   Properties: description, category
+
+Section: section_type ("topic"|"phase"), order (for phases), description
+  Relationships: belongs to Project via HAS_SECTION
+List: list_type ("shopping"|"ideas"|"checklist"|"reference")
+  Relationships: optional BELONGS_TO → Project
 
 If you see entities outside your specialty, include them with entity_type and entity_name only.
 
@@ -189,7 +194,7 @@ PRODUCTIVITY_EXAMPLES = [
 GENERAL_SYSTEM = """You are a fact extraction engine for a personal knowledge graph.
 Extract entities and relationships from the user's text. Be thorough.
 
-Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, ReminderAction, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove, Sprint
+Entity types: Person, Company, Project, Idea, Task, Expense, Debt, DebtPayment, Reminder, ReminderAction, Knowledge, Topic, Tag, Item, ItemUsage, ItemMove, Sprint, Section, List
 
 Person: relationship, phone, email, company, notes, date_of_birth, id_number, name_ar (Arabic name from NER hints — copy exactly)
 Reminder: reminder_type, recurrence, due_date (YYYY-MM-DD, REQUIRED), time, location, priority, reference_number
@@ -203,6 +208,10 @@ ItemMove: to_location (required), from_location (optional)
 Task: priority, estimated_duration (minutes), energy_level, status (todo/in_progress/done/cancelled)
 Knowledge: factual info — locations, reference numbers, IDs, accounts
 Sprint: start_date, end_date, goal
+Section: section_type ("topic"|"phase"), order (for phases), description
+  Relationships: belongs to Project via HAS_SECTION
+List: list_type ("shopping"|"ideas"|"checklist"|"reference")
+  Relationships: optional BELONGS_TO → Project
 
 JSON only:
 {"entities": [{"entity_type": "...", "entity_name": "...", "properties": {...}, "relationships": [{"type": "...", "target_type": "...", "target_name": "..."}]}]}

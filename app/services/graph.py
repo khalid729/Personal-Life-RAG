@@ -287,13 +287,23 @@ class GraphService:
         await self._graph.query(q, params={"name": name, "now": _now(), **props})
 
     async def delete_project(self, name: str) -> dict:
-        """Delete a project and its linked tasks. Returns deleted info or error."""
+        """Delete a project and its linked tasks, sections, lists. Returns deleted info or error."""
         q = """
         MATCH (p:Project) WHERE toLower(p.name) CONTAINS toLower($name)
         OPTIONAL MATCH (t:Task)-[:BELONGS_TO]->(p)
-        WITH p, p.name AS pname, collect(t) AS tasks, collect(t.title) AS task_titles
+        OPTIONAL MATCH (p)-[:HAS_SECTION]->(s:Section)
+        OPTIONAL MATCH (l:List)-[:BELONGS_TO]->(p)
+        OPTIONAL MATCH (l)-[:HAS_ENTRY]->(le:ListEntry)
+        WITH p, p.name AS pname, collect(DISTINCT t) AS tasks,
+             collect(DISTINCT t.title) AS task_titles,
+             collect(DISTINCT s) AS sections,
+             collect(DISTINCT l) AS lists,
+             collect(DISTINCT le) AS list_entries
         DETACH DELETE p
         FOREACH (t IN tasks | DETACH DELETE t)
+        FOREACH (s IN sections | DETACH DELETE s)
+        FOREACH (l IN lists | DETACH DELETE l)
+        FOREACH (le IN list_entries | DETACH DELETE le)
         RETURN pname, task_titles
         """
         rows = await self.query(q, {"name": name})
@@ -349,6 +359,28 @@ class GraphService:
             if rows and rows[0][0]:
                 tasks_moved += rows[0][0]
 
+            # Re-link sections from source to target
+            q_sections = """
+            MATCH (src:Project)-[r:HAS_SECTION]->(s:Section)
+            WHERE toLower(src.name) CONTAINS toLower($src_name)
+            MATCH (tgt:Project {name: $target_name})
+            DELETE r
+            MERGE (tgt)-[:HAS_SECTION]->(s)
+            RETURN count(s)
+            """
+            await self.query(q_sections, {"src_name": src, "target_name": target_name})
+
+            # Re-link lists from source to target
+            q_lists = """
+            MATCH (l:List)-[r:BELONGS_TO]->(src:Project)
+            WHERE toLower(src.name) CONTAINS toLower($src_name)
+            MATCH (tgt:Project {name: $target_name})
+            DELETE r
+            MERGE (l)-[:BELONGS_TO]->(tgt)
+            RETURN count(l)
+            """
+            await self.query(q_lists, {"src_name": src, "target_name": target_name})
+
             # Delete source project node
             q_del = """
             MATCH (p:Project) WHERE toLower(p.name) CONTAINS toLower($src_name)
@@ -361,6 +393,213 @@ class GraphService:
                 sources_deleted += del_rows[0][0]
 
         return {"target": target_name, "sources_deleted": sources_deleted, "tasks_moved": tasks_moved}
+
+    # --- Sections ---
+
+    async def create_section(self, project_name: str, section_name: str, **props) -> dict:
+        project_name = await self.resolve_entity_name(project_name, "Project")
+        filtered = {k: v for k, v in props.items() if v is not None and v != ""}
+        inline = ""
+        if filtered:
+            inline = ", " + ", ".join(f"{k}: ${k}" for k in filtered)
+        q = f"""
+        MATCH (p:Project {{name: $pname}})
+        CREATE (s:Section {{name: $sname, created_at: $now{inline}}})
+        CREATE (p)-[:HAS_SECTION]->(s)
+        RETURN s.name
+        """
+        rows = await self.query(q, {"pname": project_name, "sname": section_name, "now": _now(), **filtered})
+        if not rows:
+            return {"error": f"Project '{project_name}' not found"}
+        return {"status": "created", "section": section_name, "project": project_name}
+
+    async def update_section(self, project_name: str, section_name: str, **props) -> dict:
+        project_name = await self.resolve_entity_name(project_name, "Project")
+        props_str = self._build_set_clause(props, var="s")
+        if not props_str:
+            return {"error": "No fields to update"}
+        q = f"""
+        MATCH (p:Project {{name: $pname}})-[:HAS_SECTION]->(s:Section {{name: $sname}})
+        SET s.updated_at = $now {props_str}
+        RETURN s.name
+        """
+        rows = await self.query(q, {"pname": project_name, "sname": section_name, "now": _now(), **{k: v for k, v in props.items() if v is not None and v != ""}})
+        if not rows:
+            return {"error": f"Section '{section_name}' not found in project '{project_name}'"}
+        return {"status": "updated", "section": section_name}
+
+    async def delete_section(self, project_name: str, section_name: str) -> dict:
+        project_name = await self.resolve_entity_name(project_name, "Project")
+        q = """
+        MATCH (p:Project {name: $pname})-[:HAS_SECTION]->(s:Section {name: $sname})
+        OPTIONAL MATCH (e)-[r:IN_SECTION]->(s)
+        DELETE r
+        DETACH DELETE s
+        RETURN p.name
+        """
+        rows = await self.query(q, {"pname": project_name, "sname": section_name})
+        if not rows:
+            return {"error": f"Section '{section_name}' not found in project '{project_name}'"}
+        return {"status": "deleted", "section": section_name}
+
+    async def assign_to_section(self, project_name: str, section_name: str,
+                                entity_type: str, entity_name: str) -> dict:
+        """Link an existing entity to a section via IN_SECTION."""
+        project_name = await self.resolve_entity_name(project_name, "Project")
+        key_field = "name" if entity_type not in ("Task", "Idea", "Reminder", "Knowledge") else "title"
+        q = f"""
+        MATCH (p:Project {{name: $pname}})-[:HAS_SECTION]->(s:Section {{name: $sname}})
+        MATCH (e:{entity_type} {{{key_field}: $ename}})
+        MERGE (e)-[:IN_SECTION]->(s)
+        RETURN e.{key_field}
+        """
+        rows = await self.query(q, {"pname": project_name, "sname": section_name, "ename": entity_name})
+        if not rows:
+            return {"error": f"Could not link {entity_type} '{entity_name}' to section '{section_name}'"}
+        return {"status": "assigned", "entity": entity_name, "section": section_name}
+
+    async def create_project_with_phases(self, name: str, **props) -> dict:
+        """Create a project and its default phase sections."""
+        await self.upsert_project(name, **props)
+        for i, phase in enumerate(self._DEFAULT_PHASES):
+            await self.create_section(name, phase, section_type="phase", order=i + 1)
+        q = """
+        MATCH (p:Project {name: $name})
+        SET p.active_phase = $phase
+        """
+        await self._graph.query(q, params={"name": name, "phase": self._DEFAULT_PHASES[0]})
+        return {"status": "created", "name": name, "phases": self._DEFAULT_PHASES}
+
+    async def set_active_phase(self, project_name: str, phase_name: str) -> dict:
+        project_name = await self.resolve_entity_name(project_name, "Project")
+        q = """
+        MATCH (p:Project {name: $pname})-[:HAS_SECTION]->(s:Section {name: $sname})
+        WHERE s.section_type = 'phase'
+        SET p.active_phase = $sname
+        RETURN p.name
+        """
+        rows = await self.query(q, {"pname": project_name, "sname": phase_name})
+        if not rows:
+            return {"error": f"Phase '{phase_name}' not found in project '{project_name}'"}
+        return {"status": "updated", "project": project_name, "active_phase": phase_name}
+
+    # --- Lists ---
+
+    async def create_list(self, name: str, list_type: str = "checklist",
+                          project_name: str | None = None, section_name: str | None = None) -> dict:
+        filtered = {"list_type": list_type}
+        inline = ", list_type: $list_type"
+        q = f"CREATE (l:List {{name: $name, created_at: $now{inline}}}) RETURN l.name"
+        await self._graph.query(q, params={"name": name, "now": _now(), **filtered})
+
+        if project_name:
+            project_name = await self.resolve_entity_name(project_name, "Project")
+            await self.create_relationship("List", "name", name, "BELONGS_TO", "Project", "name", project_name)
+        if section_name and project_name:
+            try:
+                await self.assign_to_section(project_name, section_name, "List", name)
+            except Exception:
+                pass
+        return {"status": "created", "name": name, "list_type": list_type}
+
+    async def add_list_entry(self, list_name: str, content: str) -> dict:
+        q = """
+        MATCH (l:List {name: $lname})
+        CREATE (e:ListEntry {content: $content, checked: false, added_at: $now})
+        CREATE (l)-[:HAS_ENTRY]->(e)
+        RETURN e.content
+        """
+        rows = await self.query(q, {"lname": list_name, "content": content, "now": _now()})
+        if not rows:
+            return {"error": f"List '{list_name}' not found"}
+        return {"status": "added", "list": list_name, "entry": content}
+
+    async def check_list_entry(self, list_name: str, content: str, checked: bool = True) -> dict:
+        q = """
+        MATCH (l:List {name: $lname})-[:HAS_ENTRY]->(e:ListEntry)
+        WHERE toLower(e.content) CONTAINS toLower($content)
+        SET e.checked = $checked, e.checked_at = $now
+        RETURN e.content
+        """
+        rows = await self.query(q, {"lname": list_name, "content": content, "checked": checked, "now": _now()})
+        if not rows:
+            return {"error": f"Entry '{content}' not found in list '{list_name}'"}
+        return {"status": "checked" if checked else "unchecked", "entry": rows[0][0]}
+
+    async def remove_list_entry(self, list_name: str, content: str) -> dict:
+        q = """
+        MATCH (l:List {name: $lname})-[:HAS_ENTRY]->(e:ListEntry)
+        WHERE toLower(e.content) CONTAINS toLower($content)
+        DETACH DELETE e
+        RETURN l.name
+        """
+        rows = await self.query(q, {"lname": list_name, "content": content})
+        if not rows:
+            return {"error": f"Entry '{content}' not found in list '{list_name}'"}
+        return {"status": "removed", "list": list_name, "entry": content}
+
+    async def query_list(self, list_name: str) -> str:
+        q = """
+        MATCH (l:List {name: $lname})
+        OPTIONAL MATCH (l)-[:HAS_ENTRY]->(e:ListEntry)
+        RETURN l, collect({content: e.content, checked: e.checked, added_at: e.added_at})
+        """
+        rows = await self.query(q, {"lname": list_name})
+        if not rows:
+            return f"List '{list_name}' not found."
+        node_props = rows[0][0].properties if hasattr(rows[0][0], "properties") else rows[0][0]
+        entries = [e for e in (rows[0][1] or []) if e.get("content")]
+
+        parts = [f"List: {node_props.get('name')} ({node_props.get('list_type', 'checklist')})"]
+        if entries:
+            for e in entries:
+                mark = "x" if e.get("checked") else " "
+                parts.append(f"  [{mark}] {e['content']}")
+        else:
+            parts.append("  (empty)")
+        return "\n".join(parts)
+
+    async def query_lists_overview(self, project_name: str | None = None) -> str:
+        if project_name:
+            project_name = await self.resolve_entity_name(project_name, "Project")
+            q = """
+            MATCH (l:List)-[:BELONGS_TO]->(p:Project {name: $pname})
+            OPTIONAL MATCH (l)-[:HAS_ENTRY]->(e:ListEntry)
+            RETURN l.name, l.list_type, count(e), sum(CASE WHEN e.checked = true THEN 1 ELSE 0 END)
+            """
+            rows = await self.query(q, {"pname": project_name})
+        else:
+            q = """
+            MATCH (l:List)
+            OPTIONAL MATCH (l)-[:HAS_ENTRY]->(e:ListEntry)
+            RETURN l.name, l.list_type, count(e), sum(CASE WHEN e.checked = true THEN 1 ELSE 0 END)
+            LIMIT 30
+            """
+            rows = await self.query(q)
+
+        if not rows:
+            return "No lists found."
+        parts = ["Lists:"]
+        for r in rows:
+            name, ltype, total, checked = r
+            total = total or 0
+            checked = checked or 0
+            progress = f" ({checked}/{total} checked)" if total > 0 else ""
+            parts.append(f"  - {name} [{ltype}]{progress}")
+        return "\n".join(parts)
+
+    async def delete_list(self, list_name: str) -> dict:
+        q = """
+        MATCH (l:List {name: $name})
+        OPTIONAL MATCH (l)-[:HAS_ENTRY]->(e:ListEntry)
+        DETACH DELETE l
+        FOREACH (entry IN collect(e) | DETACH DELETE entry)
+        RETURN $name
+        """
+        rows = await self.query(q, {"name": list_name})
+        if not rows:
+            return {"error": f"List '{list_name}' not found"}
+        return {"status": "deleted", "name": list_name}
 
     # --- Expense ---
     async def create_expense(self, description: str, amount: float, **props) -> None:
@@ -1686,7 +1925,10 @@ class GraphService:
 
     # --- Entity-to-File linking ---
     _PSEUDO_ENTITY_TYPES = {"DebtPayment", "ItemUsage", "ItemMove", "ReminderAction"}
-    _PROJECT_LINKABLE_TYPES = {"Task", "Knowledge", "Idea", "Sprint"}
+    _TOOL_ONLY_TYPES = {"Section", "ListEntry"}  # Created via tools, not extraction
+    _PROJECT_LINKABLE_TYPES = {"Task", "Knowledge", "Idea", "Sprint", "Section", "List"}
+    _SECTION_LINKABLE_TYPES = {"Task", "Knowledge", "Idea", "Reminder", "Item", "Sprint", "List"}
+    _DEFAULT_PHASES = ["Planning", "Preparation", "Execution", "Review"]
 
     async def _link_entity_to_file(self, entity_type: str, entity_name: str, file_hash: str) -> None:
         """Create EXTRACTED_FROM relationship between entity and File node."""
@@ -1731,6 +1973,10 @@ class GraphService:
                     logger.info("Suppressed Project entity '%s' — active project is '%s'", ename, project_name)
                     continue
 
+                # Skip tool-only types (Section, ListEntry) — created via tools, not extraction
+                if etype in self._TOOL_ONLY_TYPES:
+                    continue
+
                 try:
                     # Sprint handling
                     if etype == "Sprint":
@@ -1772,6 +2018,7 @@ class GraphService:
                         "Reminder": lambda n, **p: self.create_reminder(n, **p),
                         "Knowledge": lambda n, **p: self._create_generic("Knowledge", "title", n, **p),
                         "Item": lambda n, **p: self.upsert_item(n, **p),
+                        "List": lambda n, **p: self.create_list(n, **p),
                     }.get(etype)
 
                     if etype == "DebtPayment":
@@ -2544,20 +2791,25 @@ class GraphService:
 
     # --- Projects Overview ---
     async def query_project_details(self, name: str) -> str:
-        """Return all properties and linked tasks for a single project."""
+        """Return all properties, sections, lists, and linked tasks for a single project."""
         name = await self.resolve_entity_name(name, "Project")
         q = """
         MATCH (p:Project)
         WHERE toLower(p.name) CONTAINS toLower($name)
         OPTIONAL MATCH (t:Task)-[:BELONGS_TO]->(p)
-        RETURN p, collect({title: t.title, status: t.status, priority: t.priority})
+        WHERE NOT (t)-[:IN_SECTION]->(:Section)
+        OPTIONAL MATCH (p)-[:HAS_SECTION]->(s:Section)
+        RETURN p,
+               collect(DISTINCT {title: t.title, status: t.status, priority: t.priority}),
+               collect(DISTINCT {sname: s.name, stype: s.section_type, sorder: s.order, sstatus: s.status})
         """
         rows = await self.query(q, {"name": name})
         if not rows:
             return f"No project found matching '{name}'."
 
         node_props = rows[0][0].properties if hasattr(rows[0][0], "properties") else rows[0][0]
-        tasks = [t for t in (rows[0][1] or []) if t.get("title")]
+        unsectioned_tasks = [t for t in (rows[0][1] or []) if t.get("title")]
+        sections_raw = [s for s in (rows[0][2] or []) if s.get("sname")]
 
         parts = [f"Project: {node_props.get('name', name)}"]
         skip_keys = {"name", "created_at", "updated_at", "name_aliases"}
@@ -2569,13 +2821,58 @@ class GraphService:
                 continue
             parts.append(f"  {k}: {v}")
 
-        if tasks:
-            parts.append(f"  Tasks ({len(tasks)}):")
-            for t in tasks:
+        # Show sections with their entities
+        seen_sections = set()
+        sorted_sections = sorted(sections_raw, key=lambda s: (s.get("sorder") or 999, s.get("sname", "")))
+        for sec in sorted_sections:
+            sname = sec["sname"]
+            if sname in seen_sections:
+                continue
+            seen_sections.add(sname)
+            stype = sec.get("stype", "topic")
+            label = " (phase)" if stype == "phase" else ""
+            active = " *active*" if node_props.get("active_phase") == sname else ""
+            parts.append(f"\n  Section: {sname}{label}{active}")
+
+            # Query entities in this section
+            q_sec = """
+            MATCH (s:Section {name: $sname})<-[:IN_SECTION]-(e)
+            MATCH (:Project {name: $pname})-[:HAS_SECTION]->(s)
+            RETURN labels(e)[0], e.name, e.title, e.status
+            LIMIT 50
+            """
+            sec_rows = await self.query(q_sec, {"sname": sname, "pname": node_props.get("name", name)})
+            if sec_rows:
+                for sr in sec_rows:
+                    elabel = sr[0]
+                    ename = sr[1] or sr[2] or "?"
+                    estatus = f" [{sr[3]}]" if sr[3] else ""
+                    parts.append(f"    - [{elabel}] {ename}{estatus}")
+            else:
+                parts.append("    (empty)")
+
+        # Unsectioned tasks
+        if unsectioned_tasks:
+            parts.append(f"\n  Tasks (unsectioned, {len(unsectioned_tasks)}):")
+            for t in unsectioned_tasks:
                 status_tag = f" [{t['status']}]" if t.get("status") else ""
                 parts.append(f"    - {t['title']}{status_tag}")
-        else:
-            parts.append("  No tasks linked.")
+
+        # Lists linked to project
+        q_lists = """
+        MATCH (l:List)-[:BELONGS_TO]->(p:Project {name: $pname})
+        OPTIONAL MATCH (l)-[:HAS_ENTRY]->(e:ListEntry)
+        RETURN l.name, l.list_type, count(e), sum(CASE WHEN e.checked = true THEN 1 ELSE 0 END)
+        """
+        list_rows = await self.query(q_lists, {"pname": node_props.get("name", name)})
+        if list_rows and any(r[0] for r in list_rows):
+            parts.append("\n  Lists:")
+            for r in list_rows:
+                if r[0]:
+                    total = r[2] or 0
+                    checked = r[3] or 0
+                    progress = f" ({checked}/{total})" if total > 0 else ""
+                    parts.append(f"    - {r[0]} [{r[1]}]{progress}")
 
         return "\n".join(parts)
 
