@@ -136,6 +136,8 @@ TOOLS = [
                     "due_date": {"type": "string", "description": "تاريخ جديد YYYY-MM-DD (للتعديل أو التأجيل)"},
                     "time": {"type": "string", "description": "وقت جديد HH:MM (24h)"},
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "recurrence": {"type": "string", "enum": ["daily", "weekly", "monthly", "yearly", ""], "description": "تكرار: daily/weekly/monthly/yearly أو فارغ لإلغاء التكرار"},
+                    "new_title": {"type": "string", "description": "عنوان جديد للتذكير (اختياري)"},
                 },
                 "required": ["query", "action"],
             },
@@ -588,7 +590,8 @@ class ToolCallingService:
     async def _handle_update_reminder(
         self, query: str, action: str,
         due_date: str | None = None, time: str | None = None,
-        priority: int | None = None,
+        priority: int | None = None, recurrence: str | None = None,
+        new_title: str | None = None,
     ) -> dict:
         cleaned = self._PAREN_RE.sub(" ", query).strip()
 
@@ -625,6 +628,10 @@ class ToolCallingService:
                     kwargs["due_date"] = f"{today}T{time}"
         if priority is not None:
             kwargs["priority"] = priority
+        if recurrence is not None:
+            kwargs["recurrence"] = recurrence
+        if new_title:
+            kwargs["new_title"] = new_title
         if not kwargs:
             return {"error": "No fields to update"}
 
