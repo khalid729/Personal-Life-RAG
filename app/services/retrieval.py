@@ -223,7 +223,17 @@ class RetrievalService:
         source_used = source
 
         if source == "vector" or source == "auto":
-            vector_results = await self.vector.search(query_en, limit=limit)
+            vector_results, section_text = await asyncio.gather(
+                self.vector.search(query_en, limit=limit),
+                self.graph.search_sections(query_en, limit=15),
+            )
+            if section_text:
+                results.append({
+                    "text": section_text,
+                    "score": 1.0,
+                    "source": "section",
+                    "metadata": {},
+                })
             for r in vector_results:
                 results.append({
                     "text": r["text"],
