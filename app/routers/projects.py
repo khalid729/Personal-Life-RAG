@@ -28,7 +28,7 @@ class FocusRequest(BaseModel):
 @router.post("/focus")
 async def focus_project(req: FocusRequest, request: Request):
     graph = request.app.state.retrieval.graph
-    memory = request.app.state.memory
+    memory = request.app.state.retrieval.memory
     resolved = await graph.resolve_entity_name(req.name, "Project")
     # Verify project exists
     rows = await graph.query(
@@ -44,7 +44,7 @@ async def focus_project(req: FocusRequest, request: Request):
 
 @router.post("/unfocus")
 async def unfocus_project(request: Request, session_id: str = "claude-desktop"):
-    memory = request.app.state.memory
+    memory = request.app.state.retrieval.memory
     await memory.clear_active_project(session_id)
     return {"status": "unfocused"}
 
