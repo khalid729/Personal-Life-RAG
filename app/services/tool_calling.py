@@ -52,7 +52,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "عنوان التذكير بالعربي"},
-                    "due_date": {"type": "string", "description": "تاريخ الاستحقاق YYYY-MM-DD"},
+                    "due_date": {"type": "string", "description": "تاريخ أول استحقاق YYYY-MM-DD — لو أسبوعي ليوم محدد (مثل كل اثنين)، حط تاريخ أقرب اثنين جاي"},
                     "time": {"type": "string", "description": "الوقت HH:MM (24h)"},
                     "recurrence": {
                         "type": "string",
@@ -133,7 +133,7 @@ TOOLS = [
                         "enum": ["update", "done", "snooze", "cancel"],
                         "description": "نوع الإجراء: update=تعديل، done=إنجاز، snooze=تأجيل، cancel=إلغاء",
                     },
-                    "due_date": {"type": "string", "description": "تاريخ جديد YYYY-MM-DD (للتعديل أو التأجيل)"},
+                    "due_date": {"type": "string", "description": "تاريخ YYYY-MM-DD — مهم: لو التكرار أسبوعي ويوم محدد (مثلاً كل اثنين)، حط تاريخ أقرب يوم اثنين جاي"},
                     "time": {"type": "string", "description": "وقت جديد HH:MM (24h)"},
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                     "recurrence": {"type": "string", "enum": ["daily", "weekly", "monthly", "yearly", ""], "description": "تكرار: daily/weekly/monthly/yearly أو فارغ لإلغاء التكرار"},
