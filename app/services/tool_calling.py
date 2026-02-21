@@ -8,7 +8,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from app.config import get_settings
 from app.prompts.tool_system import build_tool_system_prompt
@@ -52,12 +52,13 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "عنوان التذكير بالعربي"},
-                    "due_date": {"type": "string", "description": "تاريخ أول استحقاق YYYY-MM-DD — لو أسبوعي ليوم محدد (مثل كل اثنين)، حط تاريخ أقرب اثنين جاي"},
+                    "due_date": {"type": "string", "description": "تاريخ أول استحقاق YYYY-MM-DD"},
                     "time": {"type": "string", "description": "الوقت HH:MM (24h)"},
                     "recurrence": {
                         "type": "string",
                         "enum": ["daily", "weekly", "monthly", "yearly"],
                     },
+                    "repeat_day": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"], "description": "لو التكرار أسبوعي، حدد يوم الأسبوع (مثلاً monday لكل اثنين)"},
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                 },
                 "required": ["title"],
@@ -133,10 +134,11 @@ TOOLS = [
                         "enum": ["update", "done", "snooze", "cancel"],
                         "description": "نوع الإجراء: update=تعديل، done=إنجاز، snooze=تأجيل، cancel=إلغاء",
                     },
-                    "due_date": {"type": "string", "description": "تاريخ YYYY-MM-DD — مهم: لو التكرار أسبوعي ويوم محدد (مثلاً كل اثنين)، حط تاريخ أقرب يوم اثنين جاي"},
+                    "due_date": {"type": "string", "description": "تاريخ YYYY-MM-DD"},
                     "time": {"type": "string", "description": "وقت جديد HH:MM (24h)"},
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                     "recurrence": {"type": "string", "enum": ["daily", "weekly", "monthly", "yearly", ""], "description": "تكرار: daily/weekly/monthly/yearly أو فارغ لإلغاء التكرار"},
+                    "repeat_day": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"], "description": "لو التكرار أسبوعي، حدد يوم الأسبوع"},
                     "new_title": {"type": "string", "description": "عنوان جديد للتذكير (اختياري)"},
                 },
                 "required": ["query", "action"],
@@ -390,6 +392,25 @@ def _now() -> str:
     return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 
+_WEEKDAY_MAP = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def _next_weekday(day_name: str, after: date | None = None) -> str:
+    """Return YYYY-MM-DD of the next occurrence of the given weekday."""
+    target = _WEEKDAY_MAP.get(day_name.lower())
+    if target is None:
+        return ""
+    tz = timezone(timedelta(hours=settings.timezone_offset_hours))
+    base = after or datetime.now(tz).date()
+    days_ahead = (target - base.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7  # next week if today is the target day
+    return (base + timedelta(days=days_ahead)).isoformat()
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -452,8 +473,13 @@ class ToolCallingService:
     async def _handle_create_reminder(
         self, title: str, due_date: str | None = None,
         time: str | None = None, recurrence: str | None = None,
-        priority: int | None = None,
+        priority: int | None = None, repeat_day: str | None = None,
     ) -> dict:
+        # Auto-compute due_date from repeat_day for weekly reminders
+        if repeat_day and recurrence == "weekly":
+            computed = _next_weekday(repeat_day)
+            if computed:
+                due_date = computed
         props = {}
         if due_date:
             props["due_date"] = due_date
@@ -591,7 +617,7 @@ class ToolCallingService:
         self, query: str, action: str,
         due_date: str | None = None, time: str | None = None,
         priority: int | None = None, recurrence: str | None = None,
-        new_title: str | None = None,
+        new_title: str | None = None, repeat_day: str | None = None,
     ) -> dict:
         cleaned = self._PAREN_RE.sub(" ", query).strip()
 
@@ -604,6 +630,12 @@ class ToolCallingService:
                 if best_title:
                     result = await self.graph.update_reminder_status(best_title, action=action, snooze_until=snooze_until)
             return result
+
+        # Auto-compute due_date from repeat_day for weekly reminders
+        if repeat_day and recurrence == "weekly":
+            computed = _next_weekday(repeat_day)
+            if computed:
+                due_date = computed
 
         # action == "update"
         kwargs = {}
