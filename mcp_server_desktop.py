@@ -1,7 +1,7 @@
 """
 MCP Server for Claude Desktop (stdio transport).
 
-Standalone process — 22 direct REST tools, no double-LLM.
+Standalone process — 25 direct REST tools, no double-LLM.
 Claude Desktop handles Arabic, date parsing, and reasoning natively.
 """
 
@@ -420,8 +420,39 @@ async def get_inventory(search: str = "", category: str = "") -> str:
 
 
 # ============================================================
-# Projects (2 tools)
+# Projects (5 tools)
 # ============================================================
+
+@mcp.tool()
+async def get_project_details(name: str) -> str:
+    """Get full details of a project — sections, entities with descriptions, tasks, and lists.
+
+    Args:
+        name: Project name or keyword (fuzzy matched). Arabic names work too.
+    """
+    data = await api_get("/projects/details", params={"name": name})
+    return data.get("details", f"No project found matching '{name}'.")
+
+
+@mcp.tool()
+async def focus_project(name: str) -> str:
+    """Focus on a project — all subsequent queries will be scoped to this project.
+
+    Args:
+        name: Project name or keyword. Arabic names work too (e.g. 'الستيفنس').
+    """
+    data = await api_post("/projects/focus", json={"name": name, "session_id": "claude-desktop"})
+    if data.get("error"):
+        return f"Error: {data['error']}"
+    return f"Focused on project: {data.get('project', name)}"
+
+
+@mcp.tool()
+async def unfocus_project() -> str:
+    """Remove project focus — queries will no longer be scoped to any project."""
+    data = await api_post("/projects/unfocus", json={"session_id": "claude-desktop"})
+    return "Project focus cleared."
+
 
 @mcp.tool()
 async def delete_project(name: str) -> str:
