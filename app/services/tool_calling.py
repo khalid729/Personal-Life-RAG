@@ -607,10 +607,22 @@ class ToolCallingService:
         if due_date:
             kwargs["due_date"] = due_date
         if time:
-            kwargs["due_date"] = f"{due_date or ''}T{time}" if due_date else None
-            if not kwargs.get("due_date"):
-                # time-only update: keep existing date, just add time
-                pass
+            if due_date:
+                kwargs["due_date"] = f"{due_date}T{time}"
+            else:
+                # time-only update: look up existing date and combine
+                existing = await self.graph.query(
+                    "MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($t) RETURN r.due_date LIMIT 1",
+                    {"t": cleaned},
+                )
+                if existing and existing[0][0]:
+                    existing_date = str(existing[0][0]).split("T")[0]
+                    kwargs["due_date"] = f"{existing_date}T{time}"
+                else:
+                    # No existing date — use today
+                    tz = timezone(timedelta(hours=settings.timezone_offset_hours))
+                    today = datetime.now(tz).strftime("%Y-%m-%d")
+                    kwargs["due_date"] = f"{today}T{time}"
         if priority is not None:
             kwargs["priority"] = priority
         if not kwargs:

@@ -5,11 +5,19 @@ Standalone process — 25 direct REST tools, no double-LLM.
 Claude Desktop handles Arabic, date parsing, and reasoning natively.
 """
 
+import logging
 import sys
 from pathlib import Path
 
 import httpx
 from fastmcp import FastMCP
+
+logging.basicConfig(
+    filename="/tmp/mcp_desktop.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+log = logging.getLogger("mcp_desktop")
 
 # Add project root to path for config import
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -34,17 +42,29 @@ mcp = FastMCP(
 # --- Helpers ---
 
 async def api_get(path: str, params: dict | None = None) -> dict:
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=TIMEOUT) as client:
-        resp = await client.get(path, params=params)
-        resp.raise_for_status()
-        return resp.json()
+    log.info("GET %s params=%s", path, params)
+    try:
+        async with httpx.AsyncClient(base_url=API_BASE, timeout=TIMEOUT) as client:
+            resp = await client.get(path, params=params)
+            resp.raise_for_status()
+            log.info("GET %s → %s", path, resp.status_code)
+            return resp.json()
+    except Exception as e:
+        log.error("GET %s FAILED: %s", path, e)
+        raise
 
 
 async def api_post(path: str, json: dict | None = None) -> dict:
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=TIMEOUT) as client:
-        resp = await client.post(path, json=json)
-        resp.raise_for_status()
-        return resp.json()
+    log.info("POST %s json=%s", path, json)
+    try:
+        async with httpx.AsyncClient(base_url=API_BASE, timeout=TIMEOUT) as client:
+            resp = await client.post(path, json=json)
+            resp.raise_for_status()
+            log.info("POST %s → %s", path, resp.status_code)
+            return resp.json()
+    except Exception as e:
+        log.error("POST %s FAILED: %s", path, e)
+        raise
 
 
 # ============================================================
