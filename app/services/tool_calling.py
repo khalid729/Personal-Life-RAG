@@ -10,6 +10,8 @@ import logging
 import re
 from datetime import date, datetime, timedelta, timezone
 
+import httpx
+
 from app.config import get_settings
 from app.prompts.tool_system import build_tool_system_prompt
 
@@ -59,6 +61,11 @@ TOOLS = [
                         "enum": ["daily", "weekly", "monthly", "yearly"],
                     },
                     "repeat_day": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"], "description": "لو التكرار أسبوعي، حدد يوم الأسبوع (مثلاً monday لكل اثنين)"},
+                    "prayer": {
+                        "type": "string",
+                        "enum": ["fajr", "dhuhr", "asr", "maghrib", "isha"],
+                        "description": "وقت صلاة — لو قال 'بعد صلاة العصر' حط asr. يحسب الوقت تلقائياً",
+                    },
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                 },
                 "required": ["title"],
@@ -139,6 +146,11 @@ TOOLS = [
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                     "recurrence": {"type": "string", "enum": ["daily", "weekly", "monthly", "yearly", ""], "description": "تكرار: daily/weekly/monthly/yearly أو فارغ لإلغاء التكرار"},
                     "repeat_day": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"], "description": "لو التكرار أسبوعي، حدد يوم الأسبوع"},
+                    "prayer": {
+                        "type": "string",
+                        "enum": ["fajr", "dhuhr", "asr", "maghrib", "isha"],
+                        "description": "وقت صلاة — لو قال 'بعد صلاة العصر' حط asr. يحسب الوقت تلقائياً",
+                    },
                     "new_title": {"type": "string", "description": "عنوان جديد للتذكير (اختياري)"},
                 },
                 "required": ["query", "action"],
@@ -412,6 +424,65 @@ def _next_weekday(day_name: str, after: date | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Prayer time resolver
+# ---------------------------------------------------------------------------
+
+_PRAYER_NAMES = {
+    "fajr": "Fajr", "dhuhr": "Dhuhr", "asr": "Asr",
+    "maghrib": "Maghrib", "isha": "Isha",
+}
+
+_prayer_cache: dict[str, dict[str, str]] = {}  # {"2026-02-23": {"Fajr": "05:12", ...}}
+
+
+async def _get_prayer_time(prayer: str, offset_minutes: int = 0) -> tuple[str, str]:
+    """Return (date_str, time_str) for the next occurrence of the prayer.
+
+    If today's prayer has passed, returns tomorrow's.
+    """
+    tz = timezone(timedelta(hours=settings.timezone_offset_hours))
+    now = datetime.now(tz)
+    today = now.strftime("%Y-%m-%d")
+
+    # Fetch & cache
+    if today not in _prayer_cache:
+        try:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                resp = await client.get(
+                    "http://api.aladhan.com/v1/timingsByCity",
+                    params={
+                        "city": settings.prayer_city,
+                        "country": settings.prayer_country,
+                        "method": settings.prayer_method,
+                    },
+                )
+                resp.raise_for_status()
+                timings = resp.json()["data"]["timings"]
+                _prayer_cache.clear()  # keep only today
+                _prayer_cache[today] = {k: v[:5] for k, v in timings.items()}  # "HH:MM"
+        except Exception as e:
+            logger.warning("Prayer API failed: %s", e)
+            return today, ""
+
+    prayer_key = _PRAYER_NAMES.get(prayer.lower(), prayer)
+    prayer_time = _prayer_cache.get(today, {}).get(prayer_key, "")
+    if not prayer_time:
+        return today, ""
+
+    # Apply offset
+    h, m = map(int, prayer_time.split(":"))
+    prayer_dt = now.replace(hour=h, minute=m, second=0, microsecond=0) + timedelta(minutes=offset_minutes)
+
+    # If already passed today, use tomorrow
+    result_date = today
+    if prayer_dt <= now:
+        prayer_dt += timedelta(days=1)
+        result_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    return result_date, prayer_dt.strftime("%H:%M")
+
+
+# ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
 
@@ -474,12 +545,19 @@ class ToolCallingService:
         self, title: str, due_date: str | None = None,
         time: str | None = None, recurrence: str | None = None,
         priority: int | None = None, repeat_day: str | None = None,
+        prayer: str | None = None,
     ) -> dict:
         # Auto-compute due_date from repeat_day for weekly reminders
         if repeat_day and recurrence == "weekly":
             computed = _next_weekday(repeat_day)
             if computed:
                 due_date = computed
+        # Prayer time resolution
+        if prayer:
+            p_date, p_time = await _get_prayer_time(prayer, settings.prayer_offset_minutes)
+            if p_time:
+                due_date = due_date or p_date
+                time = p_time
         props = {}
         if due_date:
             props["due_date"] = due_date
@@ -618,6 +696,7 @@ class ToolCallingService:
         due_date: str | None = None, time: str | None = None,
         priority: int | None = None, recurrence: str | None = None,
         new_title: str | None = None, repeat_day: str | None = None,
+        prayer: str | None = None,
     ) -> dict:
         cleaned = self._PAREN_RE.sub(" ", query).strip()
 
@@ -636,6 +715,13 @@ class ToolCallingService:
             computed = _next_weekday(repeat_day)
             if computed:
                 due_date = computed
+
+        # Prayer time resolution
+        if prayer:
+            p_date, p_time = await _get_prayer_time(prayer, settings.prayer_offset_minutes)
+            if p_time:
+                due_date = due_date or p_date
+                time = p_time
 
         # action == "update"
         kwargs = {}

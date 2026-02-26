@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     # Timezone
     timezone_offset_hours: int = 3  # Asia/Riyadh UTC+3
 
+    # Prayer Times
+    prayer_city: str = "Dammam"
+    prayer_country: str = "Saudi Arabia"
+    prayer_method: int = 4  # Umm Al-Qura
+    prayer_offset_minutes: int = 20  # "بعد صلاة X" = prayer time + offset
+
     # Proactive System (Phase 6)
     proactive_enabled: bool = True
     proactive_morning_hour: int = 7

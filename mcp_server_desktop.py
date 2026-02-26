@@ -90,6 +90,7 @@ async def create_reminder(
     time: str = "",
     recurrence: str = "",
     priority: int = 0,
+    prayer: str = "",
 ) -> str:
     """Create a new reminder. Uses the tool-calling endpoint for reliable creation.
 
@@ -99,9 +100,13 @@ async def create_reminder(
         time: Time in HH:MM format, e.g. '14:30'. Empty = no specific time.
         recurrence: Repeat pattern — 'daily', 'weekly', 'monthly', 'yearly'. Empty = one-time.
         priority: Priority 1-5 (5=critical). 0 = default.
+        prayer: Prayer time — 'fajr', 'dhuhr', 'asr', 'maghrib', 'isha'. Automatically calculates time. Use when user says 'بعد صلاة العصر' etc.
     """
     # Build structured Arabic message for the tool-calling endpoint
     parts = [f"ذكرني: {title}"]
+    if prayer:
+        _PRAYER_AR = {"fajr": "الفجر", "dhuhr": "الظهر", "asr": "العصر", "maghrib": "المغرب", "isha": "العشاء"}
+        parts.append(f"بعد صلاة {_PRAYER_AR.get(prayer, prayer)}")
     if due_date:
         parts.append(f"تاريخ: {due_date}")
     if time:

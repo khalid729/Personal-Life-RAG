@@ -949,9 +949,15 @@ async def handle_text(message: Message):
             # Expired — remove and proceed normally
             _pending_locations.pop(sid)
 
+    # Include quoted message context if replying
+    text = message.text
+    if message.reply_to_message and message.reply_to_message.text:
+        quoted = message.reply_to_message.text[:200]
+        text = f'[رد على: "{quoted}"]\n{text}'
+
     # Use streaming for regular chat
     placeholder = await message.answer("...")
-    stream_result = await chat_api_stream(message.text, sid, placeholder)
+    stream_result = await chat_api_stream(text, sid, placeholder)
     reply_text = stream_result.get("text", "")
 
     if not reply_text.strip():
@@ -960,7 +966,7 @@ async def handle_text(message: Message):
         except Exception:
             pass
         # Fallback to non-streaming
-        result = await chat_api(message.text, sid)
+        result = await chat_api(text, sid)
         await send_reply(message, result["reply"])
 
 
