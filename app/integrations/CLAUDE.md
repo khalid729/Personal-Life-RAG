@@ -6,6 +6,7 @@
 
 - aiogram 3.x + APScheduler
 - **Text**: streams via `/chat/v2/stream`, fallback to `/chat/v2` non-streaming
+- **Reply context**: when user replies to a message, quoted text (first 200 chars) is prepended as `[رد على: "..."]` — enables updating a reminder by quoting its notification and replying "أجله لبكرة"
 - **Voice/Photos/Files**: processed via `/ingest/file`, then result injected into chat
 - **Image analysis summary**: uses `/chat/v2`
 - **No confirmation flow** — tools execute directly
@@ -50,5 +51,6 @@
 - 15 direct REST tools — no double-LLM, no STATUS detection
 - Claude handles Arabic, date parsing, category inference natively
 - `create_reminder` / `record_expense` use `/chat/v2` (tool-calling endpoint)
+- `create_reminder` has `prayer` param — maps to Arabic prayer name in message so `/chat/v2` LLM resolves the time
 - All other tools call REST endpoints directly (GET/POST)
 - Config: `~/.config/Claude/claude_desktop_config.json`

@@ -53,6 +53,8 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **Project sections**: `(Project)-[:HAS_SECTION]->(Section)` + `(Entity)-[:IN_SECTION]->(Section)` — topic or phase sections; `create_project_with_phases()` creates 4 default phases (Planning→Preparation→Execution→Review)
 - **Lists**: standalone `List` + `ListEntry` nodes — `(List)-[:HAS_ENTRY]->(ListEntry)`, optional `(List)-[:BELONGS_TO]->(Project)`. Types: shopping, ideas, checklist, reference
 - **manage_lists tool**: list/get/create/add_entry/check_entry/uncheck_entry/remove_entry/delete — bulk add via `entries` array
+- **Prayer time reminders**: `prayer` param on create/update_reminder → `_get_prayer_time()` fetches from Aladhan API (cached daily), applies configurable offset (default 20min). Auto rolls to next day if prayer passed. Config: `prayer_city`, `prayer_country`, `prayer_method`, `prayer_offset_minutes`
+- **Telegram reply context**: `reply_to_message.text` prepended as `[رد على: "..."]` so LLM understands context (update vs create)
 
 ## Key Gotchas
 

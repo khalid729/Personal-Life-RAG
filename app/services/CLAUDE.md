@@ -53,7 +53,8 @@ GraphService.set_vector_service(vector)  # entity resolution
 
 ## ToolCallingService (tool_calling.py)
 
-- **18 tools**: search_reminders, create_reminder, delete_reminder, update_reminder, add_expense, get_expense_report, get_debt_summary, record_debt, pay_debt, get_daily_plan, search_knowledge, store_note, get_person_info, manage_inventory, manage_tasks, manage_projects, merge_projects, get_productivity_stats
+- **19 tools**: search_reminders, create_reminder, delete_reminder, update_reminder, add_expense, get_expense_report, get_debt_summary, record_debt, pay_debt, get_daily_plan, search_knowledge, store_note, get_person_info, manage_inventory, manage_tasks, manage_projects, manage_lists, merge_projects, get_productivity_stats
+- **Prayer time support**: `prayer` param on create/update_reminder → `_get_prayer_time()` resolves via Aladhan API (daily cache, `follow_redirects=True`), applies `settings.prayer_offset_minutes` offset, rolls to next day if passed
 - **Chat loop**: LLM picks tools → parallel execution → LLM formats response (max 3 iterations)
 - **Streaming**: `chat_stream()` yields NDJSON, tool calls detected from stream
 - **Post-processing**: memory + vector + auto-extraction (background `asyncio.create_task`)
