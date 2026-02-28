@@ -17,3 +17,4 @@ python-dateutil>=2.9.0
 pyzbar>=0.1.9
 networkx>=3.0
 matplotlib>=3.8
+anthropic>=0.40.0

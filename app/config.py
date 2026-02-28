@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     # MCP (Phase 5)
     mcp_port: int = 8600
 
+    # Claude API
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-5-20250929"
+    use_claude_for_chat: bool = False
+
     # Timezone
     timezone_offset_hours: int = 3  # Asia/Riyadh UTC+3
 

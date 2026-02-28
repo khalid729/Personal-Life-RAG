@@ -5,7 +5,8 @@ Arabic-first personal knowledge management: agentic RAG + knowledge graph + mult
 ## Architecture
 
 ```
-FastAPI :8500 → vLLM :8000 (Qwen3-32B BF16, ~47K ctx)
+FastAPI :8500 → Claude API (chat/tool-calling, when USE_CLAUDE_FOR_CHAT=true)
+               → vLLM :8000 (extraction/enrichment/translation — always local)
                → FalkorDB :6379 (knowledge graph)
                → Qdrant :6333 (BGE-M3, 1024-dim)
                → Redis :6380 (3-layer memory)
@@ -37,6 +38,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 ## Core Patterns
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
+- **Dual LLM backend**: Claude API for chat/tool-calling (`chat_with_tools`, `stream_with_tool_detection`), vLLM/Qwen3 for extraction/enrichment/translation. Controlled by `USE_CLAUDE_FOR_CHAT` flag. Falls back to vLLM on Claude failure.
 - **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 19 tools)
 - **search_knowledge**: 3 parallel searches — `search_sections()` (section name + entity-in-section matches) → `search_nodes()` (global graph) → vector search; section results shown first for structured project content
 - **search_reminders**: supports optional `query` param for fuzzy title search via `_find_matching_reminders()`, combined with `status` filter
