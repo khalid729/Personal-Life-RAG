@@ -56,6 +56,8 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **Lists**: standalone `List` + `ListEntry` nodes — `(List)-[:HAS_ENTRY]->(ListEntry)`, optional `(List)-[:BELONGS_TO]->(Project)`. Types: shopping, ideas, checklist, reference
 - **manage_lists tool**: list/get/create/add_entry/check_entry/uncheck_entry/remove_entry/delete — bulk add via `entries` array
 - **Prayer time reminders**: `prayer` param on create/update_reminder → `_get_prayer_time()` fetches from Aladhan API (cached daily), applies configurable offset (default 20min). Auto rolls to next day if prayer passed. Config: `prayer_city`, `prayer_country`, `prayer_method`, `prayer_offset_minutes`
+- **Persistent reminders**: `persistent=true` on `create_reminder` → reminder auto-reschedules every `nag_interval_minutes` (default 30) after firing, until user marks done/cancels. Nag loop: fire → mark notified → `reschedule_persistent_reminder()` sets `due_date = now + interval`, clears `notified_at`
+- **Snooze (fixed)**: `update_reminder(action=snooze)` keeps `status='pending'`, moves `due_date` to snooze target, clears `notified_at` so it re-fires. Resolves prayer time, date+time, or defaults to `nag_interval_minutes`. Works for all reminders (persistent resumes nagging after snooze)
 - **Telegram reply context**: `reply_to_message.text` prepended as `[رد على: "..."]` so LLM understands context (update vs create)
 
 ## Key Gotchas
@@ -75,3 +77,4 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - `merge_projects()` re-links sections (`HAS_SECTION`) and lists (`BELONGS_TO`) to target before deleting source
 - OWUI internal messages (follow-ups, titles, chat history analysis) must be blocked by Pipe — `_INTERNAL_KEYWORDS` list; `#### Tools Available` block stripped by `_TOOLS_AVAILABLE_RE` in `_strip_owui_rag_context()`
 - `post_process()` stores every conversation turn in Qdrant (`source_type=conversation`) — if OWUI garbage leaks through, it pollutes all future searches
+- Snooze used to set `status='snoozed'` which dropped reminders from `due-reminders` query forever — now keeps `status='pending'`

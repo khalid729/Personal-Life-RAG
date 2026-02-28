@@ -17,7 +17,7 @@
 | knowledge | `/knowledge` | GET / |
 | inventory | `/inventory` | GET /, POST /item, PUT /item/{name}/location, GET /unused, /report, /duplicates |
 | productivity | `/productivity` | Sprints CRUD, focus sessions, time-blocking |
-| proactive | `/proactive` | Morning/noon/evening summaries, smart alerts |
+| proactive | `/proactive` | Morning/noon/evening summaries, smart alerts, reschedule-persistent |
 | backup | `/backup` | POST /create, GET /list, POST /restore/{timestamp} |
 | graph_viz | `/graph` | GET /export, /schema, /stats, POST /image |
 
