@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     prayer_country: str = "Saudi Arabia"
     prayer_method: int = 4  # Umm Al-Qura
     prayer_offset_minutes: int = 20  # "بعد صلاة X" = prayer time + offset
+    nag_interval_minutes: int = 30  # how often persistent reminders re-fire
 
     # Proactive System (Phase 6)
     proactive_enabled: bool = True

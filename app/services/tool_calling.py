@@ -67,6 +67,10 @@ TOOLS = [
                         "description": "وقت صلاة — لو قال 'بعد صلاة العصر' حط asr. يحسب الوقت تلقائياً",
                     },
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "persistent": {
+                        "type": "boolean",
+                        "description": "كرر التذكير لحد ما يقول أبو إبراهيم خلصت أو ألغه",
+                    },
                 },
                 "required": ["title"],
             },
@@ -545,7 +549,7 @@ class ToolCallingService:
         self, title: str, due_date: str | None = None,
         time: str | None = None, recurrence: str | None = None,
         priority: int | None = None, repeat_day: str | None = None,
-        prayer: str | None = None,
+        prayer: str | None = None, persistent: bool = False,
     ) -> dict:
         # Auto-compute due_date from repeat_day for weekly reminders
         if repeat_day and recurrence == "weekly":
@@ -567,6 +571,8 @@ class ToolCallingService:
             props["recurrence"] = recurrence
         if priority is not None:
             props["priority"] = priority
+        if persistent:
+            props["persistent"] = True
         await self.graph.create_reminder(title, **props)
         return {"status": "created", "title": title, **props}
 
@@ -700,14 +706,39 @@ class ToolCallingService:
     ) -> dict:
         cleaned = self._PAREN_RE.sub(" ", query).strip()
 
-        if action in ("done", "snooze", "cancel"):
-            snooze_until = due_date if action == "snooze" else None
-            result = await self.graph.update_reminder_status(cleaned, action=action, snooze_until=snooze_until)
+        if action in ("done", "cancel"):
+            result = await self.graph.update_reminder_status(cleaned, action=action)
             if "error" in result:
-                # Cross-language fallback via vector
                 best_title = await self._vector_match_reminder(cleaned)
                 if best_title:
-                    result = await self.graph.update_reminder_status(best_title, action=action, snooze_until=snooze_until)
+                    result = await self.graph.update_reminder_status(best_title, action=action)
+            return result
+
+        if action == "snooze":
+            # Resolve snooze target from prayer, due_date+time, or default nag interval
+            if prayer:
+                p_date, p_time = await _get_prayer_time(prayer, settings.prayer_offset_minutes)
+                if p_time:
+                    snooze_until = f"{p_date}T{p_time}"
+                else:
+                    snooze_until = None
+            elif due_date and time:
+                snooze_until = f"{due_date}T{time}"
+            elif due_date:
+                snooze_until = due_date
+            elif time:
+                tz = timezone(timedelta(hours=settings.timezone_offset_hours))
+                today = datetime.now(tz).strftime("%Y-%m-%d")
+                snooze_until = f"{today}T{time}"
+            else:
+                # Default: snooze by nag_interval_minutes
+                tz = timezone(timedelta(hours=settings.timezone_offset_hours))
+                snooze_until = (datetime.now(tz) + timedelta(minutes=settings.nag_interval_minutes)).isoformat()
+            result = await self.graph.update_reminder_status(cleaned, action="snooze", snooze_until=snooze_until)
+            if "error" in result:
+                best_title = await self._vector_match_reminder(cleaned)
+                if best_title:
+                    result = await self.graph.update_reminder_status(best_title, action="snooze", snooze_until=snooze_until)
             return result
 
         # Auto-compute due_date from repeat_day for weekly reminders

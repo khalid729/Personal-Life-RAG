@@ -39,6 +39,10 @@ class MarkNotifiedRequest(BaseModel):
     title: str
 
 
+class ReschedulePersistentRequest(BaseModel):
+    title: str
+
+
 # --- Endpoints ---
 
 
@@ -158,7 +162,7 @@ async def due_reminders(request: Request):
       AND r.due_date IS NOT NULL
       AND r.due_date <= $now
       AND (r.notified_at IS NULL)
-    RETURN r.title, r.due_date, r.reminder_type, r.priority, r.description, r.recurrence
+    RETURN r.title, r.due_date, r.reminder_type, r.priority, r.description, r.recurrence, r.persistent
     ORDER BY r.priority DESC, r.due_date
     LIMIT 30
     """
@@ -172,6 +176,7 @@ async def due_reminders(request: Request):
             "priority": r[3],
             "description": r[4],
             "recurrence": r[5],
+            "persistent": bool(r[6]) if r[6] is not None else False,
         })
     return {"due_reminders": reminders}
 
@@ -192,6 +197,16 @@ async def mark_notified(req: MarkNotifiedRequest, request: Request):
         {"title": req.title, "now": _now_local().isoformat()},
     )
     return {"status": "ok"}
+
+
+@router.post("/reschedule-persistent")
+async def reschedule_persistent(req: ReschedulePersistentRequest, request: Request):
+    """Reschedule a persistent reminder to fire again after nag_interval."""
+    graph = request.app.state.retrieval.graph
+    result = await graph.reschedule_persistent_reminder(
+        req.title, nag_interval_minutes=settings.nag_interval_minutes
+    )
+    return result
 
 
 @router.post("/format-reminders")

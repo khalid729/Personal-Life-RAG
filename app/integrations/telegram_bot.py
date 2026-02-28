@@ -1182,7 +1182,7 @@ async def job_check_reminders(bot: Bot):
         for part in split_message(text):
             await bot.send_message(chat_id=settings.tg_chat_id, text=part)
 
-        # 3. Mark notified + advance recurring
+        # 3. Mark notified + advance recurring / reschedule persistent
         for r in reminders:
             try:
                 await api_post("/proactive/mark-notified", json={"title": r["title"]})
@@ -1194,6 +1194,14 @@ async def job_check_reminders(bot: Bot):
                     await api_post(
                         "/proactive/advance-reminder",
                         json={"title": r["title"], "recurrence": recurrence},
+                    )
+                except Exception:
+                    pass
+            elif r.get("persistent"):
+                try:
+                    await api_post(
+                        "/proactive/reschedule-persistent",
+                        json={"title": r["title"]},
                     )
                 except Exception:
                     pass

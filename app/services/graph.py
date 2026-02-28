@@ -849,12 +849,13 @@ class GraphService:
             elif action == "snooze":
                 q = """
                 MATCH (r:Reminder) WHERE r.title = $title
-                SET r.status = 'snoozed',
+                SET r.due_date = $snooze_until,
+                    r.notified_at = NULL,
                     r.snooze_count = coalesce(r.snooze_count, 0) + 1,
-                    r.snoozed_until = $snooze_until
+                    r.updated_at = $now
                 RETURN r.title, r.status, r.snooze_count
                 """
-                await self.query(q, {"title": r_title, "snooze_until": snooze_until or ""})
+                await self.query(q, {"title": r_title, "snooze_until": snooze_until or "", "now": _now()})
             elif action == "cancel":
                 q = """
                 MATCH (r:Reminder) WHERE r.title = $title
@@ -920,6 +921,26 @@ class GraphService:
         await self.query(q_update, {"title": title, "next_due": next_due_str, "now": _now()})
 
         return {"title": r_title, "next_due": next_due_str, "recurrence": recurrence}
+
+    async def reschedule_persistent_reminder(self, title: str, nag_interval_minutes: int = 30) -> dict:
+        """Reschedule a persistent reminder to fire again after nag_interval_minutes."""
+        next_due = _now_dt() + timedelta(minutes=nag_interval_minutes)
+        next_due_str = next_due.isoformat()
+
+        q = """
+        MATCH (r:Reminder)
+        WHERE toLower(r.title) CONTAINS toLower($title)
+          AND r.status = 'pending'
+          AND r.persistent = true
+        SET r.due_date = $next_due, r.notified_at = NULL,
+            r.snooze_count = coalesce(r.snooze_count, 0) + 1,
+            r.updated_at = $now
+        RETURN r.title
+        """
+        rows = await self.query(q, {"title": title, "next_due": next_due_str, "now": _now()})
+        if not rows:
+            return {"error": f"No persistent pending reminder found matching '{title}'"}
+        return {"title": rows[0][0], "next_due": next_due_str, "rescheduled": True}
 
     async def delete_reminder(self, title: str) -> dict:
         """Delete a reminder by title (fuzzy match). Returns deleted title or error."""
