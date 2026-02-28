@@ -6,7 +6,7 @@
 
 | Service | File | Backend |
 |---------|------|---------|
-| LLMService | llm.py | Claude API (chat/tools) + vLLM :8000 (extraction) |
+| LLMService | llm.py | Claude API (chat/tools) + vLLM :8000 (extraction/vision) |
 | GraphService | graph.py (110KB) | FalkorDB :6379 |
 | VectorService | vector.py | Qdrant :6333 + BGE-M3 GPU |
 | MemoryService | memory.py | Redis :6380 (3 layers) |

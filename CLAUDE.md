@@ -38,7 +38,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 ## Core Patterns
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
-- **Dual LLM backend**: Claude API for chat/tool-calling (`chat_with_tools`, `stream_with_tool_detection`), vLLM/Qwen3 for extraction/enrichment/translation. Controlled by `USE_CLAUDE_FOR_CHAT` flag. Falls back to vLLM on Claude failure.
+- **Dual LLM backend**: Claude API for chat/tool-calling (`chat_with_tools`, `stream_with_tool_detection`), vLLM/Qwen3-VL for everything else (extraction, enrichment, translation, vision/image analysis, PDF fallback). Controlled by `USE_CLAUDE_FOR_CHAT` flag with automatic vLLM fallback on Claude failure.
 - **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 19 tools)
 - **search_knowledge**: 3 parallel searches — `search_sections()` (section name + entity-in-section matches) → `search_nodes()` (global graph) → vector search; section results shown first for structured project content
 - **search_reminders**: supports optional `query` param for fuzzy title search via `_find_matching_reminders()`, combined with `status` filter
@@ -63,6 +63,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - FalkorDB: primitives only; `r.key=$val` in SET only, not CREATE; `toLower()` for case-insensitive
 - Qwen3: needs `enable_thinking: False` (handled in llm.py)
 - `.env` overrides config.py defaults — check `.env` first
+- Dual backend: only `chat_with_tools` + `stream_with_tool_detection` use Claude; all other LLM methods (`chat`, `extract_facts`, `classify_file`, `analyze_image`, `translate_*`) always use vLLM — requires server restart after changing `.env`
 - Prompts MUST include current date/time (UTC+3)
 - `datetime.utcnow()` deprecated → `datetime.now(timezone(timedelta(hours=3)))`
 - Hijri dates: auto-convert year < 1900 via `hijri-converter`
