@@ -92,7 +92,7 @@ async def ingest_url(req: URLIngestRequest, request: Request):
 
 @router.get("/file/{file_hash}")
 async def download_file(request: Request, file_hash: str):
-    graph = request.app.state.graph_service
+    graph = request.app.state.retrieval.graph
     file_info = await graph.find_file_by_hash(file_hash)
     if not file_info:
         raise HTTPException(status_code=404, detail="File not found")
