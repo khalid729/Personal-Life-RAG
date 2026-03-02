@@ -63,7 +63,9 @@ class UserRegistry:
     async def _store_profile(self, profile: UserProfile, raw_key: str = "") -> None:
         """Store profile in Redis + memory caches."""
         redis_key = f"rag:user:{profile.user_id}"
-        await self._redis.hset(redis_key, mapping=profile.model_dump())
+        # Redis hset requires str/int/float values — convert bools
+        dump = {k: str(v) if isinstance(v, bool) else v for k, v in profile.model_dump().items()}
+        await self._redis.hset(redis_key, mapping=dump)
         # If we have raw key, store a reverse lookup
         if raw_key:
             await self._redis.set(f"rag:apikey:{profile.api_key_hash}", profile.user_id)
@@ -85,6 +87,9 @@ class UserRegistry:
             for key in keys:
                 data = await self._redis.hgetall(key)
                 if data:
+                    # Redis returns bytes/str — fix bool fields
+                    if "enabled" in data:
+                        data["enabled"] = data["enabled"] not in (b"False", "False", "0", b"0")
                     profile = UserProfile(**data)
                     self._cache_profile(profile)
             if cursor == 0:
