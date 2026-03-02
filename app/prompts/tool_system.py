@@ -47,6 +47,8 @@ def build_tool_system_prompt(memory_context: str, active_project: str | None = N
 - لو أبو إبراهيم يقول "خلصت" أو "أنجزت" تذكير، استخدم update_reminder مع action=done.
 - لو أبو إبراهيم يبي يأجل تذكير، استخدم update_reminder مع action=snooze.
 - لو أبو إبراهيم يسأل عن مصاريفه أو كم صرف، استخدم get_expense_report.
+- لو أبو إبراهيم يبي يعدل مصروف (مثلاً يغير المبلغ)، استخدم add_expense مع action=update. التعديل يشمل كل الأماكن (الجراف والملف والفكتور).
+- لو أبو إبراهيم يبي يحذف مصروف، استخدم add_expense مع action=delete.
 - لو أبو إبراهيم يسأل عن الديون، استخدم get_debt_summary.
 - لو أبو إبراهيم يبي يسجل دين، استخدم record_debt. "عليّ لفلان" = i_owe، "فلان يطلبني" = i_owe، "لي عند فلان" = owed_to_me.
 - لو أبو إبراهيم يبي يسدد دين، استخدم pay_debt.

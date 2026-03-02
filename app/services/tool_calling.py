@@ -104,17 +104,22 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "add_expense",
-            "description": "سجّل مصروف جديد.",
+            "description": "سجّل أو عدّل أو احذف مصروف.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "description": {"type": "string", "description": "وصف المصروف"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "update", "delete"],
+                        "description": "create=إضافة جديد (افتراضي)، update=تعديل مصروف موجود، delete=حذف",
+                    },
+                    "description": {"type": "string", "description": "وصف المصروف (أو وصف المصروف المراد تعديله/حذفه)"},
                     "amount": {"type": "number", "description": "المبلغ بالريال"},
                     "category": {"type": "string", "description": "التصنيف (طعام، مواصلات، ترفيه، إلخ)"},
                     "date": {"type": "string", "description": "التاريخ YYYY-MM-DD (الافتراضي: اليوم)"},
                     "vendor": {"type": "string", "description": "المتجر أو الجهة"},
                 },
-                "required": ["description", "amount"],
+                "required": ["description"],
             },
         },
     },
@@ -729,10 +734,46 @@ class ToolCallingService:
             return None
 
     async def _handle_add_expense(
-        self, description: str, amount: float,
+        self, description: str, amount: float | None = None,
         category: str | None = None, date: str | None = None,
-        vendor: str | None = None,
+        vendor: str | None = None, action: str | None = None,
     ) -> dict:
+        action = (action or "create").lower()
+
+        if action == "delete":
+            deleted = await self.graph.delete_expense(
+                match_desc=description, match_vendor=vendor or "",
+            )
+            if not deleted:
+                return {"error": f"لم أجد مصروف يطابق: {description}"}
+            return {"status": "deleted", "description": deleted.get("description", ""), "amount": deleted.get("amount", 0)}
+
+        if action == "update":
+            updates: dict = {}
+            if amount is not None:
+                updates["amount"] = amount
+            if category:
+                updates["category"] = category
+            if date:
+                updates["date"] = date
+            if vendor:
+                updates["vendor"] = vendor
+            result = await self.graph.update_expense(
+                match_desc=description, match_vendor=vendor or "", **updates,
+            )
+            if not result:
+                return {"error": f"لم أجد مصروف يطابق: {description}"}
+            old_data = result["old"]
+            # Cascade update to linked File + Qdrant
+            file_hash = old_data.get("file_hash", "")
+            if file_hash and amount is not None:
+                await self._cascade_expense_update(file_hash, old_data.get("amount"), amount)
+            return {"status": "updated", "old_amount": old_data.get("amount"), "new_amount": amount or old_data.get("amount"),
+                    "description": old_data.get("description", "")}
+
+        # Default: create
+        if amount is None:
+            return {"error": "المبلغ مطلوب لإنشاء مصروف جديد"}
         props = {}
         if category:
             props["category"] = category
@@ -742,6 +783,56 @@ class ToolCallingService:
             props["vendor"] = vendor
         await self.graph.create_expense(description, amount, **props)
         return {"status": "created", "description": description, "amount": amount, **props}
+
+    async def _cascade_expense_update(self, file_hash: str, old_amount: float | None, new_amount: float) -> None:
+        """Update File description + Qdrant text when expense amount changes."""
+        if old_amount is None:
+            return
+        old_str = f"{old_amount:,.0f}" if old_amount == int(old_amount) else str(old_amount)
+        new_str = f"{new_amount:,.0f}" if new_amount == int(new_amount) else str(new_amount)
+        # Also try without commas
+        old_str_plain = old_str.replace(",", "")
+        new_str_plain = new_str.replace(",", "")
+        try:
+            # Update File node description
+            file_info = await self.graph.find_file_by_hash(file_hash)
+            if file_info:
+                desc = file_info.get("properties", {}).get("description", "")
+                new_desc = desc.replace(old_str, new_str).replace(old_str_plain, new_str_plain)
+                if new_desc != desc:
+                    await self.graph._get_graph().query(
+                        "MATCH (f:File {file_hash: $fh}) SET f.description = $desc",
+                        {"fh": file_hash, "desc": new_desc},
+                    )
+                    logger.info("[cascade] Updated File description: %s → %s", old_str, new_str)
+        except Exception as e:
+            logger.warning("[cascade] File description update failed: %s", e)
+        try:
+            # Update Qdrant vector text
+            from qdrant_client import AsyncQdrantClient
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            client = AsyncQdrantClient(host="localhost", port=6333)
+            results = await client.scroll(
+                collection_name=self.vector._collection(),
+                scroll_filter=Filter(must=[
+                    FieldCondition(key="file_hash", match=MatchValue(value=file_hash))
+                ]),
+                limit=10, with_payload=True, with_vectors=False,
+            )
+            points, _ = results
+            for p in points:
+                text = p.payload.get("text", "")
+                new_text = text.replace(old_str, new_str).replace(old_str_plain, new_str_plain)
+                if new_text != text:
+                    await client.set_payload(
+                        collection_name=self.vector._collection(),
+                        payload={"text": new_text},
+                        points=[p.id],
+                    )
+                    logger.info("[cascade] Updated Qdrant text for point %s", p.id)
+            await client.close()
+        except Exception as e:
+            logger.warning("[cascade] Qdrant text update failed: %s", e)
 
     async def _handle_get_daily_plan(self) -> dict:
         text = await self.graph.query_daily_plan()
@@ -1289,20 +1380,42 @@ class ToolCallingService:
     async def _handle_retrieve_file(self, query: str) -> dict:
         """Find a saved file matching the query and return info for delivery."""
         query_en = await self.llm.translate_to_english(query)
+        logger.info("[retrieve_file] query=%r, query_en=%r", query, query_en)
 
-        # Strategy 1: Graph search by filename/description
-        files = await self.graph.search_files(query_en, limit=3)
-        if not files:
-            files = await self.graph.search_files(query, limit=3)
+        # Strategy 1: Graph search by filename/description/user_context (full query + keywords)
+        _stop = {"the", "a", "an", "of", "for", "from", "in", "to", "and", "or",
+                  "is", "was", "are", "file", "image", "photo", "picture", "bill",
+                  "صورة", "ملف", "لي", "ارسل", "ارسلي", "فاتورة"}
+        keywords_en = [w for w in query_en.split() if len(w) > 3 and w.lower() not in _stop]
+        keywords_ar = [w for w in query.split() if len(w) > 3 and w not in _stop]
 
-        # Strategy 2: Vector search — try multiple query variants, pick results with file_hash
+        for term in [query_en, query] + keywords_en[:3] + keywords_ar[:3]:
+            files = await self.graph.search_files(term, limit=3)
+            if files:
+                logger.info("[retrieve_file] Strategy 1 (graph): found %d files via %r", len(files), term)
+                break
+
+        # Strategy 2: Graph search via linked entities (EXTRACTED_FROM, FROM_INVOICE)
         if not files:
+            for term in [query_en, query] + keywords_en[:3] + keywords_ar[:3]:
+                files = await self.graph.search_files_by_entity(term, limit=3)
+                if files:
+                    logger.info("[retrieve_file] Strategy 2 (entity): found %d files via %r", len(files), term)
+                    break
+
+        # Strategy 3: Vector search — try multiple query variants, pick results with file_hash
+        if not files:
+            search_queries = [query_en, query, f"file {query_en}"]
+            # Add individual keywords as fallback variants
+            for kw in keywords_en[:3]:
+                search_queries.append(kw)
+
             seen_hashes: set[str] = set()
-            for search_query in (query_en, query, f"file {query_en}"):
+            for search_query in search_queries:
                 vector_results = await self.vector.search(search_query, limit=20)
                 for vr in vector_results:
                     fh = vr.get("metadata", {}).get("file_hash", "")
-                    if fh and fh not in seen_hashes and vr.get("score", 0) >= 0.35:
+                    if fh and fh not in seen_hashes and vr.get("score", 0) >= 0.30:
                         seen_hashes.add(fh)
                         file_info = await self.graph.find_file_by_hash(fh)
                         if file_info:
@@ -1314,9 +1427,11 @@ class ToolCallingService:
                                 "description": props.get("description", ""),
                             })
                 if files:
+                    logger.info("[retrieve_file] Strategy 3 (vector): found %d files via query %r", len(files), search_query)
                     break
 
         if not files:
+            logger.warning("[retrieve_file] No files found for query=%r", query)
             return {"error": "لم أجد ملفات تطابق البحث"}
 
         best = files[0]
@@ -1328,6 +1443,7 @@ class ToolCallingService:
         if not matches:
             return {"error": "الملف موجود في القاعدة لكن غير موجود على القرص"}
 
+        logger.info("[retrieve_file] Returning file: hash=%s, name=%s", file_hash, best["filename"])
         return {
             "file_hash": file_hash,
             "filename": best["filename"],
@@ -1374,7 +1490,13 @@ class ToolCallingService:
                 elif tool == "delete_reminder":
                     parts.append(f"تم حذف تذكير: {data.get('title', '')}")
                 elif tool == "add_expense":
-                    parts.append(f"تم تسجيل مصروف: {data.get('description', '')} ({data.get('amount', '')} ريال)")
+                    status = data.get("status", "created")
+                    if status == "updated":
+                        parts.append(f"تم تعديل المصروف: {data.get('old_amount', '')} → {data.get('new_amount', '')} ريال")
+                    elif status == "deleted":
+                        parts.append(f"تم حذف المصروف: {data.get('description', '')}")
+                    else:
+                        parts.append(f"تم تسجيل مصروف: {data.get('description', '')} ({data.get('amount', '')} ريال)")
                 elif tool == "search_reminders":
                     parts.append(data.get("reminders", ""))
                 elif tool == "get_daily_plan":
@@ -1641,6 +1763,10 @@ class ToolCallingService:
             yield json.dumps({"type": "token", "content": reply_text}) + "\n"
 
         # Extract file attachments from retrieve_file tool results
+        retrieve_results = [r for r in tool_results if r.get("tool") == "retrieve_file"]
+        if retrieve_results:
+            logger.info("[stream] retrieve_file results: %s",
+                        [(r.get("success"), r.get("data", {}).get("file_hash", "N/A")) for r in retrieve_results])
         file_attachments = [
             {"file_hash": r["data"]["file_hash"], "filename": r["data"]["filename"],
              "file_type": r["data"].get("file_type", "")}
@@ -1650,6 +1776,7 @@ class ToolCallingService:
         done_msg = {"type": "done"}
         if file_attachments:
             done_msg["files"] = file_attachments
+        logger.info("[stream] done_msg: %s", done_msg)
         yield json.dumps(done_msg) + "\n"
 
         # 5. Post-process in background

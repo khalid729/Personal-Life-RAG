@@ -335,6 +335,10 @@ class FileService:
         # Convert analysis to text for ingestion
         analysis_text = self._analysis_to_text(analysis, file_type, filename)
 
+        # Prepend user context so it's embedded in Qdrant for future search
+        if user_context:
+            analysis_text = f"[User context: {user_context}]\n\n{analysis_text}"
+
         # If Claude Vision analyzed the image, skip vLLM enrichment/extraction
         # (entities are created directly from analysis JSON via auto_expense/auto_item)
         claude_analyzed = (
@@ -356,9 +360,10 @@ class FileService:
         if claude_analyzed:
             steps.append("embed_only:claude_vision")
 
-        # Store file node in graph
+        # Store file node in graph (include user_context for search)
         await self.retrieval.graph.upsert_file_node(
-            file_hash, filename, file_type, {**classification, **analysis}
+            file_hash, filename, file_type, {**classification, **analysis},
+            user_context=user_context,
         )
         steps.append("graph_node_created")
 

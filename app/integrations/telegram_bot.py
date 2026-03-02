@@ -334,6 +334,7 @@ async def chat_api_stream(text: str, sid: str, message: Message, api_key: str = 
                                 pass
                     elif msg_type == "done":
                         meta = data  # done message may contain files
+                        logger.info("Stream received done: %s", data)
                         break
     except Exception as e:
         logger.error("Streaming chat failed: %s", e)
@@ -357,7 +358,10 @@ async def chat_api_stream(text: str, sid: str, message: Message, api_key: str = 
         except Exception:
             pass
 
-    return {"text": full_text, "files": meta.get("files", [])}
+    files = meta.get("files", [])
+    logger.info("Stream result: meta_type=%s, files=%s, text_len=%d",
+                meta.get("type"), files, len(full_text))
+    return {"text": full_text, "files": files}
 
 
 # --- Commands ---
@@ -1055,7 +1059,9 @@ async def handle_text(message: Message):
         return
 
     # Send file attachments from streaming response
-    for file_info in stream_result.get("files", []):
+    files_to_send = stream_result.get("files", [])
+    logger.info("Files to send after stream: %d items — %s", len(files_to_send), files_to_send)
+    for file_info in files_to_send:
         await _send_file_attachment(message, file_info, api_key)
 
 

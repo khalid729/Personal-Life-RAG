@@ -645,6 +645,75 @@ class GraphService:
             q, params={"description": description, "amount": amount, "now": _now(), **extra}
         )
 
+    async def find_expense(self, description: str = "", vendor: str = "",
+                           file_hash: str = "") -> dict | None:
+        """Find an expense by description/vendor/file_hash (best match).
+
+        Tries multiple strategies: file_hash → vendor → description → keywords in desc+vendor.
+        """
+        if file_hash:
+            rows = await self.query(
+                "MATCH (e:Expense {file_hash: $fh}) RETURN e LIMIT 1", {"fh": file_hash})
+            if rows and rows[0] and rows[0][0]:
+                return dict(rows[0][0].properties)
+
+        # Build search terms from both description and vendor
+        search_terms = []
+        if vendor:
+            search_terms.append(vendor)
+        if description:
+            search_terms.append(description)
+            # Also extract individual words (>3 chars) as fallback keywords
+            for w in description.split():
+                if len(w) > 3:
+                    search_terms.append(w)
+
+        for term in search_terms:
+            q = """MATCH (e:Expense)
+                   WHERE toLower(e.description) CONTAINS toLower($t)
+                      OR toLower(e.vendor) CONTAINS toLower($t)
+                      OR (size(e.vendor) >= 4 AND toLower($t) CONTAINS toLower(e.vendor))
+                   RETURN e ORDER BY e.created_at DESC LIMIT 1"""
+            rows = await self.query(q, {"t": term})
+            if rows and rows[0] and rows[0][0]:
+                return dict(rows[0][0].properties)
+        return None
+
+    async def update_expense(self, match_desc: str = "", match_vendor: str = "",
+                             match_file_hash: str = "", **updates) -> dict | None:
+        """Update an expense. Returns old+new values, or None if not found."""
+        old = await self.find_expense(match_desc, match_vendor, match_file_hash)
+        if not old:
+            return None
+        # Build SET clause from updates
+        sets = []
+        params: dict = {"now": _now()}
+        for k, v in updates.items():
+            if v is not None:
+                sets.append(f"e.{k} = ${k}")
+                params[k] = v
+        if not sets:
+            return old
+        sets.append("e.updated_at = $now")
+        set_clause = ", ".join(sets)
+        # Match by unique combo (created_at is unique enough)
+        q = f"MATCH (e:Expense {{created_at: $ca}}) SET {set_clause}"
+        params["ca"] = old["created_at"]
+        await self._get_graph().query(q, params=params)
+        new = dict(old)
+        new.update({k: v for k, v in updates.items() if v is not None})
+        return {"old": old, "new": new}
+
+    async def delete_expense(self, match_desc: str = "", match_vendor: str = "",
+                             match_file_hash: str = "") -> dict | None:
+        """Delete an expense. Returns deleted props, or None if not found."""
+        old = await self.find_expense(match_desc, match_vendor, match_file_hash)
+        if not old:
+            return None
+        q = "MATCH (e:Expense {created_at: $ca}) DETACH DELETE e"
+        await self._get_graph().query(q, {"ca": old["created_at"]})
+        return old
+
     # --- Debt ---
     @staticmethod
     def _normalize_direction(direction: str) -> str:
@@ -1876,7 +1945,8 @@ class GraphService:
         await self._get_graph().query(q, params={"fhash": file_hash, "fn": filename, "now": _now()})
 
     async def upsert_file_node(
-        self, file_hash: str, filename: str, file_type: str, analysis: dict
+        self, file_hash: str, filename: str, file_type: str, analysis: dict,
+        user_context: str = "",
     ) -> None:
         description = analysis.get("brief_description") or analysis.get("description") or ""
         q = """
@@ -1886,16 +1956,17 @@ class GraphService:
         ON MATCH SET f.filename = $filename, f.file_type = $file_type,
                      f.description = $description, f.updated_at = $now
         """
-        await self._get_graph().query(
-            q,
-            params={
-                "file_hash": file_hash,
-                "filename": filename,
-                "file_type": file_type,
-                "description": description[:500],
-                "now": _now(),
-            },
-        )
+        params: dict = {
+            "file_hash": file_hash,
+            "filename": filename,
+            "file_type": file_type,
+            "description": description[:500],
+            "now": _now(),
+        }
+        if user_context:
+            q = q.rstrip() + ", f.user_context = $user_context"
+            params["user_context"] = user_context[:500]
+        await self._get_graph().query(q, params=params)
 
     async def find_file_by_hash(self, file_hash: str) -> dict | None:
         """Check if a file with this hash already exists in the graph."""
@@ -1924,12 +1995,37 @@ class GraphService:
         return None
 
     async def search_files(self, query: str, limit: int = 5) -> list[dict]:
-        """Search File nodes by filename or description (case-insensitive CONTAINS)."""
+        """Search File nodes by filename, description, or user_context (case-insensitive CONTAINS)."""
         q = """
         MATCH (f:File)
         WHERE toLower(f.filename) CONTAINS toLower($q)
            OR toLower(f.description) CONTAINS toLower($q)
+           OR toLower(f.user_context) CONTAINS toLower($q)
         RETURN f
+        ORDER BY f.updated_at DESC, f.created_at DESC
+        LIMIT $limit
+        """
+        rows = await self.query(q, {"q": query, "limit": limit})
+        results = []
+        for row in rows:
+            if row and row[0]:
+                node = row[0]
+                props = node.properties if hasattr(node, "properties") else {}
+                results.append({
+                    "file_hash": props.get("file_hash", ""),
+                    "filename": props.get("filename", ""),
+                    "file_type": props.get("file_type", ""),
+                    "description": props.get("description", ""),
+                })
+        return results
+
+    async def search_files_by_entity(self, query: str, limit: int = 3) -> list[dict]:
+        """Search files via linked entities (EXTRACTED_FROM, FROM_INVOICE, etc.)."""
+        q = """
+        MATCH (e)-[]->(f:File)
+        WHERE toLower(e.name) CONTAINS toLower($q)
+           OR toLower(e.description) CONTAINS toLower($q)
+        RETURN DISTINCT f
         ORDER BY f.updated_at DESC, f.created_at DESC
         LIMIT $limit
         """
