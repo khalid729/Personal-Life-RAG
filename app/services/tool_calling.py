@@ -1288,13 +1288,30 @@ class ToolCallingService:
 
     async def _handle_retrieve_file(self, query: str) -> dict:
         """Find a saved file matching the query and return info for delivery."""
-        # Try English search first (filenames are often English)
         query_en = await self.llm.translate_to_english(query)
-        files = await self.graph.search_files(query_en, limit=3)
 
-        # Fallback: try original query (Arabic description match)
+        # Strategy 1: Graph search by filename/description
+        files = await self.graph.search_files(query_en, limit=3)
         if not files:
             files = await self.graph.search_files(query, limit=3)
+
+        # Strategy 2: Vector search — broader search, pick results with file_hash
+        if not files:
+            vector_results = await self.vector.search(query_en, limit=20)
+            seen_hashes = set()
+            for vr in vector_results:
+                fh = vr.get("metadata", {}).get("file_hash", "")
+                if fh and fh not in seen_hashes and vr.get("score", 0) >= 0.35:
+                    seen_hashes.add(fh)
+                    file_info = await self.graph.find_file_by_hash(fh)
+                    if file_info:
+                        props = file_info.get("properties", {})
+                        files.append({
+                            "file_hash": fh,
+                            "filename": props.get("filename", ""),
+                            "file_type": props.get("file_type", ""),
+                            "description": props.get("description", ""),
+                        })
 
         if not files:
             return {"error": "لم أجد ملفات تطابق البحث"}
