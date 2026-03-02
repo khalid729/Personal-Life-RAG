@@ -605,6 +605,10 @@ class ToolCallingService:
             if p_time:
                 due_date = due_date or p_date
                 time = p_time
+        # Merge time into due_date so string comparison works correctly
+        # "2026-03-02" + "20:00" → "2026-03-02T20:00"
+        if due_date and time and "T" not in due_date:
+            due_date = f"{due_date}T{time}"
         props = {}
         if due_date:
             props["due_date"] = due_date
