@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import get_settings
 from app.middleware.auth import AuthMiddleware
 from app.routers import chat, files, financial, ingest, inventory, knowledge, proactive, productivity, projects, reminders, search, tasks
 from app.routers import backup as backup_router
@@ -27,6 +28,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 @asynccontextmanager
@@ -60,6 +62,15 @@ async def lifespan(app: FastAPI):
     await user_registry.start()
     app.state.user_registry = user_registry
     logger.info("User registry ready")
+
+    # Ensure per-user graph + collection for non-default users
+    for user in user_registry.list_users():
+        if user.graph_name and user.graph_name != settings.falkordb_graph_name:
+            await graph.ensure_user_graph(user.graph_name)
+            logger.info("Ensured user graph: %s", user.graph_name)
+        if user.collection_name and user.collection_name != settings.qdrant_collection:
+            await vector.ensure_user_collection(user.collection_name)
+            logger.info("Ensured user collection: %s", user.collection_name)
 
     # Location service (Phase 24)
     location_svc = LocationService(memory._redis)

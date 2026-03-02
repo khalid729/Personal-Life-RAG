@@ -1549,9 +1549,15 @@ class ToolCallingService:
     async def chat(self, message: str, session_id: str = "default") -> dict:
         """Non-streaming tool-calling chat."""
         # 1. Build system prompt
+        from app.middleware.auth import _current_user_nickname, _current_user_gender
         memory_context = await self.memory.build_system_memory_context(session_id)
         active_project = await self.memory.get_active_project(session_id)
-        system_prompt = build_tool_system_prompt(memory_context, active_project=active_project)
+        nickname = _current_user_nickname.get() or "أبو إبراهيم"
+        is_female = _current_user_gender.get() == "female"
+        system_prompt = build_tool_system_prompt(
+            memory_context, active_project=active_project,
+            user_name=nickname, is_female=is_female,
+        )
 
         # 2. Load conversation history
         history = await self.memory.get_working_memory(session_id)
@@ -1650,9 +1656,15 @@ class ToolCallingService:
         t0 = _time.monotonic()
 
         # 1. Build system prompt
+        from app.middleware.auth import _current_user_nickname, _current_user_gender
         memory_context = await self.memory.build_system_memory_context(session_id)
         active_project = await self.memory.get_active_project(session_id)
-        system_prompt = build_tool_system_prompt(memory_context, active_project=active_project)
+        nickname = _current_user_nickname.get() or "أبو إبراهيم"
+        is_female = _current_user_gender.get() == "female"
+        system_prompt = build_tool_system_prompt(
+            memory_context, active_project=active_project,
+            user_name=nickname, is_female=is_female,
+        )
 
         # 2. Load conversation history
         history = await self.memory.get_working_memory(session_id)

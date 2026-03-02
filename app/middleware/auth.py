@@ -29,6 +29,15 @@ _current_collection: contextvars.ContextVar[str | None] = contextvars.ContextVar
 _current_redis_prefix: contextvars.ContextVar[str] = contextvars.ContextVar(
     "_current_redis_prefix", default="",
 )
+_current_user_nickname: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_current_user_nickname", default="",
+)
+_current_user_gender: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_current_user_gender", default="male",
+)
+_current_anthropic_key: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_current_anthropic_key", default="",
+)
 
 # Paths that skip auth entirely
 _SKIP_AUTH_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
@@ -42,6 +51,8 @@ def _default_user_context() -> UserContext:
         collection_name=settings.qdrant_collection,
         redis_prefix="",
         tg_chat_id=settings.tg_chat_id,
+        nickname="أبو إبراهيم",
+        gender="male",
     )
 
 
@@ -59,12 +70,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         g_token = _current_graph_name.set(ctx.graph_name)
         c_token = _current_collection.set(ctx.collection_name)
         r_token = _current_redis_prefix.set(ctx.redis_prefix)
+        n_token = _current_user_nickname.set(ctx.nickname)
+        gn_token = _current_user_gender.set(ctx.gender)
+        ak_token = _current_anthropic_key.set(ctx.anthropic_api_key)
         try:
             return await call_next(request)
         finally:
             _current_graph_name.reset(g_token)
             _current_collection.reset(c_token)
             _current_redis_prefix.reset(r_token)
+            _current_user_nickname.reset(n_token)
+            _current_user_gender.reset(gn_token)
+            _current_anthropic_key.reset(ak_token)
 
     def _resolve_user(self, request: Request) -> UserContext:
         """Resolve user from API key or return default."""
@@ -90,4 +107,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             collection_name=profile.collection_name,
             redis_prefix=profile.redis_prefix,
             tg_chat_id=profile.tg_chat_id,
+            nickname=profile.nickname,
+            gender=profile.gender,
+            anthropic_api_key=profile.anthropic_api_key,
         )

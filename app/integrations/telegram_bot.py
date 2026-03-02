@@ -67,24 +67,40 @@ _tg_user_cache: dict[str, dict] = {}
 
 
 async def _load_tg_users() -> None:
-    """Load user registry from API into tg user cache."""
+    """Load user cache from seed file. Filters to this bot's TG_CHAT_ID."""
     global _tg_user_cache
-    try:
-        data = await api_get("/admin/users")
-        for u in data.get("users", []):
-            tg_id = u.get("tg_chat_id", "")
-            if tg_id and u.get("enabled", True):
-                _tg_user_cache[tg_id] = u
-        logger.info("Loaded %d Telegram users from registry", len(_tg_user_cache))
-    except Exception as e:
-        logger.warning("Failed to load user registry, falling back to single-user: %s", e)
-        # Fallback: use settings for backward compat
-        if settings.tg_chat_id:
-            _tg_user_cache[settings.tg_chat_id] = {
-                "user_id": "khalid",
-                "api_key": "",
-                "tg_chat_id": settings.tg_chat_id,
-            }
+    seed_path = Path(settings.users_file)
+    if seed_path.exists():
+        try:
+            data = json.loads(seed_path.read_text(encoding="utf-8"))
+            for user_id, info in data.items():
+                tg_id = info.get("tg_chat_id", "")
+                if not tg_id or not info.get("enabled", True):
+                    continue
+                # Per-bot filtering: only load user matching this bot's TG_CHAT_ID
+                if settings.tg_chat_id and tg_id != settings.tg_chat_id:
+                    continue
+                _tg_user_cache[tg_id] = {
+                    "user_id": user_id,
+                    "api_key": info.get("api_key", ""),
+                    "tg_chat_id": tg_id,
+                    "display_name": info.get("display_name", ""),
+                }
+            logger.info("Loaded %d Telegram users from seed file", len(_tg_user_cache))
+        except Exception as e:
+            logger.warning("Failed to load seed file, falling back to single-user: %s", e)
+            if settings.tg_chat_id:
+                _tg_user_cache[settings.tg_chat_id] = {
+                    "user_id": settings.default_user_id,
+                    "api_key": "",
+                    "tg_chat_id": settings.tg_chat_id,
+                }
+    elif settings.tg_chat_id:
+        _tg_user_cache[settings.tg_chat_id] = {
+            "user_id": settings.default_user_id,
+            "api_key": "",
+            "tg_chat_id": settings.tg_chat_id,
+        }
 
 
 # --- Helpers ---

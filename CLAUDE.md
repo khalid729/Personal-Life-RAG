@@ -82,6 +82,8 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - Sections/Lists/Places: `_TOOL_ONLY_TYPES = {Section, ListEntry, Place}` — skipped during extraction, created via tools only
 - Multi-tenancy: `_resolution_cache` keyed by `(graph_name, name, type)` to prevent cross-user entity resolution leaks
 - Multi-tenancy: `asyncio.create_task` inherits context — `post_process()` background tasks correctly use the user's graph/collection
+- Multi-tenancy: `UserProfile` has `nickname`, `gender`, `anthropic_api_key` fields. Context vars `_current_user_nickname`, `_current_user_gender`, `_current_anthropic_key` set by auth middleware. System prompt uses `user_name` + `is_female` for gender-aware Arabic. LLM service caches per-user Anthropic clients via `_get_anthropic_client()`.
+- Multi-tenancy: Telegram bot loads users from `data/users.json` seed file (not API) and filters by `settings.tg_chat_id` for per-bot isolation. Second bot instance via `rag-telegram-rawabi.service` with `.env.rawabi` overrides.
 - Location: OwnTracks sends `_type` field — use `Field(alias="_type")` with `populate_by_name=True` in Pydantic model
 - Location: cooldown (`location_cooldown_minutes=10`) prevents rapid-fire from GPS jitter at zone boundaries
 - `delete_project()` cascades: deletes linked tasks, sections, lists, and list entries

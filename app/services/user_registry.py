@@ -44,6 +44,9 @@ class UserRegistry:
                         user_id=user_id,
                         api_key_hash=key_hash,
                         display_name=info.get("display_name", ""),
+                        nickname=info.get("nickname", ""),
+                        gender=info.get("gender", "male"),
+                        anthropic_api_key=info.get("anthropic_api_key", ""),
                         graph_name=info.get("graph_name", settings.falkordb_graph_name),
                         collection_name=info.get("collection_name", settings.qdrant_collection),
                         redis_prefix=info.get("redis_prefix", ""),
@@ -126,6 +129,8 @@ class UserRegistry:
         display_name: str = "", tg_chat_id: str = "",
         graph_name: str = "", collection_name: str = "",
         redis_prefix: str = "",
+        nickname: str = "", gender: str = "male",
+        anthropic_api_key: str = "",
     ) -> UserProfile:
         """Register a new user. Generates namespaced resource names if not provided."""
         if not graph_name:
@@ -139,6 +144,9 @@ class UserRegistry:
             user_id=user_id,
             api_key_hash=_hash_key(raw_api_key),
             display_name=display_name,
+            nickname=nickname,
+            gender=gender,
+            anthropic_api_key=anthropic_api_key,
             graph_name=graph_name,
             collection_name=collection_name,
             redis_prefix=redis_prefix,

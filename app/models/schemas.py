@@ -15,12 +15,18 @@ class UserContext:
     collection_name: str
     redis_prefix: str
     tg_chat_id: str = ""
+    nickname: str = ""
+    gender: str = "male"
+    anthropic_api_key: str = ""
 
 
 class UserProfile(BaseModel):
     user_id: str
     api_key_hash: str = ""
     display_name: str = ""
+    nickname: str = ""
+    gender: str = "male"
+    anthropic_api_key: str = ""
     graph_name: str = ""
     collection_name: str = ""
     redis_prefix: str = ""

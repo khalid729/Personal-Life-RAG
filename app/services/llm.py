@@ -43,6 +43,7 @@ class LLMService:
     def __init__(self):
         self._vllm_client: httpx.AsyncClient | None = None
         self._anthropic_client = None
+        self._anthropic_clients: dict[str, AsyncAnthropic] = {}  # per-user cache
 
     async def start(self):
         self._vllm_client = httpx.AsyncClient(
@@ -53,11 +54,24 @@ class LLMService:
             self._anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
             logger.info("Claude API enabled for chat (model: %s)", settings.anthropic_model)
 
+    def _get_anthropic_client(self):
+        """Return per-user Anthropic client (from context var) or default."""
+        from app.middleware.auth import _current_anthropic_key
+        key = _current_anthropic_key.get()
+        if key:
+            if key not in self._anthropic_clients:
+                self._anthropic_clients[key] = AsyncAnthropic(api_key=key)
+            return self._anthropic_clients[key]
+        return self._anthropic_client  # default from settings
+
     async def stop(self):
         if self._vllm_client:
             await self._vllm_client.aclose()
         if self._anthropic_client:
             await self._anthropic_client.close()
+        for client in self._anthropic_clients.values():
+            await client.close()
+        self._anthropic_clients.clear()
 
     async def chat(
         self,
@@ -133,7 +147,8 @@ class LLMService:
         max_tokens: int = 2048,
     ) -> str:
         """Send an image + text prompt to Claude Vision API."""
-        response = await self._anthropic_client.messages.create(
+        client = self._get_anthropic_client()
+        response = await client.messages.create(
             model=settings.anthropic_model,
             system=[{
                 "type": "text",
@@ -177,7 +192,7 @@ class LLMService:
 
     async def classify_file(self, image_b64: str, mime_type: str) -> dict:
         # Try Claude Vision first
-        if self._anthropic_client and settings.use_claude_for_vision:
+        if self._get_anthropic_client() and settings.use_claude_for_vision:
             try:
                 from app.prompts.file_classify import FILE_CLASSIFY_SYSTEM
                 raw = await self._chat_vision_claude(
@@ -204,7 +219,7 @@ class LLMService:
         self, image_b64: str, file_type: str, mime_type: str, user_context: str = ""
     ) -> dict:
         # Try Claude Vision first
-        if self._anthropic_client and settings.use_claude_for_vision:
+        if self._get_anthropic_client() and settings.use_claude_for_vision:
             try:
                 from app.prompts.vision import VISION_PROMPTS, VISION_ANALYSIS_SYSTEM
                 prompt_text = VISION_PROMPTS.get(file_type, VISION_PROMPTS["info_image"])
@@ -457,7 +472,8 @@ class LLMService:
         system_content, anthropic_messages = self._convert_messages_to_anthropic(messages)
         anthropic_tools = self._convert_tools_to_anthropic(tools)
 
-        response = await self._anthropic_client.messages.create(
+        client = self._get_anthropic_client()
+        response = await client.messages.create(
             model=settings.anthropic_model,
             system=system_content,
             messages=anthropic_messages,
@@ -481,7 +497,7 @@ class LLMService:
         temperature: float = 0.3,
     ) -> dict:
         """Chat completion with tool calling. Returns OpenAI-format message dict."""
-        if self._anthropic_client:
+        if self._get_anthropic_client():
             try:
                 return await self._chat_with_tools_anthropic(messages, tools, max_tokens, temperature)
             except Exception as e:
@@ -599,8 +615,9 @@ class LLMService:
         anthropic_tools = self._convert_tools_to_anthropic(tools)
 
         tool_calls_acc: dict[int, dict] = {}
+        client = self._get_anthropic_client()
 
-        async with self._anthropic_client.messages.stream(
+        async with client.messages.stream(
             model=settings.anthropic_model,
             system=system_content,
             messages=anthropic_messages,
@@ -644,7 +661,7 @@ class LLMService:
         - {"type": "token", "content": "..."} for text chunks
         - {"type": "tool_calls", "calls": [...]} for collected tool calls (once, at end)
         """
-        if self._anthropic_client:
+        if self._get_anthropic_client():
             started = False
             try:
                 async for chunk in self._stream_anthropic(messages, tools, max_tokens, temperature):

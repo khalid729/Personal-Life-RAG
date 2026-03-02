@@ -1,0 +1,19 @@
+[Unit]
+Description=Personal RAG Telegram Bot (Rawabi)
+After=network.target rag-server.service
+
+[Service]
+Type=simple
+User=khalid
+WorkingDirectory=/home/khalid/Projects/Personal_Rag
+ExecStart=/home/khalid/Projects/Personal_Rag/venv/bin/python -m app.integrations.telegram_bot
+EnvironmentFile=/home/khalid/Projects/Personal_Rag/.env
+EnvironmentFile=/home/khalid/Projects/Personal_Rag/.env.rawabi
+Restart=always
+RestartSec=5
+Environment=PATH=/home/khalid/Projects/Personal_Rag/venv/bin:/usr/bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
