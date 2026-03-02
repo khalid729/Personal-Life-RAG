@@ -68,15 +68,13 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 - **Location reminders** (Phase 24): `location_place`/`location_type` params on create/update_reminder; `manage_places` tool for Place CRUD
 - **Chat loop**: LLM picks tools → parallel execution → LLM formats response (max 3 iterations)
 - **Streaming**: `chat_stream()` yields NDJSON, tool calls detected from stream
-- **Post-processing**: memory + vector + auto-extraction (background `asyncio.create_task`)
-- **Auto-extraction**: `_STORABLE_RE` keyword check → NER → translate → extract_facts_specialized → upsert
-- **`_AUTO_EXTRACT_SAFE_TYPES`**: only Person, Company, Knowledge, Location from conversation (no bogus Projects/Tasks)
-- **`_WRITE_TOOLS`**: skip auto-extraction when write tools already executed (includes `manage_places`)
+- **Post-processing**: memory + vector storage (background `asyncio.create_task`); auto-extraction disabled by default
+- **Auto-extraction** (disabled by default, `AUTO_EXTRACT_ENABLED=false`): saves contradictory data when user corrects info. When enabled: `_STORABLE_RE` keyword check → NER → translate → extract_facts_specialized → upsert; `_AUTO_EXTRACT_SAFE_TYPES` = Person, Company, Knowledge, Location; `_WRITE_TOOLS` skip guard
 - **Fallback**: `_fallback_reply()` generates simple Arabic from tool results if LLM times out
 
 ## RetrievalService (retrieval.py)
 
-- **Ingestion only**: `ingest_text()` → translate → chunk (1500 tokens) → enrich + extract (parallel)
+- **Ingestion only**: `ingest_text()` → translate → chunk (1500 tokens) → enrich + extract (parallel); `embed_only=True` skips enrichment + extraction (used when Claude Vision already analyzed)
 - **Parallel enrichment**: `_enrich_and_store_chunks()` uses `asyncio.gather` — all chunks enrich simultaneously via vLLM continuous batching
 - **file_hash tracking**: `ingest_text(file_hash=...)` → stored in each Qdrant point's payload for re-upload cleanup
 - **Entity provenance**: `_extract_and_store_facts(text, file_hash=)` → `upsert_from_facts(facts, file_hash=)` → `EXTRACTED_FROM` links

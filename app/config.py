@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     arabic_ner_enabled: bool = True
     arabic_ner_model: str = "CAMeL-Lab/bert-base-arabic-camelbert-msa-ner"
 
+    # Auto-extraction from conversational messages
+    auto_extract_enabled: bool = False  # disabled: saves contradictory data on corrections
+
     # Conversation Summarization (Phase 11)
     conversation_compress_threshold: int = 10
     conversation_compress_keep_recent: int = 4

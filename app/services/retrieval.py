@@ -91,6 +91,7 @@ class RetrievalService:
         topic: str | None = None,
         file_hash: str | None = None,
         project_name: str | None = None,
+        embed_only: bool = False,
     ) -> dict:
         """Full Contextual Retrieval ingestion pipeline.
 
@@ -99,6 +100,10 @@ class RetrievalService:
         3. Contextual enrichment (LLM adds context to each chunk)
         4. Embed + store in Qdrant
         5. Extract facts + store in FalkorDB (parallel with step 3-4)
+
+        If embed_only=True, skip enrichment + fact extraction (only embed raw
+        text into Qdrant). Used when the text was already analyzed by Claude
+        Vision — entities are created directly from the analysis JSON.
         """
         # Step 1: Translate (skip if text is already mostly English)
         if _is_mostly_english(text):
@@ -110,6 +115,19 @@ class RetrievalService:
         chunks = chunk_text(text_en)
         if not chunks:
             return {"chunks_stored": 0, "facts_extracted": 0}
+
+        if embed_only:
+            # Skip enrichment + fact extraction — just embed and store
+            base_meta = {
+                "source_type": source_type,
+                "tags": tags or [],
+                "topic": topic or "",
+                "original_text_ar": text[:500],
+                **({"file_hash": file_hash} if file_hash else {}),
+            }
+            metadata_list = [dict(base_meta) for _ in chunks]
+            chunks_stored = await self.vector.upsert_chunks(chunks, metadata_list)
+            return {"chunks_stored": chunks_stored, "facts_extracted": 0, "entities": []}
 
         # Steps 3-5 in parallel
         enrichment_task = self._enrich_and_store_chunks(

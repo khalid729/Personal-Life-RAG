@@ -163,7 +163,17 @@ class LLMService:
             response.usage.output_tokens,
             getattr(response.usage, "cache_read_input_tokens", 0),
         )
-        return response.content[0].text.strip()
+        raw = response.content[0].text.strip()
+        # Claude often wraps JSON in ```json ... ``` — strip it
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            # Remove first line (```json) and last line (```)
+            if lines[-1].strip() == "```":
+                lines = lines[1:-1]
+            else:
+                lines = lines[1:]
+            raw = "\n".join(lines).strip()
+        return raw
 
     async def classify_file(self, image_b64: str, mime_type: str) -> dict:
         # Try Claude Vision first
@@ -287,6 +297,16 @@ class LLMService:
         system_content = []
         anthropic_messages = []
 
+        # Collect all tool_use IDs from assistant messages so we can
+        # skip orphaned tool_result messages from previous sessions
+        known_tool_ids: set[str] = set()
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    tid = tc.get("id", "")
+                    if tid:
+                        known_tool_ids.add(tid)
+
         for msg in messages:
             role = msg["role"]
 
@@ -323,9 +343,17 @@ class LLMService:
                 continue
 
             if role == "tool":
+                tool_call_id = msg.get("tool_call_id", "")
+                # Skip orphaned tool_result (no matching tool_use in conversation)
+                if tool_call_id and tool_call_id not in known_tool_ids:
+                    # Convert to a plain user message so context isn't lost
+                    content = msg.get("content", "")
+                    if content:
+                        anthropic_messages.append({"role": "user", "content": f"[Tool result]: {content[:500]}"})
+                    continue
                 tool_result = {
                     "type": "tool_result",
-                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "tool_use_id": tool_call_id,
                     "content": msg.get("content", ""),
                 }
                 # Group consecutive tool results into a single user message

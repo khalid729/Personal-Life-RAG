@@ -1623,8 +1623,13 @@ class ToolCallingService:
             )
 
             # Auto-extraction: if no write tool was called, check for storable content
+            # Disabled by default — saves contradictory data when user corrects info
             tools_called = {tc.get("tool") for tc in (tool_calls or [])}
-            if not (tools_called & self._WRITE_TOOLS) and self._STORABLE_RE.search(query_ar):
+            if (
+                settings.auto_extract_enabled
+                and not (tools_called & self._WRITE_TOOLS)
+                and self._STORABLE_RE.search(query_ar)
+            ):
                 await self._auto_extract(query_ar)
 
             # Periodic tasks

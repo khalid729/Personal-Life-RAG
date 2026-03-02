@@ -39,7 +39,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 ## Core Patterns
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
-- **Dual LLM backend**: Claude API for chat/tool-calling (`chat_with_tools`, `stream_with_tool_detection`), vLLM/Qwen3-VL for everything else (extraction, enrichment, translation, vision/image analysis, PDF fallback). Controlled by `USE_CLAUDE_FOR_CHAT` flag with automatic vLLM fallback on Claude failure.
+- **Dual LLM backend**: Claude API for chat/tool-calling + vision (`chat_with_tools`, `stream_with_tool_detection`, `classify_file`, `analyze_image`), vLLM/Qwen3-VL for extraction/enrichment/translation (fallback for all). Controlled by `USE_CLAUDE_FOR_CHAT` + `USE_CLAUDE_FOR_VISION` flags.
 - **Multi-tenancy**: `contextvars` for per-user graph/collection/Redis prefix isolation. Middleware sets vars from `X-API-Key` header. `multi_tenant_enabled=False` by default (zero behavior change). UserRegistry loads from `data/users.json` seed file.
 - **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 20 tools)
 - **search_knowledge**: 3 parallel searches — `search_sections()` (section name + entity-in-section matches) → `search_nodes()` (global graph) → vector search; section results shown first for structured project content
@@ -50,7 +50,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **URL ingestion**: POST /ingest/url → GitHub parser (repo/blob/tree) + web fetch → ingest pipeline
 - **Entity resolution**: vector similarity (0.85 person, 0.80 default) + graph CONTAINS fallback via `resolve_entity_name()`
 - **Arabic names**: NER → `name_ar` on Person → `_display_name()` = `رهف (Rahaf)`
-- **Auto-extraction**: conversational messages → safe types only (Person, Company, Knowledge, Location)
+- **Auto-extraction**: disabled by default (`AUTO_EXTRACT_ENABLED=false`) — saves contradictory data on corrections. When enabled: conversational messages → safe types only (Person, Company, Knowledge, Location)
 - **No confirmation flow**: tools execute directly, model reports actual success/failure
 - **Auto-dismiss reminders**: task marked done → `_auto_dismiss_reminders()` fuzzy-matches pending reminders via `_find_matching_reminders()` and marks them done
 - **Active project ingestion**: `session_id` from callers → router resolves `project_name` via `memory.get_active_project()` → threaded through files/retrieval/llm/graph → extract prompt suppresses rogue Projects + auto-links Task/Knowledge/Idea/Sprint via BELONGS_TO

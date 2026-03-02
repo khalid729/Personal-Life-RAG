@@ -335,6 +335,13 @@ class FileService:
         # Convert analysis to text for ingestion
         analysis_text = self._analysis_to_text(analysis, file_type, filename)
 
+        # If Claude Vision analyzed the image, skip vLLM enrichment/extraction
+        # (entities are created directly from analysis JSON via auto_expense/auto_item)
+        claude_analyzed = (
+            self.llm._anthropic_client is not None
+            and settings.use_claude_for_vision
+        )
+
         # Ingest through existing pipeline
         ingest_result = await self.retrieval.ingest_text(
             analysis_text,
@@ -343,8 +350,11 @@ class FileService:
             topic=topic,
             file_hash=file_hash,
             project_name=project_name,
+            embed_only=claude_analyzed,
         )
         steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
+        if claude_analyzed:
+            steps.append("embed_only:claude_vision")
 
         # Store file node in graph
         await self.retrieval.graph.upsert_file_node(
@@ -477,6 +487,7 @@ class FileService:
 
         # If text extraction is too short, fall back to vision analysis
         MIN_PDF_TEXT_CHARS = 200
+        used_vision_fallback = False
         if len(md_text.strip()) < MIN_PDF_TEXT_CHARS:
             steps.append(f"pdf_text_short:{len(md_text.strip())}chars")
             logger.info("PDF text too short (%d chars), falling back to vision for %s",
@@ -484,6 +495,7 @@ class FileService:
             vision_text = await self._pdf_to_vision(file_path, user_context, steps)
             if vision_text:
                 md_text = vision_text
+                used_vision_fallback = True
 
         if not md_text.strip():
             return {
@@ -501,6 +513,13 @@ class FileService:
         if user_context:
             md_text = f"[User context: {user_context}]\n\n{md_text}"
 
+        # If vision fallback was used with Claude, skip vLLM enrichment/extraction
+        claude_vision = (
+            used_vision_fallback
+            and self.llm._anthropic_client is not None
+            and settings.use_claude_for_vision
+        )
+
         # Ingest through existing pipeline
         ingest_result = await self.retrieval.ingest_text(
             md_text,
@@ -509,8 +528,11 @@ class FileService:
             topic=topic,
             file_hash=file_hash,
             project_name=project_name,
+            embed_only=claude_vision,
         )
         steps.append(f"ingested:{ingest_result['chunks_stored']}chunks")
+        if claude_vision:
+            steps.append("embed_only:claude_vision")
 
         # Store file node in graph
         await self.retrieval.graph.upsert_file_node(
