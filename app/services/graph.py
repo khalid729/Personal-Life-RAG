@@ -1923,6 +1923,30 @@ class GraphService:
             return {"file_hash": props.get("file_hash"), "properties": props}
         return None
 
+    async def search_files(self, query: str, limit: int = 5) -> list[dict]:
+        """Search File nodes by filename or description (case-insensitive CONTAINS)."""
+        q = """
+        MATCH (f:File)
+        WHERE toLower(f.filename) CONTAINS toLower($q)
+           OR toLower(f.description) CONTAINS toLower($q)
+        RETURN f
+        ORDER BY f.updated_at DESC, f.created_at DESC
+        LIMIT $limit
+        """
+        rows = await self.query(q, {"q": query, "limit": limit})
+        results = []
+        for row in rows:
+            if row and row[0]:
+                node = row[0]
+                props = node.properties if hasattr(node, "properties") else {}
+                results.append({
+                    "file_hash": props.get("file_hash", ""),
+                    "filename": props.get("filename", ""),
+                    "file_type": props.get("file_type", ""),
+                    "description": props.get("description", ""),
+                })
+        return results
+
     async def supersede_file(self, new_hash: str, old_hash: str) -> None:
         """Mark old file as superseded by new file."""
         q = """

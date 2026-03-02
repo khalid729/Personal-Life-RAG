@@ -218,6 +218,30 @@ async def send_reply(message: Message, text: str, keyboard=None):
         await message.answer(part, reply_markup=kb)
 
 
+async def _send_file_attachment(message: Message, file_info: dict, api_key: str = ""):
+    """Download a file from the API and send it to the user via Telegram."""
+    try:
+        file_hash = file_info.get("file_hash", "")
+        filename = file_info.get("filename", "file")
+        if not file_hash:
+            return
+        headers = {"X-API-Key": api_key} if api_key else {}
+        async with httpx.AsyncClient(base_url=API_BASE, timeout=30) as client:
+            resp = await client.get(f"/ingest/file/{file_hash}", headers=headers)
+            if resp.status_code != 200:
+                logger.warning("File download failed (hash=%s): %d", file_hash, resp.status_code)
+                return
+            data = resp.content
+            ext = Path(filename).suffix.lower()
+            doc = BufferedInputFile(data, filename=filename)
+            if ext in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                await message.answer_photo(photo=doc)
+            else:
+                await message.answer_document(document=doc)
+    except Exception as e:
+        logger.error("Failed to send file attachment: %s", e)
+
+
 async def api_get(path: str, params: dict | None = None, api_key: str = "") -> dict:
     headers = {"X-API-Key": api_key} if api_key else {}
     async with httpx.AsyncClient(base_url=API_BASE, timeout=CHAT_TIMEOUT) as client:
@@ -304,13 +328,21 @@ async def chat_api_stream(text: str, sid: str, message: Message, api_key: str = 
                             except Exception:
                                 pass
                     elif msg_type == "done":
+                        meta = data  # done message may contain files
                         break
     except Exception as e:
         logger.error("Streaming chat failed: %s", e)
         if not full_text:
             # Fallback to non-streaming
             result = await chat_api(text, sid, api_key=api_key)
-            return {"text": result.get("reply", "خطأ")}
+            return {
+                "text": result.get("reply", "خطأ"),
+                "files": [
+                    tc.get("data", {})
+                    for tc in result.get("tool_calls", [])
+                    if tc.get("tool") == "retrieve_file" and tc.get("success")
+                ],
+            }
 
     # Final edit with full text
     if full_text.strip():
@@ -320,7 +352,7 @@ async def chat_api_stream(text: str, sid: str, message: Message, api_key: str = 
         except Exception:
             pass
 
-    return {"text": full_text}
+    return {"text": full_text, "files": meta.get("files", [])}
 
 
 # --- Commands ---
@@ -998,8 +1030,9 @@ async def handle_text(message: Message):
         text = f'[رد على: "{quoted}"]\n{text}'
 
     # Use streaming for regular chat
+    api_key = _get_api_key(message)
     placeholder = await message.answer("...")
-    stream_result = await chat_api_stream(text, sid, placeholder)
+    stream_result = await chat_api_stream(text, sid, placeholder, api_key=api_key)
     reply_text = stream_result.get("text", "")
 
     if not reply_text.strip():
@@ -1008,8 +1041,17 @@ async def handle_text(message: Message):
         except Exception:
             pass
         # Fallback to non-streaming
-        result = await chat_api(text, sid)
+        result = await chat_api(text, sid, api_key=api_key)
         await send_reply(message, result["reply"])
+        # Send file attachments from non-streaming response
+        for tc in result.get("tool_calls", []):
+            if tc.get("tool") == "retrieve_file" and tc.get("success"):
+                await _send_file_attachment(message, tc.get("data", {}), api_key)
+        return
+
+    # Send file attachments from streaming response
+    for file_info in stream_result.get("files", []):
+        await _send_file_attachment(message, file_info, api_key)
 
 
 # --- Error handler ---

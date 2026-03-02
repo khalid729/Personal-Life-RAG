@@ -41,7 +41,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
 - **Dual LLM backend**: Claude API for chat/tool-calling + vision (`chat_with_tools`, `stream_with_tool_detection`, `classify_file`, `analyze_image`), vLLM/Qwen3-VL for extraction/enrichment/translation (fallback for all). Controlled by `USE_CLAUDE_FOR_CHAT` + `USE_CLAUDE_FOR_VISION` flags.
 - **Multi-tenancy**: `contextvars` for per-user graph/collection/Redis prefix isolation. Middleware sets vars from `X-API-Key` header. `multi_tenant_enabled=False` by default (zero behavior change). UserRegistry loads from `data/users.json` seed file.
-- **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 20 tools)
+- **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 21 tools)
 - **search_knowledge**: 3 parallel searches — `search_sections()` (section name + entity-in-section matches) → `search_nodes()` (global graph) → vector search; section results shown first for structured project content
 - **search_reminders**: supports optional `query` param for fuzzy title search via `_find_matching_reminders()`, combined with `status` filter
 - **Ingestion**: translate → chunk (1500 tokens) → parallel enrichment via `asyncio.gather` → embed + extract facts

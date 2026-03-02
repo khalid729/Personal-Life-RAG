@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 
@@ -441,6 +442,23 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_file",
+            "description": "استرجاع ملف محفوظ (صورة، فاتورة، PDF، مستند) لإرساله للمستخدم. استخدمها لما المستخدم يطلب يشوف أو يرسل له ملف أو صورة.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "وصف الملف — مثال: 'فاتورة الكربريتور' أو 'carburetor invoice'",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -568,6 +586,7 @@ class ToolCallingService:
             "merge_projects": self._handle_merge_projects,
             "get_productivity_stats": self._handle_get_productivity_stats,
             "manage_places": self._handle_manage_places,
+            "retrieve_file": self._handle_retrieve_file,
         }
 
     # ------------------------------------------------------------------
@@ -1267,6 +1286,36 @@ class ToolCallingService:
 
         return {"error": f"Unknown action: {action}"}
 
+    async def _handle_retrieve_file(self, query: str) -> dict:
+        """Find a saved file matching the query and return info for delivery."""
+        # Try English search first (filenames are often English)
+        query_en = await self.llm.translate_to_english(query)
+        files = await self.graph.search_files(query_en, limit=3)
+
+        # Fallback: try original query (Arabic description match)
+        if not files:
+            files = await self.graph.search_files(query, limit=3)
+
+        if not files:
+            return {"error": "لم أجد ملفات تطابق البحث"}
+
+        best = files[0]
+        file_hash = best["file_hash"]
+
+        # Verify file exists on disk
+        storage = Path(settings.file_storage_path) / file_hash[:2]
+        matches = list(storage.glob(f"{file_hash}.*"))
+        if not matches:
+            return {"error": "الملف موجود في القاعدة لكن غير موجود على القرص"}
+
+        return {
+            "file_hash": file_hash,
+            "filename": best["filename"],
+            "file_type": best["file_type"],
+            "description": best["description"],
+            "file_path": str(matches[0]),
+        }
+
     # ------------------------------------------------------------------
     # Tool executor with validation wrapper
     # ------------------------------------------------------------------
@@ -1571,7 +1620,17 @@ class ToolCallingService:
             reply_text = self._fallback_reply(tool_results)
             yield json.dumps({"type": "token", "content": reply_text}) + "\n"
 
-        yield json.dumps({"type": "done"}) + "\n"
+        # Extract file attachments from retrieve_file tool results
+        file_attachments = [
+            {"file_hash": r["data"]["file_hash"], "filename": r["data"]["filename"],
+             "file_type": r["data"].get("file_type", "")}
+            for r in tool_results
+            if r.get("tool") == "retrieve_file" and r.get("success") and r.get("data")
+        ]
+        done_msg = {"type": "done"}
+        if file_attachments:
+            done_msg["files"] = file_attachments
+        yield json.dumps(done_msg) + "\n"
 
         # 5. Post-process in background
         if reply_text:
