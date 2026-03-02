@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-5-20250929"
     use_claude_for_chat: bool = False
+    use_claude_for_vision: bool = False
 
     # Timezone
     timezone_offset_hours: int = 3  # Asia/Riyadh UTC+3

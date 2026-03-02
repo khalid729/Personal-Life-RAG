@@ -70,7 +70,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - FalkorDB: primitives only; `r.key=$val` in SET only, not CREATE; `toLower()` for case-insensitive
 - Qwen3: needs `enable_thinking: False` (handled in llm.py)
 - `.env` overrides config.py defaults — check `.env` first
-- Dual backend: only `chat_with_tools` + `stream_with_tool_detection` use Claude; all other LLM methods (`chat`, `extract_facts`, `classify_file`, `analyze_image`, `translate_*`) always use vLLM — requires server restart after changing `.env`
+- Dual backend: `chat_with_tools` + `stream_with_tool_detection` use Claude for chat; `classify_file` + `analyze_image` use Claude Vision (when `USE_CLAUDE_FOR_VISION=true`) with vLLM fallback; all other LLM methods (`chat`, `extract_facts`, `translate_*`) always use vLLM — requires server restart after changing `.env`
 - Prompts MUST include current date/time (UTC+3)
 - `datetime.utcnow()` deprecated → `datetime.now(timezone(timedelta(hours=3)))`
 - Hijri dates: auto-convert year < 1900 via `hijri-converter`

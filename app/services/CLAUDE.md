@@ -6,7 +6,7 @@
 
 | Service | File | Backend |
 |---------|------|---------|
-| LLMService | llm.py | Claude API (chat/tools) + vLLM :8000 (extraction/vision) |
+| LLMService | llm.py | Claude API (chat/tools + vision) + vLLM :8000 (extraction/fallback) |
 | GraphService | graph.py (110KB) | FalkorDB :6379 |
 | VectorService | vector.py | Qdrant :6333 + BGE-M3 GPU |
 | MemoryService | memory.py | Redis :6380 (3 layers) |
@@ -87,8 +87,8 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 
 ## FileService (files.py)
 
-- Image: classify → vision → `_analysis_to_text()` (uses `name_ar:` prefix for Arabic names) → ingest
-- PDF: pymupdf4llm; if <200 chars → render pages → vision
+- Image: classify → vision (Claude Vision with vLLM fallback) → `_analysis_to_text()` (uses `name_ar:` prefix for Arabic names) → ingest
+- PDF: pymupdf4llm; if <200 chars → render pages → vision (Claude Vision with vLLM fallback)
 - Audio: WhisperX (lazy-loaded, GPU, Arabic)
 - Text: decode (utf-8/cp1256/latin-1) → ingest
 - **URL**: `process_url()` — GitHub URL parser + generic web fetch → strip HTML → ingest

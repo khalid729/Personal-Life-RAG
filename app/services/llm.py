@@ -128,7 +128,60 @@ class LLMService:
         ]
         return await self.chat(messages, max_tokens=1024, temperature=0.3)
 
+    async def _chat_vision_claude(
+        self, system_text: str, prompt_text: str, image_b64: str, mime_type: str,
+        max_tokens: int = 2048,
+    ) -> str:
+        """Send an image + text prompt to Claude Vision API."""
+        response = await self._anthropic_client.messages.create(
+            model=settings.anthropic_model,
+            system=[{
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": image_b64,
+                        },
+                    },
+                    {"type": "text", "text": prompt_text},
+                ],
+            }],
+            max_tokens=max_tokens,
+            temperature=0.1,
+        )
+        logger.debug(
+            "Claude Vision usage: input=%d output=%d cache_read=%d",
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            getattr(response.usage, "cache_read_input_tokens", 0),
+        )
+        return response.content[0].text.strip()
+
     async def classify_file(self, image_b64: str, mime_type: str) -> dict:
+        # Try Claude Vision first
+        if self._anthropic_client and settings.use_claude_for_vision:
+            try:
+                from app.prompts.file_classify import FILE_CLASSIFY_SYSTEM
+                raw = await self._chat_vision_claude(
+                    FILE_CLASSIFY_SYSTEM, "Classify this image.", image_b64, mime_type,
+                    max_tokens=256,
+                )
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError:
+                    logger.warning("Claude classify_file JSON parse failed: %s", raw[:200])
+            except Exception as e:
+                logger.error("Claude Vision classify_file failed, falling back to vLLM: %s", e)
+
+        # vLLM fallback
         messages = build_file_classify(image_b64, mime_type)
         raw = await self.chat(messages, max_tokens=256, temperature=0.1, json_mode=True)
         try:
@@ -140,6 +193,24 @@ class LLMService:
     async def analyze_image(
         self, image_b64: str, file_type: str, mime_type: str, user_context: str = ""
     ) -> dict:
+        # Try Claude Vision first
+        if self._anthropic_client and settings.use_claude_for_vision:
+            try:
+                from app.prompts.vision import VISION_PROMPTS, VISION_ANALYSIS_SYSTEM
+                prompt_text = VISION_PROMPTS.get(file_type, VISION_PROMPTS["info_image"])
+                if user_context:
+                    prompt_text += f"\n\nAdditional context from user: {user_context}"
+                raw = await self._chat_vision_claude(
+                    VISION_ANALYSIS_SYSTEM, prompt_text, image_b64, mime_type,
+                )
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError:
+                    logger.warning("Claude analyze_image JSON parse failed: %s", raw[:200])
+            except Exception as e:
+                logger.error("Claude Vision analyze_image failed, falling back to vLLM: %s", e)
+
+        # vLLM fallback
         messages = build_vision_analysis(image_b64, file_type, mime_type, user_context)
         raw = await self.chat(messages, max_tokens=2048, temperature=0.1, json_mode=True)
         try:
