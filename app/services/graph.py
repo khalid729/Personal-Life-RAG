@@ -904,14 +904,14 @@ class GraphService:
         MATCH (r:Reminder)
         WHERE toLower(r.title) CONTAINS toLower($title)
           AND r.status = 'pending'
-        RETURN r.title, r.due_date
+        RETURN r.title, r.due_date, r.time
         LIMIT 1
         """
         rows = await self.query(q_find, {"title": title})
         if not rows:
             return {"error": f"No pending reminder found matching '{title}'"}
 
-        r_title, due_date_str = rows[0][0], rows[0][1]
+        r_title, due_date_str, original_time = rows[0][0], rows[0][1], rows[0][2]
         if not due_date_str:
             return {"error": f"Reminder '{r_title}' has no due_date to advance"}
 
@@ -933,6 +933,12 @@ class GraphService:
             next_due = current_due + relativedelta(years=1)
         else:
             return {"error": f"Unknown recurrence: {recurrence}"}
+
+        # Restore original time if persistent nagging shifted it
+        if original_time:
+            parts = original_time.split(":")
+            if len(parts) >= 2:
+                next_due = next_due.replace(hour=int(parts[0]), minute=int(parts[1]), second=0, microsecond=0)
 
         next_due_str = next_due.isoformat()
         q_update = """
