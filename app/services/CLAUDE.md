@@ -51,7 +51,11 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 - `_unlink_file_entities(hash)`: removes all `EXTRACTED_FROM` edges for a file
 - `upsert_from_facts(facts, file_hash=)`: links entities to source File after upsert
 - `ensure_user_graph(graph_name)`: creates graph handle for new tenant user
-- `search_files(query, limit)`: CONTAINS search on filename + description (for `retrieve_file` tool)
+- `search_files(query, limit)`: CONTAINS search on filename + description + `user_context` (for `retrieve_file` tool)
+- `search_files_by_entity(query, limit)`: finds files via linked entities (EXTRACTED_FROM, FROM_INVOICE) — fallback when filename/description don't match
+- `upsert_file_node(hash, name, type, analysis, user_context=)`: stores `user_context` field (upload caption) for search
+- `find_expense(desc, vendor, file_hash)`: keyword extraction + bidirectional vendor CONTAINS (handles "SOBSCO" matching "SOBSC")
+- `update_expense()` / `delete_expense()`: find by desc/vendor/file_hash, update/delete with old data returned
 - **Place CRUD** (Phase 24): `create_place()`, `update_place()`, `delete_place()`, `query_places()`, `get_place_by_name()`, `query_location_reminders()`
 
 ### FalkorDB Rules
@@ -62,7 +66,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 
 ## ToolCallingService (tool_calling.py)
 
-- **21 tools**: search_reminders, create_reminder, delete_reminder, update_reminder, add_expense, get_expense_report, get_debt_summary, record_debt, pay_debt, get_daily_plan, search_knowledge, store_note, get_person_info, manage_inventory, manage_tasks, manage_projects, manage_lists, merge_projects, get_productivity_stats, manage_places, retrieve_file
+- **22 tools**: search_reminders, create_reminder, delete_reminder, update_reminder, add_expense (create/update/delete), get_expense_report, get_debt_summary, record_debt, pay_debt, get_daily_plan, search_knowledge, store_note, get_person_info, manage_inventory, manage_tasks, manage_projects, manage_lists, merge_projects, get_productivity_stats, manage_places, retrieve_file
 - **Prayer time support**: `prayer` param on create/update_reminder → `_get_prayer_time()` resolves via Aladhan API (daily cache, `follow_redirects=True`), applies `settings.prayer_offset_minutes` offset, rolls to next day if passed
 - **Persistent reminders**: `persistent` param on `create_reminder` tool → stored as graph property; `reschedule_persistent_reminder()` in graph.py auto-reschedules after nag interval
 - **Snooze fix**: `action=snooze` keeps `status='pending'`, moves `due_date`, clears `notified_at`; resolves prayer/time/date before calling graph
@@ -71,6 +75,8 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 - **Streaming**: `chat_stream()` yields NDJSON, tool calls detected from stream
 - **Post-processing**: memory + vector storage (background `asyncio.create_task`); auto-extraction disabled by default
 - **Auto-extraction** (disabled by default, `AUTO_EXTRACT_ENABLED=false`): saves contradictory data when user corrects info. When enabled: `_STORABLE_RE` keyword check → NER → translate → extract_facts_specialized → upsert; `_AUTO_EXTRACT_SAFE_TYPES` = Person, Company, Knowledge, Location; `_WRITE_TOOLS` skip guard
+- **Expense update cascade**: `_cascade_expense_update(file_hash, old_amount, new_amount)` — when expense linked to file via `FROM_INVOICE` is updated, replaces amount string in File.description and Qdrant vector text
+- **retrieve_file**: 3-strategy search — (1) graph keywords on filename/description/user_context, (2) entity graph via linked entities (EXTRACTED_FROM/FROM_INVOICE), (3) vector search with keyword fallback (threshold 0.30). Keywords extracted from both Arabic + English queries (>3 chars, stop words filtered). Streaming `done` NDJSON includes `files` array for Telegram delivery.
 - **Fallback**: `_fallback_reply()` generates simple Arabic from tool results if LLM times out
 
 ## RetrievalService (retrieval.py)
@@ -86,7 +92,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 
 ## FileService (files.py)
 
-- Image: classify → vision (Claude Vision with vLLM fallback) → `_analysis_to_text()` (uses `name_ar:` prefix for Arabic names) → ingest
+- Image: classify → vision (Claude Vision with vLLM fallback) → `_analysis_to_text()` (uses `name_ar:` prefix for Arabic names) → prepend `user_context` → ingest. `user_context` (upload caption) stored on File node + embedded in Qdrant for future search
 - PDF: pymupdf4llm; if <200 chars → render pages → vision (Claude Vision with vLLM fallback)
 - Audio: WhisperX (lazy-loaded, GPU, Arabic)
 - Text: decode (utf-8/cp1256/latin-1) → ingest

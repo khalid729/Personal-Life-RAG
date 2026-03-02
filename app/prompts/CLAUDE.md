@@ -14,11 +14,13 @@
 ## Tool System (tool_system.py)
 
 - `build_tool_system_prompt(memory_context)`: Arabic system prompt with current date/time (UTC+3)
-- Instructions for when to use each of the 19 tools
+- Instructions for when to use each of the 22 tools
 - Prayer time instruction: LLM maps "بعد صلاة العصر" → `prayer="asr"` param
 - Persistent reminder instruction: LLM maps "ولا تخليني أنسى" → `persistent=true`
 - Snooze instruction: LLM maps reply "بعد ساعتين"/"بعد المغرب" → `action=snooze` with prayer/time
 - Arabic→English entity name translation instruction (e.g. "الستيفنيس" → "Stiffness")
+- Expense update/delete instruction: LLM maps "عدل المبلغ" → `add_expense` with `action=update`
+- retrieve_file instruction: LLM must call tool every time (not repeat old text); file sent automatically
 - Anti-lying rules: only say "تم" if tool returned success
 
 ## Specialized Extract (extract_specialized.py)
@@ -37,5 +39,5 @@
 ## Key Rules
 
 - System + extract prompts MUST include current date/time (UTC+3)
-- Tool-calling pipeline: `tool_system.py` prompt + 18 tool definitions
+- Tool-calling pipeline: `tool_system.py` prompt + 22 tool definitions
 - Ingest pipeline: general extraction via `extract.py`

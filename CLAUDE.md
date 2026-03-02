@@ -41,7 +41,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
 - **Dual LLM backend**: Claude API for chat/tool-calling + vision (`chat_with_tools`, `stream_with_tool_detection`, `classify_file`, `analyze_image`), vLLM/Qwen3-VL for extraction/enrichment/translation (fallback for all). Controlled by `USE_CLAUDE_FOR_CHAT` + `USE_CLAUDE_FOR_VISION` flags.
 - **Multi-tenancy**: `contextvars` for per-user graph/collection/Redis prefix isolation. Middleware sets vars from `X-API-Key` header. `multi_tenant_enabled=False` by default (zero behavior change). UserRegistry loads from `data/users.json` seed file.
-- **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 21 tools)
+- **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 22 tools)
 - **search_knowledge**: 3 parallel searches — `search_sections()` (section name + entity-in-section matches) → `search_nodes()` (global graph) → vector search; section results shown first for structured project content
 - **search_reminders**: supports optional `query` param for fuzzy title search via `_find_matching_reminders()`, combined with `status` filter
 - **Ingestion**: translate → chunk (1500 tokens) → parallel enrichment via `asyncio.gather` → embed + extract facts
@@ -64,6 +64,8 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **Telegram reply context**: `reply_to_message.text` prepended as `[رد على: "..."]` so LLM understands context (update vs create)
 - **Location-based reminders**: `location_place` (named place) or `location_type` (POI type) on reminders. Webhook `POST /location/update` accepts HA/OwnTracks payloads → geofence check → Telegram notification. Places stored as graph nodes, zones tracked in Redis with cooldown.
 - **manage_places tool**: CRUD for saved places (graph `Place` nodes). `_TOOL_ONLY_TYPES` prevents extraction creating rogue Places.
+- **retrieve_file tool**: 3-strategy search (graph keywords → entity graph → vector keywords). File node stores `user_context` (upload caption) for search. Streaming `done` NDJSON includes `files` array → Telegram bot downloads + sends as photo/document.
+- **Expense update cascade**: `add_expense` tool supports `action=create/update/delete`. Update with file-linked expense cascades amount change to File description + Qdrant vector text via `_cascade_expense_update()`.
 
 ## Key Gotchas
 
