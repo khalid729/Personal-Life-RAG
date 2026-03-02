@@ -86,3 +86,5 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - OWUI internal messages (follow-ups, titles, chat history analysis) must be blocked by Pipe — `_INTERNAL_KEYWORDS` list; `#### Tools Available` block stripped by `_TOOLS_AVAILABLE_RE` in `_strip_owui_rag_context()`
 - `post_process()` stores every conversation turn in Qdrant (`source_type=conversation`) — if OWUI garbage leaks through, it pollutes all future searches
 - Snooze used to set `status='snoozed'` which dropped reminders from `due-reminders` query forever — now keeps `status='pending'`
+- `due_date` + `time` must be merged at creation: LLM sends them as separate fields, but FalkorDB `due-reminders` query uses string comparison (`r.due_date <= $now`). Date-only `"2026-03-02"` is `<=` midnight ISO string, causing reminders to fire at midnight instead of their actual time. Fix: `_handle_create_reminder` merges `due_date + time` → `"2026-03-02T20:00"`
+- Redis `hset` rejects `bool` values — `UserRegistry._store_profile()` converts `enabled` to `str`; `_load_from_redis()` parses back
