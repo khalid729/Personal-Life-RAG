@@ -108,7 +108,10 @@ async def _load_tg_users() -> None:
 def authorized(message: Message) -> bool:
     tg_id = str(message.from_user.id)
     if _tg_user_cache:
-        return tg_id in _tg_user_cache
+        if tg_id in _tg_user_cache:
+            return True
+        logger.warning("Unauthorized Telegram user: chat_id=%s username=%s", tg_id, message.from_user.username)
+        return False
     # Fallback to single-user mode
     if tg_id != settings.tg_chat_id:
         logger.warning("Unauthorized user: %s (expected %s)", tg_id, settings.tg_chat_id)
