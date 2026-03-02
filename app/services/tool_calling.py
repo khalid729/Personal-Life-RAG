@@ -1295,23 +1295,26 @@ class ToolCallingService:
         if not files:
             files = await self.graph.search_files(query, limit=3)
 
-        # Strategy 2: Vector search — broader search, pick results with file_hash
+        # Strategy 2: Vector search — try multiple query variants, pick results with file_hash
         if not files:
-            vector_results = await self.vector.search(query_en, limit=20)
-            seen_hashes = set()
-            for vr in vector_results:
-                fh = vr.get("metadata", {}).get("file_hash", "")
-                if fh and fh not in seen_hashes and vr.get("score", 0) >= 0.35:
-                    seen_hashes.add(fh)
-                    file_info = await self.graph.find_file_by_hash(fh)
-                    if file_info:
-                        props = file_info.get("properties", {})
-                        files.append({
-                            "file_hash": fh,
-                            "filename": props.get("filename", ""),
-                            "file_type": props.get("file_type", ""),
-                            "description": props.get("description", ""),
-                        })
+            seen_hashes: set[str] = set()
+            for search_query in (query_en, query, f"file {query_en}"):
+                vector_results = await self.vector.search(search_query, limit=20)
+                for vr in vector_results:
+                    fh = vr.get("metadata", {}).get("file_hash", "")
+                    if fh and fh not in seen_hashes and vr.get("score", 0) >= 0.35:
+                        seen_hashes.add(fh)
+                        file_info = await self.graph.find_file_by_hash(fh)
+                        if file_info:
+                            props = file_info.get("properties", {})
+                            files.append({
+                                "file_hash": fh,
+                                "filename": props.get("filename", ""),
+                                "file_type": props.get("file_type", ""),
+                                "description": props.get("description", ""),
+                            })
+                if files:
+                    break
 
         if not files:
             return {"error": "لم أجد ملفات تطابق البحث"}
