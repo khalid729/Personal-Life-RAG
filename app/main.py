@@ -4,9 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.middleware.auth import AuthMiddleware
 from app.routers import chat, files, financial, ingest, inventory, knowledge, proactive, productivity, projects, reminders, search, tasks
 from app.routers import backup as backup_router
 from app.routers import graph_viz
+from app.routers import location as location_router
+from app.routers import users as users_router
 from app.services.backup import BackupService
 from app.services.files import FileService
 from app.services.graph import GraphService
@@ -14,7 +17,9 @@ from app.services.llm import LLMService
 from app.services.memory import MemoryService
 from app.services.ner import NERService
 from app.services.retrieval import RetrievalService
+from app.services.location import LocationService
 from app.services.tool_calling import ToolCallingService
+from app.services.user_registry import UserRegistry
 from app.services.vector import VectorService
 
 logging.basicConfig(
@@ -50,6 +55,17 @@ async def lifespan(app: FastAPI):
     await ner.start()
     logger.info("NER service ready")
 
+    # User registry (multi-tenancy)
+    user_registry = UserRegistry(memory._redis)
+    await user_registry.start()
+    app.state.user_registry = user_registry
+    logger.info("User registry ready")
+
+    # Location service (Phase 24)
+    location_svc = LocationService(memory._redis)
+    await location_svc.start()
+    app.state.location = location_svc
+
     graph.set_vector_service(vector)
 
     retrieval = RetrievalService(llm, graph, vector, memory, ner=ner)
@@ -83,6 +99,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -105,6 +122,8 @@ app.include_router(inventory.router)
 app.include_router(productivity.router)
 app.include_router(backup_router.router)
 app.include_router(graph_viz.router)
+app.include_router(location_router.router)
+app.include_router(users_router.router)
 
 
 @app.get("/health")

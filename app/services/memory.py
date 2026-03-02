@@ -5,6 +5,7 @@ from datetime import date
 import redis.asyncio as aioredis
 
 from app.config import get_settings
+from app.middleware.auth import _current_redis_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,11 @@ class MemoryService:
 
     def __init__(self):
         self._redis: aioredis.Redis | None = None
+
+    def _prefixed(self, key: str) -> str:
+        """Apply multi-tenant prefix to a Redis key."""
+        prefix = _current_redis_prefix.get()
+        return f"{prefix}{key}" if prefix else key
 
     async def start(self):
         self._redis = aioredis.Redis(
@@ -39,7 +45,7 @@ class MemoryService:
     # --- Layer 1: Working Memory ---
 
     def _working_key(self, session_id: str) -> str:
-        return f"working_memory:{session_id}"
+        return self._prefixed(f"working_memory:{session_id}")
 
     async def push_message(self, session_id: str, role: str, content: str) -> None:
         key = self._working_key(session_id)
@@ -65,7 +71,7 @@ class MemoryService:
 
     def _daily_key(self, day: date | None = None) -> str:
         d = day or date.today()
-        return f"daily_summary:{d.isoformat()}"
+        return self._prefixed(f"daily_summary:{d.isoformat()}")
 
     async def set_daily_summary(self, summary: str, day: date | None = None) -> None:
         key = self._daily_key(day)
@@ -79,14 +85,17 @@ class MemoryService:
 
     CORE_KEY = "core_memory"
 
+    def _core_key(self) -> str:
+        return self._prefixed(self.CORE_KEY)
+
     async def set_core_memory(self, field: str, value: str) -> None:
-        await self._redis.hset(self.CORE_KEY, field, value)
+        await self._redis.hset(self._core_key(), field, value)
 
     async def get_core_memory(self, field: str) -> str | None:
-        return await self._redis.hget(self.CORE_KEY, field)
+        return await self._redis.hget(self._core_key(), field)
 
     async def get_all_core_memory(self) -> dict[str, str]:
-        return await self._redis.hgetall(self.CORE_KEY)
+        return await self._redis.hgetall(self._core_key())
 
     # --- Pending Actions (Phase 4) ---
 
@@ -94,7 +103,7 @@ class MemoryService:
     # --- Message Counter (Phase 4) ---
 
     def _msg_count_key(self, session_id: str) -> str:
-        return f"msg_count:{session_id}"
+        return self._prefixed(f"msg_count:{session_id}")
 
     async def increment_message_count(self, session_id: str) -> int:
         key = self._msg_count_key(session_id)
@@ -158,7 +167,7 @@ class MemoryService:
     # --- Active Project Context ---
 
     def _active_project_key(self, session_id: str) -> str:
-        return f"session_meta:{session_id}:active_project"
+        return self._prefixed(f"session_meta:{session_id}:active_project")
 
     async def set_active_project(self, session_id: str, project_name: str) -> None:
         key = self._active_project_key(session_id)
@@ -174,7 +183,7 @@ class MemoryService:
     # --- Conversation Summarization (Phase 11) ---
 
     def _summary_key(self, session_id: str) -> str:
-        return f"conversation_summary:{session_id}"
+        return self._prefixed(f"conversation_summary:{session_id}")
 
     async def get_working_memory_count(self, session_id: str) -> int:
         key = self._working_key(session_id)

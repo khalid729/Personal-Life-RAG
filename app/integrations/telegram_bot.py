@@ -62,14 +62,49 @@ def _get_scheduler() -> AsyncIOScheduler | None:
     return _scheduler
 
 
+# Multi-user cache: tg_chat_id → {user_id, api_key, tg_chat_id, ...}
+_tg_user_cache: dict[str, dict] = {}
+
+
+async def _load_tg_users() -> None:
+    """Load user registry from API into tg user cache."""
+    global _tg_user_cache
+    try:
+        data = await api_get("/admin/users")
+        for u in data.get("users", []):
+            tg_id = u.get("tg_chat_id", "")
+            if tg_id and u.get("enabled", True):
+                _tg_user_cache[tg_id] = u
+        logger.info("Loaded %d Telegram users from registry", len(_tg_user_cache))
+    except Exception as e:
+        logger.warning("Failed to load user registry, falling back to single-user: %s", e)
+        # Fallback: use settings for backward compat
+        if settings.tg_chat_id:
+            _tg_user_cache[settings.tg_chat_id] = {
+                "user_id": "khalid",
+                "api_key": "",
+                "tg_chat_id": settings.tg_chat_id,
+            }
+
+
 # --- Helpers ---
 
 def authorized(message: Message) -> bool:
-    user_id = str(message.from_user.id)
-    if user_id != settings.tg_chat_id:
-        logger.warning("Unauthorized user: %s (expected %s)", user_id, settings.tg_chat_id)
+    tg_id = str(message.from_user.id)
+    if _tg_user_cache:
+        return tg_id in _tg_user_cache
+    # Fallback to single-user mode
+    if tg_id != settings.tg_chat_id:
+        logger.warning("Unauthorized user: %s (expected %s)", tg_id, settings.tg_chat_id)
         return False
     return True
+
+
+def _get_api_key(message: Message) -> str:
+    """Get API key for the message sender."""
+    tg_id = str(message.from_user.id)
+    user = _tg_user_cache.get(tg_id, {})
+    return user.get("api_key", "")
 
 
 def session_id(user_id: int) -> str:
@@ -183,23 +218,26 @@ async def send_reply(message: Message, text: str, keyboard=None):
         await message.answer(part, reply_markup=kb)
 
 
-async def api_get(path: str, params: dict | None = None) -> dict:
+async def api_get(path: str, params: dict | None = None, api_key: str = "") -> dict:
+    headers = {"X-API-Key": api_key} if api_key else {}
     async with httpx.AsyncClient(base_url=API_BASE, timeout=CHAT_TIMEOUT) as client:
-        resp = await client.get(path, params=params)
+        resp = await client.get(path, params=params, headers=headers)
         resp.raise_for_status()
         return resp.json()
 
 
-async def api_post(path: str, json: dict | None = None, timeout: float = CHAT_TIMEOUT) -> dict:
+async def api_post(path: str, json: dict | None = None, timeout: float = CHAT_TIMEOUT, api_key: str = "") -> dict:
+    headers = {"X-API-Key": api_key} if api_key else {}
     async with httpx.AsyncClient(base_url=API_BASE, timeout=timeout) as client:
-        resp = await client.post(path, json=json)
+        resp = await client.post(path, json=json, headers=headers)
         resp.raise_for_status()
         return resp.json()
 
 
-async def api_put(path: str, json: dict | None = None) -> dict:
+async def api_put(path: str, json: dict | None = None, api_key: str = "") -> dict:
+    headers = {"X-API-Key": api_key} if api_key else {}
     async with httpx.AsyncClient(base_url=API_BASE, timeout=CHAT_TIMEOUT) as client:
-        resp = await client.put(path, json=json)
+        resp = await client.put(path, json=json, headers=headers)
         resp.raise_for_status()
         return resp.json()
 
@@ -210,19 +248,21 @@ async def api_post_file(
     filename: str,
     content_type: str,
     data: dict | None = None,
+    api_key: str = "",
 ) -> dict:
+    headers = {"X-API-Key": api_key} if api_key else {}
     async with httpx.AsyncClient(base_url=API_BASE, timeout=FILE_TIMEOUT) as client:
         files = {"file": (filename, file_bytes, content_type)}
-        resp = await client.post(path, files=files, data=data or {})
+        resp = await client.post(path, files=files, data=data or {}, headers=headers)
         resp.raise_for_status()
         return resp.json()
 
 
-async def chat_api(text: str, sid: str) -> dict:
-    return await api_post("/chat/v2", json={"message": text, "session_id": sid})
+async def chat_api(text: str, sid: str, api_key: str = "") -> dict:
+    return await api_post("/chat/v2", json={"message": text, "session_id": sid}, api_key=api_key)
 
 
-async def chat_api_stream(text: str, sid: str, message: Message) -> dict:
+async def chat_api_stream(text: str, sid: str, message: Message, api_key: str = "") -> dict:
     """Stream chat response — edit Telegram message as tokens arrive.
 
     Returns dict with 'text' (full response).
@@ -231,11 +271,13 @@ async def chat_api_stream(text: str, sid: str, message: Message) -> dict:
     last_edit = 0.0
     meta = {}
 
+    headers = {"X-API-Key": api_key} if api_key else {}
     try:
         async with httpx.AsyncClient(base_url=API_BASE, timeout=120.0) as client:
             async with client.stream(
                 "POST", "/chat/v2/stream",
                 json={"message": text, "session_id": sid},
+                headers=headers,
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
@@ -267,7 +309,7 @@ async def chat_api_stream(text: str, sid: str, message: Message) -> dict:
         logger.error("Streaming chat failed: %s", e)
         if not full_text:
             # Fallback to non-streaming
-            result = await chat_api(text, sid)
+            result = await chat_api(text, sid, api_key=api_key)
             return {"text": result.get("reply", "خطأ")}
 
     # Final edit with full text
@@ -1074,191 +1116,211 @@ def format_old_debts(data: dict) -> str:
 
 
 async def job_morning_summary(bot: Bot):
-    try:
-        data = await api_get("/proactive/morning-summary")
-        plan = data.get("daily_plan", "")
+    for tg_id, user in _tg_user_cache.items():
+        try:
+            ak = user.get("api_key", "")
+            data = await api_get("/proactive/morning-summary", api_key=ak)
+            plan = data.get("daily_plan", "")
 
-        if plan and plan != "No actionable items for today.":
-            try:
-                fmt = await api_post(
-                    "/proactive/format-reminders",
-                    json={"raw_text": plan, "context": "morning"},
-                )
-                text = fmt.get("formatted", "")
-            except Exception:
-                text = format_morning_summary(data)
-        else:
-            text = "صباح الخير! ما عندك شي مجدول اليوم ☀️"
+            if plan and plan != "No actionable items for today.":
+                try:
+                    fmt = await api_post(
+                        "/proactive/format-reminders",
+                        json={"raw_text": plan, "context": "morning"},
+                        api_key=ak,
+                    )
+                    text = fmt.get("formatted", "")
+                except Exception:
+                    text = format_morning_summary(data)
+            else:
+                text = "صباح الخير! ما عندك شي مجدول اليوم ☀️"
 
-        alerts = data.get("spending_alerts")
-        if alerts:
-            text += f"\n\n💰 {alerts}"
+            alerts = data.get("spending_alerts")
+            if alerts:
+                text += f"\n\n💰 {alerts}"
 
-        for part in split_message(text):
-            await bot.send_message(chat_id=settings.tg_chat_id, text=part)
-        logger.info("Morning summary sent")
-    except Exception as e:
-        logger.error("Morning summary job failed: %s", e)
+            for part in split_message(text):
+                await bot.send_message(chat_id=tg_id, text=part)
+            logger.info("Morning summary sent to %s", user.get("user_id", tg_id))
+        except Exception as e:
+            logger.error("Morning summary for %s failed: %s", user.get("user_id", tg_id), e)
 
 
 async def job_noon_checkin(bot: Bot):
-    try:
-        data = await api_get("/proactive/noon-checkin")
-        overdue = data.get("overdue_reminders", [])
-        if not overdue:
-            return
-
+    for tg_id, user in _tg_user_cache.items():
         try:
-            fmt = await api_post(
-                "/proactive/format-reminders",
-                json={"reminders": overdue, "context": "noon"},
-            )
-            text = fmt.get("formatted", "")
-        except Exception:
-            text = format_noon_checkin(data)
+            ak = user.get("api_key", "")
+            data = await api_get("/proactive/noon-checkin", api_key=ak)
+            overdue = data.get("overdue_reminders", [])
+            if not overdue:
+                continue
 
-        for part in split_message(text):
-            await bot.send_message(chat_id=settings.tg_chat_id, text=part)
-        logger.info("Noon check-in sent")
-    except Exception as e:
-        logger.error("Noon check-in job failed: %s", e)
+            try:
+                fmt = await api_post(
+                    "/proactive/format-reminders",
+                    json={"reminders": overdue, "context": "noon"},
+                    api_key=ak,
+                )
+                text = fmt.get("formatted", "")
+            except Exception:
+                text = format_noon_checkin(data)
+
+            for part in split_message(text):
+                await bot.send_message(chat_id=tg_id, text=part)
+            logger.info("Noon check-in sent to %s", user.get("user_id", tg_id))
+        except Exception as e:
+            logger.error("Noon check-in for %s failed: %s", user.get("user_id", tg_id), e)
 
 
 async def job_evening_summary(bot: Bot):
-    try:
-        data = await api_get("/proactive/evening-summary")
-        completed = data.get("completed_today", [])
-        tomorrow = data.get("tomorrow_reminders", [])
-
-        # Build raw text for LLM
-        parts = []
-        if completed:
-            parts.append("أنجزت اليوم:\n" + "\n".join(f"- {c}" for c in completed))
-        else:
-            parts.append("ما أنجزت شي مسجل اليوم.")
-        if tomorrow:
-            items = "\n".join(f"- {r['title']} ({r['due_date']})" for r in tomorrow)
-            parts.append(f"تذكيرات بكرة:\n{items}")
-
-        raw = "\n\n".join(parts)
-
+    for tg_id, user in _tg_user_cache.items():
         try:
-            fmt = await api_post(
-                "/proactive/format-reminders",
-                json={"raw_text": raw, "context": "evening"},
-            )
-            text = fmt.get("formatted", "")
-        except Exception:
-            text = format_evening_summary(data)
+            ak = user.get("api_key", "")
+            data = await api_get("/proactive/evening-summary", api_key=ak)
+            completed = data.get("completed_today", [])
+            tomorrow = data.get("tomorrow_reminders", [])
 
-        for part in split_message(text):
-            await bot.send_message(chat_id=settings.tg_chat_id, text=part)
-        logger.info("Evening summary sent")
-    except Exception as e:
-        logger.error("Evening summary job failed: %s", e)
+            # Build raw text for LLM
+            parts = []
+            if completed:
+                parts.append("أنجزت اليوم:\n" + "\n".join(f"- {c}" for c in completed))
+            else:
+                parts.append("ما أنجزت شي مسجل اليوم.")
+            if tomorrow:
+                items = "\n".join(f"- {r['title']} ({r['due_date']})" for r in tomorrow)
+                parts.append(f"تذكيرات بكرة:\n{items}")
+
+            raw = "\n\n".join(parts)
+
+            try:
+                fmt = await api_post(
+                    "/proactive/format-reminders",
+                    json={"raw_text": raw, "context": "evening"},
+                    api_key=ak,
+                )
+                text = fmt.get("formatted", "")
+            except Exception:
+                text = format_evening_summary(data)
+
+            for part in split_message(text):
+                await bot.send_message(chat_id=tg_id, text=part)
+            logger.info("Evening summary sent to %s", user.get("user_id", tg_id))
+        except Exception as e:
+            logger.error("Evening summary for %s failed: %s", user.get("user_id", tg_id), e)
 
 
 async def job_check_reminders(bot: Bot):
-    try:
-        data = await api_get("/proactive/due-reminders")
-        reminders = data.get("due_reminders", [])
-        if not reminders:
-            return
-
-        # 1. Call LLM to format all reminders as one message
+    for tg_id, user in _tg_user_cache.items():
         try:
-            fmt = await api_post(
-                "/proactive/format-reminders",
-                json={"reminders": reminders, "context": "due"},
-            )
-            text = fmt.get("formatted", "")
-        except Exception:
-            text = "⏰ تذكيراتك:\n\n" + "\n".join(
-                f"{'🔴' if (r.get('priority') or 0) >= 4 else '🔵'} {r['title']}"
-                for r in reminders
-            )
+            ak = user.get("api_key", "")
+            data = await api_get("/proactive/due-reminders", api_key=ak)
+            reminders = data.get("due_reminders", [])
+            if not reminders:
+                continue
 
-        # 2. Send one batched message
-        for part in split_message(text):
-            await bot.send_message(chat_id=settings.tg_chat_id, text=part)
-
-        # 3. Mark notified + advance recurring / reschedule persistent
-        for r in reminders:
+            # 1. Call LLM to format all reminders as one message
             try:
-                await api_post("/proactive/mark-notified", json={"title": r["title"]})
+                fmt = await api_post(
+                    "/proactive/format-reminders",
+                    json={"reminders": reminders, "context": "due"},
+                    api_key=ak,
+                )
+                text = fmt.get("formatted", "")
             except Exception:
-                pass
-            recurrence = r.get("recurrence")
-            if recurrence and recurrence in ("daily", "weekly", "monthly", "yearly"):
-                try:
-                    await api_post(
-                        "/proactive/advance-reminder",
-                        json={"title": r["title"], "recurrence": recurrence},
-                    )
-                except Exception:
-                    pass
-            elif r.get("persistent"):
-                try:
-                    await api_post(
-                        "/proactive/reschedule-persistent",
-                        json={"title": r["title"]},
-                    )
-                except Exception:
-                    pass
+                text = "⏰ تذكيراتك:\n\n" + "\n".join(
+                    f"{'🔴' if (r.get('priority') or 0) >= 4 else '🔵'} {r['title']}"
+                    for r in reminders
+                )
 
-        logger.info("Sent %d due reminder(s) (formatted)", len(reminders))
-    except Exception as e:
-        logger.error("Reminder check job failed: %s", e)
+            # 2. Send one batched message
+            for part in split_message(text):
+                await bot.send_message(chat_id=tg_id, text=part)
+
+            # 3. Mark notified + advance recurring / reschedule persistent
+            for r in reminders:
+                try:
+                    await api_post("/proactive/mark-notified", json={"title": r["title"]}, api_key=ak)
+                except Exception:
+                    pass
+                recurrence = r.get("recurrence")
+                if recurrence and recurrence in ("daily", "weekly", "monthly", "yearly"):
+                    try:
+                        await api_post(
+                            "/proactive/advance-reminder",
+                            json={"title": r["title"], "recurrence": recurrence},
+                            api_key=ak,
+                        )
+                    except Exception:
+                        pass
+                elif r.get("persistent"):
+                    try:
+                        await api_post(
+                            "/proactive/reschedule-persistent",
+                            json={"title": r["title"]},
+                            api_key=ak,
+                        )
+                    except Exception:
+                        pass
+
+            logger.info("Sent %d due reminder(s) to %s", len(reminders), user.get("user_id", tg_id))
+        except Exception as e:
+            logger.error("Reminder check for %s failed: %s", user.get("user_id", tg_id), e)
 
 
 async def job_daily_backup(bot: Bot):
     """Daily automated backup with Telegram notification."""
-    try:
-        data = await api_post("/backup/create", timeout=300.0)
-        sizes = data.get("sizes", {})
-        total_kb = sum(sizes.values()) / 1024
-        ts = data.get("timestamp", "?")
-        removed = data.get("old_backups_removed", 0)
-        text = f"نسخة احتياطية تلقائية: {ts} ({total_kb:.0f} KB)"
-        if removed:
-            text += f" — حذف {removed} نسخ قديمة"
-        await bot.send_message(chat_id=settings.tg_chat_id, text=text)
-        logger.info("Daily backup completed: %s", ts)
-    except Exception as e:
-        logger.error("Daily backup job failed: %s", e)
+    for tg_id, user in _tg_user_cache.items():
         try:
-            await bot.send_message(chat_id=settings.tg_chat_id, text=f"فشل النسخ الاحتياطي: {e}")
-        except Exception:
-            pass
+            ak = user.get("api_key", "")
+            data = await api_post("/backup/create", timeout=300.0, api_key=ak)
+            sizes = data.get("sizes", {})
+            total_kb = sum(sizes.values()) / 1024
+            ts = data.get("timestamp", "?")
+            removed = data.get("old_backups_removed", 0)
+            text = f"نسخة احتياطية تلقائية: {ts} ({total_kb:.0f} KB)"
+            if removed:
+                text += f" — حذف {removed} نسخ قديمة"
+            await bot.send_message(chat_id=tg_id, text=text)
+            logger.info("Daily backup for %s completed: %s", user.get("user_id", tg_id), ts)
+        except Exception as e:
+            logger.error("Daily backup for %s failed: %s", user.get("user_id", tg_id), e)
+            try:
+                await bot.send_message(chat_id=tg_id, text=f"فشل النسخ الاحتياطي: {e}")
+            except Exception:
+                pass
 
 
 async def job_smart_alerts(bot: Bot):
-    try:
-        parts = []
+    for tg_id, user in _tg_user_cache.items():
+        try:
+            ak = user.get("api_key", "")
+            parts = []
 
-        stalled = await api_get(
-            "/proactive/stalled-projects",
-            params={"days": settings.proactive_stalled_days},
-        )
-        stalled_text = format_stalled_projects(stalled)
-        if stalled_text:
-            parts.append(stalled_text)
+            stalled = await api_get(
+                "/proactive/stalled-projects",
+                params={"days": settings.proactive_stalled_days},
+                api_key=ak,
+            )
+            stalled_text = format_stalled_projects(stalled)
+            if stalled_text:
+                parts.append(stalled_text)
 
-        debts = await api_get(
-            "/proactive/old-debts",
-            params={"days": settings.proactive_old_debt_days},
-        )
-        debts_text = format_old_debts(debts)
-        if debts_text:
-            parts.append(debts_text)
+            debts = await api_get(
+                "/proactive/old-debts",
+                params={"days": settings.proactive_old_debt_days},
+                api_key=ak,
+            )
+            debts_text = format_old_debts(debts)
+            if debts_text:
+                parts.append(debts_text)
 
-        if parts:
-            text = "\n\n".join(parts)
-            for part in split_message(text):
-                await bot.send_message(chat_id=settings.tg_chat_id, text=part)
-            logger.info("Smart alerts sent")
-    except Exception as e:
-        logger.error("Smart alerts job failed: %s", e)
+            if parts:
+                text = "\n\n".join(parts)
+                for part in split_message(text):
+                    await bot.send_message(chat_id=tg_id, text=part)
+                logger.info("Smart alerts sent to %s", user.get("user_id", tg_id))
+        except Exception as e:
+            logger.error("Smart alerts for %s failed: %s", user.get("user_id", tg_id), e)
 
 
 # --- Main ---
@@ -1273,6 +1335,9 @@ async def main():
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
     dp.include_router(router)
+
+    # Load multi-user cache
+    await _load_tg_users()
 
     global _scheduler
     scheduler = None

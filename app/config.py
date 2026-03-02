@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     prayer_offset_minutes: int = 20  # "بعد صلاة X" = prayer time + offset
     nag_interval_minutes: int = 30  # how often persistent reminders re-fire
 
+    # Location-Based Reminders (Phase 24)
+    location_enabled: bool = False
+    location_default_radius: int = 150      # meters
+    location_cooldown_minutes: int = 10     # skip duplicate zone fires
+    nominatim_user_agent: str = "PersonalRAG/1.0"
+    nominatim_cache_ttl_days: int = 7
+
     # Proactive System (Phase 6)
     proactive_enabled: bool = True
     proactive_morning_hour: int = 7
@@ -111,6 +118,12 @@ class Settings(BaseSettings):
     pomodoro_default_minutes: int = 25
     time_block_slot_minutes: int = 30
     sprint_default_weeks: int = 2
+
+    # Multi-Tenancy (Phase 23)
+    multi_tenant_enabled: bool = False
+    default_user_id: str = "khalid"
+    admin_api_key: str = ""
+    users_file: str = "data/users.json"
 
     # Backup (Phase 11)
     backup_enabled: bool = True

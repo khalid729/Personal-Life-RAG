@@ -19,8 +19,9 @@ app/
 ├── main.py              # Lifespan: start services → inject app.state
 ├── config.py            # Settings via pydantic BaseSettings (.env overrides)
 ├── models/schemas.py    # Enums + Pydantic models
-├── services/            # 8 async services (see services/CLAUDE.md)
-├── routers/             # 15 REST routers (see routers/CLAUDE.md)
+├── middleware/auth.py    # Auth middleware + context vars for multi-tenancy
+├── services/            # 10 async services (see services/CLAUDE.md)
+├── routers/             # 17 REST routers (see routers/CLAUDE.md)
 ├── prompts/             # 6 prompt builders (see prompts/CLAUDE.md)
 └── integrations/        # Telegram, Open WebUI, MCP (see integrations/CLAUDE.md)
 ```
@@ -39,7 +40,8 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 
 - **All async**: httpx, falkordb.asyncio, AsyncQdrantClient, redis.asyncio
 - **Dual LLM backend**: Claude API for chat/tool-calling (`chat_with_tools`, `stream_with_tool_detection`), vLLM/Qwen3-VL for everything else (extraction, enrichment, translation, vision/image analysis, PDF fallback). Controlled by `USE_CLAUDE_FOR_CHAT` flag with automatic vLLM fallback on Claude failure.
-- **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 19 tools)
+- **Multi-tenancy**: `contextvars` for per-user graph/collection/Redis prefix isolation. Middleware sets vars from `X-API-Key` header. `multi_tenant_enabled=False` by default (zero behavior change). UserRegistry loads from `data/users.json` seed file.
+- **Chat flow**: POST /chat/v2 → LLM picks tools → code executes → LLM formats (2 LLM calls, 20 tools)
 - **search_knowledge**: 3 parallel searches — `search_sections()` (section name + entity-in-section matches) → `search_nodes()` (global graph) → vector search; section results shown first for structured project content
 - **search_reminders**: supports optional `query` param for fuzzy title search via `_find_matching_reminders()`, combined with `status` filter
 - **Ingestion**: translate → chunk (1500 tokens) → parallel enrichment via `asyncio.gather` → embed + extract facts
@@ -59,6 +61,8 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - **Persistent reminders**: `persistent=true` on `create_reminder` → reminder auto-reschedules every `nag_interval_minutes` (default 30) after firing, until user marks done/cancels. Nag loop: fire → mark notified → `reschedule_persistent_reminder()` sets `due_date = now + interval`, clears `notified_at`
 - **Snooze (fixed)**: `update_reminder(action=snooze)` keeps `status='pending'`, moves `due_date` to snooze target, clears `notified_at` so it re-fires. Resolves prayer time, date+time, or defaults to `nag_interval_minutes`. Works for all reminders (persistent resumes nagging after snooze)
 - **Telegram reply context**: `reply_to_message.text` prepended as `[رد على: "..."]` so LLM understands context (update vs create)
+- **Location-based reminders**: `location_place` (named place) or `location_type` (POI type) on reminders. Webhook `POST /location/update` accepts HA/OwnTracks payloads → geofence check → Telegram notification. Places stored as graph nodes, zones tracked in Redis with cooldown.
+- **manage_places tool**: CRUD for saved places (graph `Place` nodes). `_TOOL_ONLY_TYPES` prevents extraction creating rogue Places.
 
 ## Key Gotchas
 
@@ -72,7 +76,11 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 - Extraction chunking uses hardcoded `max_tokens=3000` (retrieval.py:156) — needs larger context than ingestion chunks
 - File re-upload replaces Qdrant chunks (tracked via `file_hash`) + cleans orphaned entities (via `EXTRACTED_FROM`); shared entities survive; `IN_SECTION` links are preserved via snapshot/restore
 - `ensure_file_stub()` MUST run before `ingest_text()` — `_link_entity_to_file()` uses MATCH not MERGE, so File node must exist first
-- Sections/Lists: `_TOOL_ONLY_TYPES = {Section, ListEntry}` — skipped during extraction, created via tools only
+- Sections/Lists/Places: `_TOOL_ONLY_TYPES = {Section, ListEntry, Place}` — skipped during extraction, created via tools only
+- Multi-tenancy: `_resolution_cache` keyed by `(graph_name, name, type)` to prevent cross-user entity resolution leaks
+- Multi-tenancy: `asyncio.create_task` inherits context — `post_process()` background tasks correctly use the user's graph/collection
+- Location: OwnTracks sends `_type` field — use `Field(alias="_type")` with `populate_by_name=True` in Pydantic model
+- Location: cooldown (`location_cooldown_minutes=10`) prevents rapid-fire from GPS jitter at zone boundaries
 - `delete_project()` cascades: deletes linked tasks, sections, lists, and list entries
 - `merge_projects()` re-links sections (`HAS_SECTION`) and lists (`BELONGS_TO`) to target before deleting source
 - OWUI internal messages (follow-ups, titles, chat history analysis) must be blocked by Pipe — `_INTERNAL_KEYWORDS` list; `#### Tools Available` block stripped by `_TOOLS_AVAILABLE_RE` in `_strip_owui_rag_context()`

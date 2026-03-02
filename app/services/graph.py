@@ -9,6 +9,7 @@ from falkordb.asyncio import FalkorDB
 from redis.asyncio import BlockingConnectionPool
 
 from app.config import get_settings
+from app.middleware.auth import _current_graph_name
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +21,10 @@ class GraphService:
         self._db: FalkorDB | None = None
         self._pool: BlockingConnectionPool | None = None
         self._graph = None
+        self._graph_cache: dict[str, object] = {}
         self._vector_service = None
-        self._resolution_cache: dict[tuple[str, str], str] = {}
+        # Keyed by (graph_name, name, entity_type) for multi-tenant safety
+        self._resolution_cache: dict[tuple[str, str, str], str] = {}
 
     def set_vector_service(self, vector_service) -> None:
         """Allow graph service to use vector for idea similarity detection."""
@@ -34,7 +37,8 @@ class GraphService:
         if entity_type in ("Expense", "Debt", "Reminder", "Item", "Idea", "Tag"):
             return name
 
-        cache_key = (name, entity_type)
+        gn = self._current_graph_name()
+        cache_key = (gn, name, entity_type)
         if cache_key in self._resolution_cache:
             return self._resolution_cache[cache_key]
 
@@ -137,19 +141,20 @@ class GraphService:
         if not self._vector_service or not settings.entity_resolution_enabled:
             return {p: p[0] for p in pairs}
 
+        gn = self._current_graph_name()
         skip_types = {"Expense", "Debt", "Reminder", "Item", "Idea", "Tag"}
         # Filter to resolvable types, deduplicate, skip already-cached
         to_resolve: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
         for name, etype in pairs:
-            key = (name, etype)
-            if etype in skip_types or not name or key in self._resolution_cache or key in seen:
+            cache_key = (gn, name, etype)
+            if etype in skip_types or not name or cache_key in self._resolution_cache or (name, etype) in seen:
                 continue
-            to_resolve.append(key)
-            seen.add(key)
+            to_resolve.append((name, etype))
+            seen.add((name, etype))
 
         if not to_resolve:
-            return {p: self._resolution_cache.get(p, p[0]) for p in pairs}
+            return {p: self._resolution_cache.get((gn, p[0], p[1]), p[0]) for p in pairs}
 
         # 1. Batch embed all names at once
         names = [name for name, _ in to_resolve]
@@ -195,7 +200,7 @@ class GraphService:
                     alias_tasks.append(self._store_alias(etype, "name", other_name, name))
                     break
 
-            self._resolution_cache[(name, etype)] = resolved
+            self._resolution_cache[(gn, name, etype)] = resolved
 
             if resolved == name and not found_self:
                 # No match and not yet registered — register for future resolution
@@ -225,12 +230,23 @@ class GraphService:
                 points.append(PointStruct(id=str(uuid.uuid4()), vector=vec, payload=payload))
 
             await self._vector_service._client.upsert(
-                collection_name=settings.qdrant_collection,
+                collection_name=self._vector_service._collection(),
                 points=points,
             )
             logger.info("Batch registered %d new entity names", len(new_names))
 
-        return {p: self._resolution_cache.get(p, p[0]) for p in pairs}
+        return {p: self._resolution_cache.get((gn, p[0], p[1]), p[0]) for p in pairs}
+
+    def _current_graph_name(self) -> str:
+        """Return the active graph name from context var or settings default."""
+        return _current_graph_name.get() or settings.falkordb_graph_name
+
+    def _get_graph(self):
+        """Return the FalkorDB graph handle for the current context."""
+        gn = self._current_graph_name()
+        if gn not in self._graph_cache:
+            self._graph_cache[gn] = self._db.select_graph(gn)
+        return self._graph_cache[gn]
 
     async def start(self):
         self._pool = BlockingConnectionPool(
@@ -242,6 +258,7 @@ class GraphService:
         )
         self._db = FalkorDB(connection_pool=self._pool)
         self._graph = self._db.select_graph(settings.falkordb_graph_name)
+        self._graph_cache[settings.falkordb_graph_name] = self._graph
         logger.info("FalkorDB connected: %s", settings.falkordb_graph_name)
 
     async def stop(self):
@@ -249,8 +266,14 @@ class GraphService:
             await self._pool.aclose()
 
     async def query(self, cypher: str, params: dict | None = None) -> list[list]:
-        result = await self._graph.query(cypher, params=params)
+        result = await self._get_graph().query(cypher, params=params)
         return result.result_set
+
+    async def ensure_user_graph(self, graph_name: str) -> None:
+        """Create constraints on a user-specific graph (same as start() does for default)."""
+        graph = self._db.select_graph(graph_name)
+        self._graph_cache[graph_name] = graph
+        logger.info("Ensured user graph: %s", graph_name)
 
     # --- Person ---
     async def upsert_person(self, name: str, **props) -> None:
@@ -273,7 +296,7 @@ class GraphService:
         ON CREATE SET p.created_at = $now {props_str}
         ON MATCH SET p.updated_at = $now {props_str}
         """
-        await self._graph.query(q, params={"name": name, "now": _now(), **props})
+        await self._get_graph().query(q, params={"name": name, "now": _now(), **props})
 
     # --- Project ---
     async def upsert_project(self, name: str, **props) -> None:
@@ -284,7 +307,7 @@ class GraphService:
         ON CREATE SET p.created_at = $now {props_str}
         ON MATCH SET p.updated_at = $now {props_str}
         """
-        await self._graph.query(q, params={"name": name, "now": _now(), **props})
+        await self._get_graph().query(q, params={"name": name, "now": _now(), **props})
 
     async def delete_project(self, name: str) -> dict:
         """Delete a project and its linked tasks, sections, lists. Returns deleted info or error."""
@@ -467,7 +490,7 @@ class GraphService:
         MATCH (p:Project {name: $name})
         SET p.active_phase = $phase
         """
-        await self._graph.query(q, params={"name": name, "phase": self._DEFAULT_PHASES[0]})
+        await self._get_graph().query(q, params={"name": name, "phase": self._DEFAULT_PHASES[0]})
         return {"status": "created", "name": name, "phases": self._DEFAULT_PHASES}
 
     async def set_active_phase(self, project_name: str, phase_name: str) -> dict:
@@ -490,7 +513,7 @@ class GraphService:
         filtered = {"list_type": list_type}
         inline = ", list_type: $list_type"
         q = f"CREATE (l:List {{name: $name, created_at: $now{inline}}}) RETURN l.name"
-        await self._graph.query(q, params={"name": name, "now": _now(), **filtered})
+        await self._get_graph().query(q, params={"name": name, "now": _now(), **filtered})
 
         if project_name:
             project_name = await self.resolve_entity_name(project_name, "Project")
@@ -618,7 +641,7 @@ class GraphService:
             CREATE (e:Expense {{description: $description, amount: $amount, created_at: $now}})
             SET {sets}
             """
-        await self._graph.query(
+        await self._get_graph().query(
             q, params={"description": description, "amount": amount, "now": _now(), **extra}
         )
 
@@ -717,7 +740,7 @@ class GraphService:
         CREATE (d:Debt {amount: $amount, direction: $direction, status: 'open', created_at: $now})
         MERGE (d)-[:INVOLVES]->(p)
         """
-        await self._graph.query(
+        await self._get_graph().query(
             q,
             params={
                 "person_name": person_name,
@@ -756,7 +779,7 @@ class GraphService:
         CREATE (r:Reminder {{title: $title}})
         SET r.status = 'pending', r.created_at = $now, r.snooze_count = 0{sets}
         """
-        await self._graph.query(q_create, params=params)
+        await self._get_graph().query(q_create, params=params)
 
     async def _find_matching_reminders(self, title: str, status_filter: str = "") -> list:
         """Find reminders matching title using multi-strategy search.
@@ -1139,7 +1162,7 @@ class GraphService:
         ON CREATE SET t.status = 'todo', t.created_at = $now {props_str}
         ON MATCH SET t.updated_at = $now {props_str}
         """
-        await self._graph.query(q, params={"title": title, "now": _now(), **props})
+        await self._get_graph().query(q, params={"title": title, "now": _now(), **props})
 
     async def delete_task(self, title: str) -> dict:
         """Delete a task by title (fuzzy match). Returns deleted title or error."""
@@ -1753,7 +1776,7 @@ class GraphService:
         q = f"""
         CREATE (i:Idea {{title: $title, created_at: $now{inline}}})
         """
-        await self._graph.query(q, params={"title": title, "now": _now(), **extra})
+        await self._get_graph().query(q, params={"title": title, "now": _now(), **extra})
 
     # --- Company ---
     async def upsert_company(self, name: str, **props) -> None:
@@ -1763,7 +1786,7 @@ class GraphService:
         MERGE (c:Company {{name: $name}})
         ON CREATE SET c.created_at = $now {props_str}
         """
-        await self._graph.query(q, params={"name": name, "now": _now(), **props})
+        await self._get_graph().query(q, params={"name": name, "now": _now(), **props})
 
     # --- Topic ---
     async def upsert_topic(self, name: str, **props) -> None:
@@ -1773,7 +1796,7 @@ class GraphService:
         MERGE (t:Topic {{name: $name}})
         ON CREATE SET t.created_at = $now {props_str}
         """
-        await self._graph.query(q, params={"name": name, "now": _now(), **props})
+        await self._get_graph().query(q, params={"name": name, "now": _now(), **props})
 
     # --- Tag ---
     _TAG_ALIASES: dict[str, str] = {
@@ -1820,7 +1843,7 @@ class GraphService:
             except Exception as e:
                 logger.debug("Tag resolution failed: %s", e)
         q = "MERGE (t:Tag {name: $name}) ON CREATE SET t.created_at = $now"
-        await self._graph.query(q, params={"name": name, "now": _now()})
+        await self._get_graph().query(q, params={"name": name, "now": _now()})
         return name
 
     async def tag_entity(self, entity_label: str, entity_key: str, entity_value: str, tag_name: str) -> None:
@@ -1844,7 +1867,7 @@ class GraphService:
         MERGE (f:File {file_hash: $fhash})
         ON CREATE SET f.filename = $fn, f.created_at = $now
         """
-        await self._graph.query(q, params={"fhash": file_hash, "fn": filename, "now": _now()})
+        await self._get_graph().query(q, params={"fhash": file_hash, "fn": filename, "now": _now()})
 
     async def upsert_file_node(
         self, file_hash: str, filename: str, file_type: str, analysis: dict
@@ -1857,7 +1880,7 @@ class GraphService:
         ON MATCH SET f.filename = $filename, f.file_type = $file_type,
                      f.description = $description, f.updated_at = $now
         """
-        await self._graph.query(
+        await self._get_graph().query(
             q,
             params={
                 "file_hash": file_hash,
@@ -1902,7 +1925,7 @@ class GraphService:
         SET old.superseded_by = $new_hash, old.updated_at = $now
         MERGE (new)-[:SUPERSEDES]->(old)
         """
-        await self._graph.query(
+        await self._get_graph().query(
             q, params={"old_hash": old_hash, "new_hash": new_hash, "now": _now()}
         )
 
@@ -1917,7 +1940,7 @@ class GraphService:
         DETACH DELETE e
         RETURN count(e) as deleted
         """
-        result = await self._graph.query(q, params={"old_hash": old_file_hash})
+        result = await self._get_graph().query(q, params={"old_hash": old_file_hash})
         deleted = result.result_set[0][0] if result.result_set else 0
         if deleted > 0:
             logger.info("Cleaned up %d orphaned entities from file %s…", deleted, old_file_hash[:12])
@@ -1929,7 +1952,7 @@ class GraphService:
         MATCH (e)-[r:EXTRACTED_FROM]->(f:File {file_hash: $fhash})
         DELETE r
         """
-        await self._graph.query(q, params={"fhash": file_hash})
+        await self._get_graph().query(q, params={"fhash": file_hash})
 
     async def get_file_section_map(self, file_hash: str) -> list[dict]:
         """Snapshot section assignments for entities linked to a file."""
@@ -1940,7 +1963,7 @@ class GraphService:
                COALESCE(e.title, e.name) AS ename,
                s.name AS section_name
         """
-        result = await self._graph.query(q, params={"fhash": file_hash})
+        result = await self._get_graph().query(q, params={"fhash": file_hash})
         return [{"entity_type": r[0], "entity_name": r[1], "section_name": r[2]}
                 for r in result.result_set if r[0] and r[1] and r[2]]
 
@@ -1958,12 +1981,93 @@ class GraphService:
             MERGE (e)-[:IN_SECTION]->(s)
             RETURN e.{key_field}
             """
-            rows = await self._graph.query(q, params={"ename": ename, "sname": sname})
+            rows = await self._get_graph().query(q, params={"ename": ename, "sname": sname})
             if rows.result_set:
                 restored += 1
         if restored:
             logger.info("Restored %d/%d section links after re-upload", restored, len(section_map))
         return restored
+
+    # --- Places (Phase 24) ---
+
+    async def create_place(
+        self, name: str, lat: float, lon: float,
+        radius: float | None = None, place_type: str = "",
+        source: str = "user", address: str = "",
+    ) -> None:
+        r = radius or settings.location_default_radius
+        q = """
+        MERGE (p:Place {name: $name})
+        ON CREATE SET p.lat=$lat, p.lon=$lon, p.radius=$radius,
+                      p.place_type=$ptype, p.source=$source,
+                      p.address=$address, p.created_at=$now
+        ON MATCH SET p.lat=$lat, p.lon=$lon, p.radius=$radius,
+                     p.place_type=$ptype, p.source=$source,
+                     p.address=$address, p.updated_at=$now
+        """
+        await self.query(q, {
+            "name": name, "lat": lat, "lon": lon, "radius": r,
+            "ptype": place_type, "source": source, "address": address,
+            "now": _now(),
+        })
+
+    async def update_place(self, name: str, **kwargs) -> None:
+        set_clause = self._build_set_clause(kwargs, var="p")
+        if not set_clause:
+            return
+        q = f"MATCH (p:Place {{name: $name}}) SET p.updated_at=$now{set_clause}"
+        await self.query(q, {"name": name, "now": _now(), **kwargs})
+
+    async def delete_place(self, name: str) -> None:
+        await self.query("MATCH (p:Place {name: $name}) DETACH DELETE p", {"name": name})
+
+    async def query_places(self, place_type: str | None = None) -> list[dict]:
+        if place_type:
+            q = "MATCH (p:Place) WHERE p.place_type=$ptype RETURN p"
+            rows = await self.query(q, {"ptype": place_type})
+        else:
+            rows = await self.query("MATCH (p:Place) RETURN p")
+        return [dict(row[0].properties) for row in rows] if rows else []
+
+    async def get_place_by_name(self, name: str) -> dict | None:
+        q = "MATCH (p:Place) WHERE toLower(p.name) = toLower($name) RETURN p LIMIT 1"
+        rows = await self.query(q, {"name": name})
+        if rows:
+            return dict(rows[0][0].properties)
+        return None
+
+    async def query_location_reminders(
+        self, place_name: str | None = None, place_type: str | None = None,
+    ) -> list[dict]:
+        """Find pending reminders with location triggers."""
+        conditions = ["r.status = 'pending'"]
+        params: dict = {}
+        if place_name:
+            conditions.append("toLower(r.location_place) = toLower($place_name)")
+            params["place_name"] = place_name
+        if place_type:
+            conditions.append("toLower(r.location_type) = toLower($place_type)")
+            params["place_type"] = place_type
+        if not place_name and not place_type:
+            conditions.append("(r.location_place IS NOT NULL OR r.location_type IS NOT NULL)")
+
+        where = " AND ".join(conditions)
+        q = f"""
+        MATCH (r:Reminder)
+        WHERE {where} AND r.notified_at IS NULL
+        RETURN r.title, r.location_place, r.location_type, r.priority, r.persistent
+        """
+        rows = await self.query(q, params)
+        return [
+            {
+                "title": row[0],
+                "location_place": row[1] or "",
+                "location_type": row[2] or "",
+                "priority": row[3],
+                "persistent": row[4],
+            }
+            for row in rows
+        ] if rows else []
 
     # --- Relationships ---
     async def create_relationship(
@@ -1981,11 +2085,11 @@ class GraphService:
         MATCH (b:{to_label} {{{to_key}: $to_val}})
         MERGE (a)-[:{rel_type}]->(b)
         """
-        await self._graph.query(q, params={"from_val": from_value, "to_val": to_value})
+        await self._get_graph().query(q, params={"from_val": from_value, "to_val": to_value})
 
     # --- Entity-to-File linking ---
     _PSEUDO_ENTITY_TYPES = {"DebtPayment", "ItemUsage", "ItemMove", "ReminderAction"}
-    _TOOL_ONLY_TYPES = {"Section", "ListEntry"}  # Created via tools, not extraction
+    _TOOL_ONLY_TYPES = {"Section", "ListEntry", "Place"}  # Created via tools, not extraction
     _PROJECT_LINKABLE_TYPES = {"Task", "Knowledge", "Idea", "Sprint", "Section", "List"}
     _SECTION_LINKABLE_TYPES = {"Task", "Knowledge", "Idea", "Reminder", "Item", "Sprint", "List"}
     _DEFAULT_PHASES = ["Planning", "Preparation", "Execution", "Review"]
@@ -1998,7 +2102,7 @@ class GraphService:
         MATCH (f:File {{file_hash: $fhash}})
         MERGE (e)-[:EXTRACTED_FROM]->(f)
         """
-        await self._graph.query(q, params={"ename": entity_name, "fhash": file_hash})
+        await self._get_graph().query(q, params={"ename": entity_name, "fhash": file_hash})
 
     # --- Upsert from LLM-extracted facts ---
     async def upsert_from_facts(self, facts: dict, file_hash: str | None = None, project_name: str | None = None) -> int:
@@ -2654,7 +2758,7 @@ class GraphService:
             source: 'invoice', file_hash: $file_hash, created_at: $now
         })
         """
-        await self._graph.query(q, params={
+        await self._get_graph().query(q, params={
             "desc": desc, "amount": total, "currency": currency,
             "category": category, "date": date_str, "vendor": vendor,
             "file_hash": file_hash, "now": _now(),
@@ -2667,7 +2771,7 @@ class GraphService:
         MERGE (e)-[:FROM_INVOICE]->(f)
         """
         try:
-            await self._graph.query(q_link, params={"fh": file_hash})
+            await self._get_graph().query(q_link, params={"fh": file_hash})
         except Exception as e:
             logger.debug("Invoice-expense link skipped: %s", e)
 
@@ -2680,7 +2784,7 @@ class GraphService:
             MATCH (c:Company {name: $vendor})
             MERGE (e)-[:PAID_AT]->(c)
             """
-            await self._graph.query(q_vendor, params={"fh": file_hash, "vendor": vendor})
+            await self._get_graph().query(q_vendor, params={"fh": file_hash, "vendor": vendor})
         except Exception as e:
             logger.debug("Expense-vendor link skipped: %s", e)
 
@@ -3684,7 +3788,7 @@ class GraphService:
         if extra:
             inline = ", " + ", ".join(f"{k}: ${k}" for k in extra)
         q = f"CREATE (n:{label} {{{key_field}: $value, created_at: $now{inline}}})"
-        await self._graph.query(q, params={"value": value, "now": _now(), **extra})
+        await self._get_graph().query(q, params={"value": value, "now": _now(), **extra})
 
     _INTERNAL_PROPS = {"name_aliases", "created_at", "updated_at", "file_hash", "source"}
 

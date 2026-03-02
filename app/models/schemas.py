@@ -1,8 +1,31 @@
 import datetime as dt
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Annotated, Optional
 
 from pydantic import BaseModel, Field
+
+
+# --- Multi-Tenancy ---
+
+@dataclass
+class UserContext:
+    user_id: str
+    graph_name: str
+    collection_name: str
+    redis_prefix: str
+    tg_chat_id: str = ""
+
+
+class UserProfile(BaseModel):
+    user_id: str
+    api_key_hash: str = ""
+    display_name: str = ""
+    graph_name: str = ""
+    collection_name: str = ""
+    redis_prefix: str = ""
+    tg_chat_id: str = ""
+    enabled: bool = True
 
 
 # --- Enums ---

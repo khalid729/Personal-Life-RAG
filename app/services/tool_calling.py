@@ -71,6 +71,15 @@ TOOLS = [
                         "type": "boolean",
                         "description": "كرر التذكير لحد ما يقول أبو إبراهيم خلصت أو ألغه",
                     },
+                    "location_place": {
+                        "type": "string",
+                        "description": "اسم مكان محدد — 'ذكرني لما أوصل البيت' → location_place='البيت'",
+                    },
+                    "location_type": {
+                        "type": "string",
+                        "enum": ["بقالة", "صيدلية", "مطعم", "كافيه", "مول", "مسجد", "بنزينة", "بنك", "مستشفى", "مدرسة", "حديقة", "مغسلة", "مكتبة"],
+                        "description": "نوع مكان — 'ذكرني لما أمر على بقالة' → location_type='بقالة'",
+                    },
                 },
                 "required": ["title"],
             },
@@ -156,6 +165,15 @@ TOOLS = [
                         "description": "وقت صلاة — لو قال 'بعد صلاة العصر' حط asr. يحسب الوقت تلقائياً",
                     },
                     "new_title": {"type": "string", "description": "عنوان جديد للتذكير (اختياري)"},
+                    "location_place": {
+                        "type": "string",
+                        "description": "اسم مكان محدد — 'ذكرني لما أوصل البيت' → location_place='البيت'",
+                    },
+                    "location_type": {
+                        "type": "string",
+                        "enum": ["بقالة", "صيدلية", "مطعم", "كافيه", "مول", "مسجد", "بنزينة", "بنك", "مستشفى", "مدرسة", "حديقة", "مغسلة", "مكتبة"],
+                        "description": "نوع مكان — 'ذكرني لما أمر على بقالة' → location_type='بقالة'",
+                    },
                 },
                 "required": ["query", "action"],
             },
@@ -400,6 +418,29 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_places",
+            "description": "إدارة الأماكن المحفوظة: عرض، إضافة، تعديل، حذف. تُستخدم لتذكيرات الموقع.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "list=عرض، create=إضافة، update=تعديل، delete=حذف",
+                    },
+                    "name": {"type": "string", "description": "اسم المكان"},
+                    "lat": {"type": "number", "description": "خط العرض"},
+                    "lon": {"type": "number", "description": "خط الطول"},
+                    "radius": {"type": "number", "description": "نطاق المكان بالمتر (الافتراضي: 150)"},
+                    "place_type": {"type": "string", "description": "نوع المكان (بقالة، مطعم، بيت، إلخ)"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 
@@ -526,6 +567,7 @@ class ToolCallingService:
             "manage_lists": self._handle_manage_lists,
             "merge_projects": self._handle_merge_projects,
             "get_productivity_stats": self._handle_get_productivity_stats,
+            "manage_places": self._handle_manage_places,
         }
 
     # ------------------------------------------------------------------
@@ -550,6 +592,7 @@ class ToolCallingService:
         time: str | None = None, recurrence: str | None = None,
         priority: int | None = None, repeat_day: str | None = None,
         prayer: str | None = None, persistent: bool = False,
+        location_place: str | None = None, location_type: str | None = None,
     ) -> dict:
         # Auto-compute due_date from repeat_day for weekly reminders
         if repeat_day and recurrence == "weekly":
@@ -573,6 +616,10 @@ class ToolCallingService:
             props["priority"] = priority
         if persistent:
             props["persistent"] = True
+        if location_place:
+            props["location_place"] = location_place
+        if location_type:
+            props["location_type"] = location_type
         await self.graph.create_reminder(title, **props)
         return {"status": "created", "title": title, **props}
 
@@ -703,6 +750,7 @@ class ToolCallingService:
         priority: int | None = None, recurrence: str | None = None,
         new_title: str | None = None, repeat_day: str | None = None,
         prayer: str | None = None,
+        location_place: str | None = None, location_type: str | None = None,
     ) -> dict:
         cleaned = self._PAREN_RE.sub(" ", query).strip()
 
@@ -781,6 +829,10 @@ class ToolCallingService:
             kwargs["recurrence"] = recurrence
         if new_title:
             kwargs["new_title"] = new_title
+        if location_place:
+            kwargs["location_place"] = location_place
+        if location_type:
+            kwargs["location_type"] = location_type
         if not kwargs:
             return {"error": "No fields to update"}
 
@@ -1136,6 +1188,61 @@ class ToolCallingService:
             "projects": projects_text,
         }
 
+    async def _handle_manage_places(
+        self, action: str, name: str = "",
+        lat: float = 0.0, lon: float = 0.0,
+        radius: float = 0.0, place_type: str = "",
+    ) -> dict:
+        if action == "list":
+            places = await self.graph.query_places(place_type=place_type or None)
+            if not places:
+                return {"places": "لا توجد أماكن محفوظة"}
+            lines = []
+            for p in places:
+                line = f"📍 {p.get('name', '')}"
+                if p.get("place_type"):
+                    line += f" ({p['place_type']})"
+                if p.get("lat") and p.get("lon"):
+                    line += f" — {p['lat']:.4f}, {p['lon']:.4f}"
+                if p.get("radius"):
+                    line += f" — نطاق {p['radius']}م"
+                lines.append(line)
+            return {"places": "\n".join(lines)}
+
+        if action == "create":
+            if not name:
+                return {"error": "اسم المكان مطلوب"}
+            from app.config import get_settings
+            r = radius or get_settings().location_default_radius
+            await self.graph.create_place(
+                name=name, lat=lat, lon=lon, radius=r,
+                place_type=place_type, source="user",
+            )
+            return {"status": "created", "name": name}
+
+        if action == "update":
+            if not name:
+                return {"error": "اسم المكان مطلوب"}
+            kwargs = {}
+            if lat:
+                kwargs["lat"] = lat
+            if lon:
+                kwargs["lon"] = lon
+            if radius:
+                kwargs["radius"] = radius
+            if place_type:
+                kwargs["place_type"] = place_type
+            await self.graph.update_place(name, **kwargs)
+            return {"status": "updated", "name": name}
+
+        if action == "delete":
+            if not name:
+                return {"error": "اسم المكان مطلوب"}
+            await self.graph.delete_place(name)
+            return {"status": "deleted", "name": name}
+
+        return {"error": f"Unknown action: {action}"}
+
     # ------------------------------------------------------------------
     # Tool executor with validation wrapper
     # ------------------------------------------------------------------
@@ -1458,7 +1565,7 @@ class ToolCallingService:
         "create_reminder", "delete_reminder", "update_reminder",
         "add_expense", "record_debt", "pay_debt", "store_note",
         "manage_inventory", "manage_tasks", "manage_projects", "merge_projects",
-        "manage_lists",
+        "manage_lists", "manage_places",
     }
 
     # Lightweight keyword check for storable content (Arabic + English)

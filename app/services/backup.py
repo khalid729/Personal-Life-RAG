@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.config import get_settings
+from app.middleware.auth import _current_graph_name, _current_collection, _current_redis_prefix
 from app.services.graph import GraphService
 from app.services.memory import MemoryService
 from app.services.vector import VectorService
@@ -34,9 +35,12 @@ class BackupService:
         self.backup_dir = Path(settings.backup_dir)
         self.backup_dir.mkdir(parents=True, exist_ok=True)
 
-    async def create_backup(self) -> dict:
+    async def create_backup(self, user_id: str = "") -> dict:
         timestamp = _now_local().strftime("%Y%m%d_%H%M%S")
-        backup_path = self.backup_dir / timestamp
+        if user_id:
+            backup_path = self.backup_dir / user_id / timestamp
+        else:
+            backup_path = self.backup_dir / timestamp
         backup_path.mkdir(parents=True, exist_ok=True)
 
         sizes = {}
@@ -232,7 +236,7 @@ class BackupService:
         batch_size = 100
         while True:
             result = await self.vector._client.scroll(
-                collection_name=settings.qdrant_collection,
+                collection_name=self.vector._collection(),
                 limit=batch_size,
                 offset=offset,
                 with_payload=True,
@@ -272,7 +276,7 @@ class BackupService:
                     )
                 )
             await self.vector._client.upsert(
-                collection_name=settings.qdrant_collection,
+                collection_name=self.vector._collection(),
                 points=points,
             )
             total += len(points)
@@ -282,10 +286,12 @@ class BackupService:
 
     async def _backup_redis(self, backup_path: Path) -> int:
         redis = self.memory._redis
+        prefix = _current_redis_prefix.get()
+        match_pattern = f"{prefix}*" if prefix else "*"
         keys_data = {}
         cursor = 0
         while True:
-            cursor, keys = await redis.scan(cursor=cursor, count=100)
+            cursor, keys = await redis.scan(cursor=cursor, match=match_pattern, count=100)
             for key in keys:
                 key_type = await redis.type(key)
                 if key_type == "string":

@@ -15,6 +15,7 @@ from qdrant_client.models import (
 from sentence_transformers import SentenceTransformer
 
 from app.config import get_settings
+from app.middleware.auth import _current_collection
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ class VectorService:
     def __init__(self):
         self._model: SentenceTransformer | None = None
         self._client: AsyncQdrantClient | None = None
+
+    def _collection(self) -> str:
+        """Return the active Qdrant collection from context var or settings default."""
+        return _current_collection.get() or settings.qdrant_collection
 
     async def start(self):
         logger.info("Loading BGE-M3 on %s...", settings.bge_device)
@@ -61,6 +66,28 @@ class VectorService:
         except Exception:
             pass  # Index already exists
 
+    async def ensure_user_collection(self, collection_name: str) -> None:
+        """Create a user-specific collection + indexes if it doesn't exist."""
+        collections = await self._client.get_collections()
+        existing = [c.name for c in collections.collections]
+        if collection_name not in existing:
+            await self._client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(
+                    size=settings.bge_dimension,
+                    distance=Distance.COSINE,
+                ),
+            )
+            try:
+                await self._client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="file_hash",
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+            except Exception:
+                pass
+            logger.info("Created user collection: %s", collection_name)
+
     async def stop(self):
         if self._client:
             await self._client.close()
@@ -95,7 +122,7 @@ class VectorService:
             )
 
         await self._client.upsert(
-            collection_name=settings.qdrant_collection,
+            collection_name=self._collection(),
             points=points,
         )
         return len(points)
@@ -103,7 +130,7 @@ class VectorService:
     async def delete_by_file_hash(self, file_hash: str) -> int:
         """Delete all Qdrant points with the given file_hash in their payload."""
         result = await self._client.delete(
-            collection_name=settings.qdrant_collection,
+            collection_name=self._collection(),
             points_selector=Filter(
                 must=[FieldCondition(key="file_hash", match=MatchValue(value=file_hash))]
             ),
@@ -145,7 +172,7 @@ class VectorService:
         query_filter = Filter(must=filters) if filters else None
 
         results = await self._client.query_points(
-            collection_name=settings.qdrant_collection,
+            collection_name=self._collection(),
             query=vector,
             query_filter=query_filter,
             limit=limit,
