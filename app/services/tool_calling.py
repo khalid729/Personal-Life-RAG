@@ -1333,7 +1333,7 @@ class ToolCallingService:
             "filename": best["filename"],
             "file_type": best["file_type"],
             "description": best["description"],
-            "file_path": str(matches[0]),
+            "note": "الملف يُرسل تلقائياً للمستخدم عبر التطبيق",
         }
 
     # ------------------------------------------------------------------

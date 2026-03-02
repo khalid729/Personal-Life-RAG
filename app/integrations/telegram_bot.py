@@ -231,15 +231,20 @@ async def _send_file_attachment(message: Message, file_info: dict, api_key: str 
             if resp.status_code != 200:
                 logger.warning("File download failed (hash=%s): %d", file_hash, resp.status_code)
                 return
-            data = resp.content
+            file_bytes = resp.content
+            logger.info("File downloaded: %s (%d bytes)", filename, len(file_bytes))
             ext = Path(filename).suffix.lower()
-            doc = BufferedInputFile(data, filename=filename)
+            doc = BufferedInputFile(file_bytes, filename=filename)
             if ext in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                logger.info("Sending as photo: %s", filename)
                 await message.answer_photo(photo=doc)
+                logger.info("Photo sent successfully: %s", filename)
             else:
+                logger.info("Sending as document: %s", filename)
                 await message.answer_document(document=doc)
+                logger.info("Document sent successfully: %s", filename)
     except Exception as e:
-        logger.error("Failed to send file attachment: %s", e)
+        logger.error("Failed to send file attachment: %s", e, exc_info=True)
 
 
 async def api_get(path: str, params: dict | None = None, api_key: str = "") -> dict:
