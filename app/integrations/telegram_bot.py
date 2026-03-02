@@ -1243,20 +1243,22 @@ async def job_check_reminders(bot: Bot):
                 except Exception:
                     pass
                 recurrence = r.get("recurrence")
-                if recurrence and recurrence in ("daily", "weekly", "monthly", "yearly"):
-                    try:
-                        await api_post(
-                            "/proactive/advance-reminder",
-                            json={"title": r["title"], "recurrence": recurrence},
-                            api_key=ak,
-                        )
-                    except Exception:
-                        pass
-                elif r.get("persistent"):
+                if r.get("persistent"):
+                    # Persistent takes priority — nag until user says done
+                    # (even if it also has recurrence, advance happens on "done")
                     try:
                         await api_post(
                             "/proactive/reschedule-persistent",
                             json={"title": r["title"]},
+                            api_key=ak,
+                        )
+                    except Exception:
+                        pass
+                elif recurrence and recurrence in ("daily", "weekly", "monthly", "yearly"):
+                    try:
+                        await api_post(
+                            "/proactive/advance-reminder",
+                            json={"title": r["title"], "recurrence": recurrence},
                             api_key=ak,
                         )
                     except Exception:

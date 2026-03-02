@@ -759,6 +759,26 @@ class ToolCallingService:
         cleaned = self._PAREN_RE.sub(" ", query).strip()
 
         if action in ("done", "cancel"):
+            # Check if recurring+persistent — "done" means advance to next occurrence, not mark done
+            if action == "done":
+                props = await self.graph.query(
+                    "MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($t) AND r.status='pending' RETURN r.recurrence, r.persistent LIMIT 1",
+                    {"t": cleaned},
+                )
+                if not props:
+                    best_title = await self._vector_match_reminder(cleaned)
+                    if best_title:
+                        props = await self.graph.query(
+                            "MATCH (r:Reminder) WHERE toLower(r.title) CONTAINS toLower($t) AND r.status='pending' RETURN r.recurrence, r.persistent LIMIT 1",
+                            {"t": best_title},
+                        )
+                        cleaned = best_title
+                if props and props[0][0] and props[0][1]:
+                    # Recurring + persistent: advance to next occurrence, keep pending
+                    rec = props[0][0]
+                    result = await self.graph.advance_recurring_reminder(cleaned, rec)
+                    result["action"] = "advanced_to_next"
+                    return result
             result = await self.graph.update_reminder_status(cleaned, action=action)
             if "error" in result:
                 best_title = await self._vector_match_reminder(cleaned)
