@@ -80,6 +80,13 @@ These are the essential constraints — violating any of them causes bugs.
 - **`due_date + time` must be merged**: LLM sends separate fields, FalkorDB uses string comparison → date-only fires at midnight. Fix: `_handle_create_reminder` merges → `"2026-03-02T20:00"`
 - Snooze keeps `status='pending'` (old `'snoozed'` status was a bug — dropped from query)
 - Persistent + recurring: persistent priority in `job_check_reminders`, on "done" → `advance_recurring_reminder`
+- **HA automations are NOT reminders**: `is_ha_automation=true` flag on Reminder nodes with `ha_entity_id`+`ha_action` — excluded from all reminder queries, daily plan, summaries, search
+
+### Home Assistant (Phase 26)
+- **Entity resolution**: always resolve via `ha.resolve_entity()` — LLM may hallucinate entity_ids like `light.left`
+- **`ha_entity_id` must be Arabic name**: tool description + prompt instruct LLM to send Arabic device name, not English entity_id
+- **HA automations separate from reminders**: `is_ha_automation=true` on Reminder node → filtered from `query_reminders`, `query_daily_plan`, `due-reminders`, `noon-checkin`, `evening-summary`, `search_reminders`
+- **Streaming fix**: tool calls take priority over streamed text — Haiku emits both simultaneously, tools must execute first
 
 ### Config
 - `.env` overrides `config.py` — always check `.env` first
@@ -106,5 +113,7 @@ These are the essential constraints — violating any of them causes bugs.
 | Cross-user msg not sent | `tool_calling.py` (`_handle_send_to_user`, `_resolve_target_user`) |
 | Cross-user reminder wrong graph | `tool_calling.py` (`_handle_create_reminder`, target_user) |
 | HA device not found | `homeassistant.py` (`resolve_entity`), `tool_calling.py` (`_handle_control_device`) |
-| HA action not executing | `homeassistant.py` (`call_service`), `telegram_bot.py` (`job_check_reminders` HA block) |
+| HA action not executing | `homeassistant.py` (`call_service`), `telegram_bot.py` (`job_check_ha_reminders`), `proactive.py` (`due-ha-automations`) |
+| HA automation in reminders | `tool_calling.py` (`is_ha_automation` flag), `graph.py` (`query_reminders` filter) |
+| Stream skips tool calls | `tool_calling.py` (`chat_stream` — tool_calls_found must precede streamed_text check) |
 | HA webhook not notifying | `routers/homeassistant.py` (`ha_webhook`), Telegram bot token |

@@ -23,7 +23,7 @@
 - Arabic→English entity name translation instruction (e.g. "الستيفنيس" → "Stiffness")
 - Expense update/delete instruction: LLM maps "عدل المبلغ" → `add_expense` with `action=update`
 - retrieve_file instruction: LLM must call tool every time (not repeat old text); file sent automatically
-- HA instruction: LLM maps "شغل النور"→`control_device(action="turn_on")`, "طفي"→`turn_off`; timed HA→`create_reminder` with `ha_entity_id`+`ha_action`
+- HA instruction: LLM maps "شغل النور"→`control_device(action="turn_on")`, "طفي"→`turn_off`; timed HA→`create_reminder` with `ha_entity_id`(Arabic name, NOT entity_id)+`ha_action`; `list_automations`/`cancel_automation` via `query_device`
 - Anti-lying rules: only say "تم" if tool returned success
 
 ## Specialized Extract (extract_specialized.py)

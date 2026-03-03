@@ -15,8 +15,9 @@
 - **Two bot instances**: `rag-telegram` (Khalid) + `rag-telegram-rawabi` (Rawabi, `.env.rawabi` overrides)
 - All scheduler jobs iterate `_tg_user_cache.items()` with per-user API keys
 - Commands: `/help`, `/chat`, `/finance`, `/reminders`, `/projects`, `/tasks`, `/inventory`, `/focus`, `/sprint`, `/backup`, `/graph`
-- Scheduled: morning (7AM), noon (1PM), evening (9PM), reminders (30min), smart alerts (6h)
+- Scheduled: morning (7AM), noon (1PM), evening (9PM), reminders (30min), HA automations (1min), smart alerts (6h)
 - **Persistent nag loop**: `job_check_reminders()` — after mark-notified, persistent reminders call `/proactive/reschedule-persistent` to auto-reschedule for next nag cycle
+- **HA automations** (Phase 26): `job_check_ha_reminders()` runs every 1 minute via `/proactive/due-ha-automations` (separate from regular reminders). Executes HA action → sends "🏠 تم تنفيذ" → marks notified → handles recurring/persistent. `job_check_reminders()` no longer handles HA actions.
 
 ## Open WebUI Tools (openwebui_tools.py)
 

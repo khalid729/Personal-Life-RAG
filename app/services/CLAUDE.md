@@ -59,6 +59,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 - `find_expense(desc, vendor, file_hash)`: keyword extraction + bidirectional vendor CONTAINS (handles "SOBSCO" matching "SOBSC")
 - `update_expense()` / `delete_expense()`: find by desc/vendor/file_hash, update/delete with old data returned
 - **Place CRUD** (Phase 24): `create_place()`, `update_place()`, `delete_place()`, `query_places()`, `get_place_by_name()`, `query_location_reminders()`
+- **HA Automations** (Phase 26): `query_ha_automations(status)` lists scheduled HA commands; `cancel_ha_automation(title)` marks done; `query_reminders()` and `query_daily_plan()` filter out `is_ha_automation=true`
 
 ### FalkorDB Rules
 - `GRAPH.CONSTRAINT CREATE` (not Cypher)
@@ -76,7 +77,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 - **Cross-user messaging** (Phase 25): `send_to_user` sends immediate Telegram via Bot HTTP API; `create_reminder` with `target_user` creates reminder in target's graph (context-switches `_current_graph_name/collection/redis_prefix`). Attribution: `"📩 من {sender}: "` prefix. `_resolve_target_user()` matches `user_id`, `display_name`, `display_name_ar`, `nickname`
 - **Home Assistant** (Phase 26): `control_device` resolves Arabic device name → entity_id → `call_service`; `query_device` returns state summaries + `list_automations` + `cancel_automation`; `manage_ha_names` CRUD for custom Arabic nicknames; `create_reminder` with `ha_entity_id`+`ha_action` → sets `is_ha_automation=true` → auto-executes via fast 1-min job (separate from regular reminders, doesn't appear in daily plan/search/summaries)
 - **Chat loop**: LLM picks tools → parallel execution → LLM formats response (max 3 iterations)
-- **Streaming**: `chat_stream()` yields NDJSON, tool calls detected from stream
+- **Streaming**: `chat_stream()` yields NDJSON, tool calls detected from stream; **tool calls take priority** over streamed text (Haiku fix — emits both simultaneously)
 - **Post-processing**: memory + vector storage (background `asyncio.create_task`); auto-extraction disabled by default
 - **Auto-extraction** (disabled by default, `AUTO_EXTRACT_ENABLED=false`): saves contradictory data when user corrects info. When enabled: `_STORABLE_RE` keyword check → NER → translate → extract_facts_specialized → upsert; `_AUTO_EXTRACT_SAFE_TYPES` = Person, Company, Knowledge, Location; `_WRITE_TOOLS` skip guard
 - **Expense update cascade**: `_cascade_expense_update(file_hash, old_amount, new_amount)` — when expense linked to file via `FROM_INVOICE` is updated, replaces amount string in File.description and Qdrant vector text
@@ -143,7 +144,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 
 - Async httpx client for HA REST API (`/api/states`, `/api/services/{domain}/{service}`)
 - **State caching**: Redis key `ha:states` with TTL `ha_cache_ttl` (30s); invalidated on `call_service()`
-- **Entity resolution** (`resolve_entity(name)`): (1) direct entity_id check, (2) custom Arabic nickname from Redis, (3) fuzzy match on HA `friendly_name` (exact → substring → shortest match)
+- **Entity resolution** (`resolve_entity(name)`): (1) direct entity_id check, (2) custom Arabic nickname from Redis, (3) fuzzy match on HA `friendly_name` (exact → substring with Arabic prefix stripping → word-level → entity_id match; score-ranked, shorter name wins ties). **Always called** even for dotted names — LLM hallucinates entity_ids
 - **Custom Arabic names**: per-user Redis hash `{prefix}ha:names` — HSET/HGET/HDEL
 - **Multi-tenant**: HA URL/token shared (single HA instance); custom names separated by `_current_redis_prefix`
 - `format_state_summary(state)`: domain-specific display (climate: temp+mode, media: title, sensor: unit)
