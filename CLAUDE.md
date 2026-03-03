@@ -67,7 +67,8 @@ These are the essential constraints — violating any of them causes bugs.
 - `asyncio.create_task` inherits context — background tasks are correctly scoped
 - `_resolution_cache` keyed by `(graph_name, name, type)` to prevent cross-user leaks
 - Users: Khalid (أبو إبراهيم, `personal_life`) + Rawabi (أم سليمان, `personal_life_rawabi`)
-- Seed file: `data/users.json` (contains API keys — gitignored)
+- Seed file: `data/users.json` (contains API keys + bot tokens — gitignored)
+- **Cross-user messaging** (Phase 25): `send_to_user` tool + `target_user` on `create_reminder`; per-user `telegram_bot_token` on UserProfile/UserContext
 
 ### Ingestion
 - **`ensure_file_stub()` MUST run before `ingest_text()`** — MATCH not MERGE
@@ -102,3 +103,5 @@ These are the essential constraints — violating any of them causes bugs.
 | Project/section issues | `graph.py` (section CRUD), `tool_calling.py` (`manage_projects`) |
 | Location reminder | `location.py`, `proactive.py`, router `location.py` |
 | Expense cascade | `tool_calling.py` (`_cascade_expense_update`), `graph.py` |
+| Cross-user msg not sent | `tool_calling.py` (`_handle_send_to_user`, `_resolve_target_user`) |
+| Cross-user reminder wrong graph | `tool_calling.py` (`_handle_create_reminder`, target_user) |

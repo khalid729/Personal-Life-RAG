@@ -22,7 +22,7 @@
 
 ```
 RetrievalService(llm, graph, vector, memory, ner)
-ToolCallingService(llm, graph, vector, memory, ner)
+ToolCallingService(llm, graph, vector, memory, ner, user_registry)
 FileService(llm, retrieval)
 BackupService(graph, vector, memory)
 GraphService.set_vector_service(vector)  # entity resolution
@@ -66,11 +66,12 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 
 ## ToolCallingService (tool_calling.py)
 
-- **22 tools**: search_reminders, create_reminder, delete_reminder, update_reminder, add_expense (create/update/delete), get_expense_report, get_debt_summary, record_debt, pay_debt, get_daily_plan, search_knowledge, store_note, get_person_info, manage_inventory, manage_tasks, manage_projects, manage_lists, merge_projects, get_productivity_stats, manage_places, retrieve_file
+- **22 tools**: search_reminders, create_reminder (+ target_user), delete_reminder, update_reminder, add_expense (create/update/delete), get_expense_report, get_debt_summary, record_debt, pay_debt, get_daily_plan, search_knowledge, store_note, get_person_info, manage_inventory, manage_tasks, manage_projects, manage_lists, merge_projects, get_productivity_stats, manage_places, retrieve_file, send_to_user
 - **Prayer time support**: `prayer` param on create/update_reminder → `_get_prayer_time()` resolves via Aladhan API (daily cache, `follow_redirects=True`), applies `settings.prayer_offset_minutes` offset, rolls to next day if passed
 - **Persistent reminders**: `persistent` param on `create_reminder` tool → stored as graph property; `reschedule_persistent_reminder()` in graph.py auto-reschedules after nag interval
 - **Snooze fix**: `action=snooze` keeps `status='pending'`, moves `due_date`, clears `notified_at`; resolves prayer/time/date before calling graph
 - **Location reminders** (Phase 24): `location_place`/`location_type` params on create/update_reminder; `manage_places` tool for Place CRUD
+- **Cross-user messaging** (Phase 25): `send_to_user` sends immediate Telegram via Bot HTTP API; `create_reminder` with `target_user` creates reminder in target's graph (context-switches `_current_graph_name/collection/redis_prefix`). Attribution: `"📩 من {sender}: "` prefix. `_resolve_target_user()` matches `user_id`, `display_name`, `display_name_ar`, `nickname`
 - **Chat loop**: LLM picks tools → parallel execution → LLM formats response (max 3 iterations)
 - **Streaming**: `chat_stream()` yields NDJSON, tool calls detected from stream
 - **Post-processing**: memory + vector storage (background `asyncio.create_task`); auto-extraction disabled by default
@@ -133,7 +134,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 - `get_user_by_tg_id(tg_chat_id)`: reverse lookup for Telegram bot
 - `register_user()`: creates profile with namespaced defaults (`personal_life_{user_id}`, `{user_id}:`)
 - Convention: default user (khalid) keeps `graph_name="personal_life"`, `redis_prefix=""` — zero migration
-- **UserProfile fields**: `nickname`, `gender`, `anthropic_api_key` for gender-aware prompt + per-user Claude key
+- **UserProfile fields**: `nickname`, `display_name_ar`, `gender`, `anthropic_api_key`, `telegram_bot_token` for gender-aware prompt, per-user Claude key, and cross-user messaging
 
 ## LocationService (location.py)
 

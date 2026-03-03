@@ -43,7 +43,7 @@
   - Checks all saved Places via geofence → returns entered/left lists
   - Auto-creates Place nodes for unknown HA zones (`source="ha_zone"`)
   - Queries location reminders matching place name or POI type (via reverse geocode)
-  - Sends Telegram notification + marks notified + re-arms persistent on zone leave
+  - Sends Telegram notification via per-user bot token (`_get_bot_token()`) + marks notified + re-arms persistent on zone leave
   - Cooldown prevents duplicate fires within `location_cooldown_minutes`
 - `GET /location/places` — list saved places (optional `place_type` filter)
 - `POST /location/places` — create/update place
