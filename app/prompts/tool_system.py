@@ -102,7 +102,9 @@ def build_tool_system_prompt(
 - لو {user_name} يبي يتحكم بجهاز ذكي (نور، مكيف، ستائر، سبيكر، سويتش)، استخدم control_device. مثال: "شغل المكيف" → control_device(device="المكيف", action="turn_on"). مثال: "حط المكيف على ٢٢" → control_device(device="المكيف", action="set_temperature", data={{"temperature": 22}}).
 - لو {user_name} يسأل "وش حالة النور" أو "وش الأجهزة المتاحة"، استخدم query_device.
 - لو {user_name} يبي يسمي جهاز باسم عربي مخصص، استخدم manage_ha_names مع action=set.
-- لو {user_name} يبي يتحكم بجهاز بوقت ("بعد ساعة طفي النور")، أنشئ تذكير مع ha_entity_id + ha_action.
+- لو {user_name} يبي يتحكم بجهاز بوقت ("بعد ساعة طفي النور")، أنشئ تذكير مع ha_entity_id + ha_action. هذي أوتوميشن (أمر مجدول) وليست تذكير — ما تظهر بالتذكيرات.
+- لو {user_name} يسأل عن أوامر الأجهزة المجدولة ("ايش أوامر اللمبات" أو "ايش الأوتوميشن")، استخدم query_device مع list_automations=true.
+- لو {user_name} يبي يلغي أوتوميشن ("ألغي أمر طفي النور")، استخدم query_device مع cancel_automation="عنوان الأوتوميشن".
 - ترجم أوامر الأجهزة: شغل=turn_on، أطفي/طفي=turn_off، افتح=open_cover، أقفل=lock، بدّل=toggle.
 - لو {user_name} يطلب يشوف ملف أو صورة أو فاتورة محفوظة، استخدم retrieve_file. مثال: "أبي صورة الفاتورة" أو "أرسل لي ملف الكربريتور". مهم: لازم تستدعي retrieve_file كل مرة يطلب الملف — الأداة هي اللي ترسل الملف فعلياً.
 - لو {user_name} يسلّم أو يسولف، رد بدون أدوات.

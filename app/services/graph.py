@@ -850,7 +850,7 @@ class GraphService:
         """
         await self._get_graph().query(q_create, params=params)
 
-    async def _find_matching_reminders(self, title: str, status_filter: str = "") -> list:
+    async def _find_matching_reminders(self, title: str, status_filter: str = "", exclude_ha: bool = False) -> list:
         """Find reminders matching title using multi-strategy search.
 
         Strategies (in order):
@@ -862,6 +862,8 @@ class GraphService:
         status_clause = ""
         if status_filter:
             status_clause = f" AND r.status IN {status_filter}"
+        if exclude_ha:
+            status_clause += " AND (r.is_ha_automation IS NULL OR r.is_ha_automation = false)"
 
         # Strategy 1: direct CONTAINS
         q = f"""
@@ -1255,7 +1257,7 @@ class GraphService:
 
     async def _auto_dismiss_reminders(self, task_title: str) -> list[str]:
         """Auto-dismiss pending reminders matching a completed task title."""
-        matches = await self._find_matching_reminders(task_title, status_filter="['pending']")
+        matches = await self._find_matching_reminders(task_title, status_filter="['pending']", exclude_ha=True)
         if not matches:
             return []
         dismissed = []
@@ -2974,6 +2976,7 @@ class GraphService:
             q_overdue = """
             MATCH (r:Reminder)
             WHERE r.status = 'pending' AND r.due_date IS NOT NULL AND r.due_date < $now
+              AND (r.is_ha_automation IS NULL OR r.is_ha_automation = false)
             RETURN r.title, r.due_date, r.reminder_type, r.priority, r.snooze_count
             ORDER BY r.due_date
             LIMIT 20
@@ -2989,7 +2992,8 @@ class GraphService:
         filter_status = status or "pending"
         q_upcoming = """
         MATCH (r:Reminder {status: $status})
-        WHERE r.due_date IS NULL OR r.due_date >= $now
+        WHERE (r.due_date IS NULL OR r.due_date >= $now)
+          AND (r.is_ha_automation IS NULL OR r.is_ha_automation = false)
         RETURN r.title, r.due_date, r.reminder_type, r.priority, r.snooze_count, r.description
         ORDER BY r.due_date
         LIMIT 20
@@ -3018,6 +3022,42 @@ class GraphService:
             tags.append(f"snoozed:{snooze_count}x")
         return f" [{', '.join(tags)}]" if tags else ""
 
+    # --- HA Automations ---
+
+    async def query_ha_automations(self, status: str = "pending") -> list[dict]:
+        """Query scheduled HA automations (separate from regular reminders)."""
+        q = """
+        MATCH (r:Reminder)
+        WHERE r.status = $status
+          AND r.is_ha_automation = true
+        RETURN r.title, r.due_date, r.ha_entity_id, r.ha_action, r.ha_action_data, r.recurrence
+        ORDER BY r.due_date
+        LIMIT 30
+        """
+        rows = await self.query(q, {"status": status})
+        results = []
+        for r in rows or []:
+            entry = {"title": r[0], "due_date": r[1], "ha_entity_id": r[2], "ha_action": r[3]}
+            if r[4]:
+                entry["ha_action_data"] = r[4]
+            if r[5]:
+                entry["recurrence"] = r[5]
+            results.append(entry)
+        return results
+
+    async def cancel_ha_automation(self, title: str) -> bool:
+        """Cancel (mark done) an HA automation by title."""
+        q = """
+        MATCH (r:Reminder)
+        WHERE toLower(r.title) = toLower($title)
+          AND r.is_ha_automation = true
+          AND r.status = 'pending'
+        SET r.status = 'done', r.completed_at = $now
+        RETURN r.title
+        """
+        rows = await self.query(q, {"title": title, "now": _now()})
+        return bool(rows)
+
     # --- Daily Planner ---
     async def query_daily_plan(self) -> str:
         """Aggregate today's actionable items: overdue/today reminders, active tasks, debts I owe."""
@@ -3026,12 +3066,13 @@ class GraphService:
         today_eod = today + "T23:59:59"
         parts = []
 
-        # 1. Overdue + today's reminders
+        # 1. Overdue + today's reminders (exclude HA automations)
         q_reminders = """
         MATCH (r:Reminder)
         WHERE r.status = 'pending'
           AND r.due_date IS NOT NULL
           AND r.due_date <= $eod
+          AND (r.is_ha_automation IS NULL OR r.is_ha_automation = false)
         RETURN r.title, r.due_date, r.reminder_type, r.priority
         ORDER BY r.due_date
         LIMIT 20

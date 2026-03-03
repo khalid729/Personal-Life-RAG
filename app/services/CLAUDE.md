@@ -74,7 +74,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 - **Snooze fix**: `action=snooze` keeps `status='pending'`, moves `due_date`, clears `notified_at`; resolves prayer/time/date before calling graph
 - **Location reminders** (Phase 24): `location_place`/`location_type` params on create/update_reminder; `manage_places` tool for Place CRUD
 - **Cross-user messaging** (Phase 25): `send_to_user` sends immediate Telegram via Bot HTTP API; `create_reminder` with `target_user` creates reminder in target's graph (context-switches `_current_graph_name/collection/redis_prefix`). Attribution: `"📩 من {sender}: "` prefix. `_resolve_target_user()` matches `user_id`, `display_name`, `display_name_ar`, `nickname`
-- **Home Assistant** (Phase 26): `control_device` resolves Arabic device name → entity_id → `call_service`; `query_device` returns state summaries; `manage_ha_names` CRUD for custom Arabic nicknames; `create_reminder` with `ha_entity_id`+`ha_action` → auto-executes on fire
+- **Home Assistant** (Phase 26): `control_device` resolves Arabic device name → entity_id → `call_service`; `query_device` returns state summaries + `list_automations` + `cancel_automation`; `manage_ha_names` CRUD for custom Arabic nicknames; `create_reminder` with `ha_entity_id`+`ha_action` → sets `is_ha_automation=true` → auto-executes via fast 1-min job (separate from regular reminders, doesn't appear in daily plan/search/summaries)
 - **Chat loop**: LLM picks tools → parallel execution → LLM formats response (max 3 iterations)
 - **Streaming**: `chat_stream()` yields NDJSON, tool calls detected from stream
 - **Post-processing**: memory + vector storage (background `asyncio.create_task`); auto-extraction disabled by default

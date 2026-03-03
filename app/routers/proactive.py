@@ -76,6 +76,7 @@ async def noon_checkin(request: Request):
       AND r.due_date IS NOT NULL
       AND r.due_date < $now
       AND (r.notified_at IS NULL)
+      AND (r.is_ha_automation IS NULL OR r.is_ha_automation = false)
     RETURN r.title, r.due_date, r.reminder_type, r.priority, r.description
     ORDER BY r.priority DESC, r.due_date
     LIMIT 20
@@ -113,25 +114,27 @@ async def evening_summary(request: Request):
     rows = await graph.query(q_completed, {"today": today})
     completed = [r[0] for r in rows or []]
 
-    # Reminders completed today
+    # Reminders completed today (exclude HA automations)
     q_done_reminders = """
     MATCH (r:Reminder)
     WHERE r.status = 'done'
       AND r.completed_at IS NOT NULL
       AND r.completed_at >= $today
+      AND (r.is_ha_automation IS NULL OR r.is_ha_automation = false)
     RETURN r.title
     LIMIT 20
     """
     rows = await graph.query(q_done_reminders, {"today": today})
     completed.extend(r[0] for r in rows or [])
 
-    # Tomorrow's reminders
+    # Tomorrow's reminders (exclude HA automations)
     q_tomorrow = """
     MATCH (r:Reminder)
     WHERE r.status = 'pending'
       AND r.due_date IS NOT NULL
       AND r.due_date >= $tomorrow
       AND r.due_date <= $tomorrow_eod
+      AND (r.is_ha_automation IS NULL OR r.is_ha_automation = false)
     RETURN r.title, r.due_date, r.reminder_type, r.priority
     ORDER BY r.due_date
     LIMIT 20
@@ -154,6 +157,7 @@ async def evening_summary(request: Request):
 
 @router.get("/due-reminders")
 async def due_reminders(request: Request):
+    """Regular reminders only (excludes HA automations)."""
     graph = request.app.state.retrieval.graph
     now_str = _now_local().isoformat()
     q = """
@@ -162,8 +166,8 @@ async def due_reminders(request: Request):
       AND r.due_date IS NOT NULL
       AND r.due_date <= $now
       AND (r.notified_at IS NULL)
-    RETURN r.title, r.due_date, r.reminder_type, r.priority, r.description, r.recurrence, r.persistent,
-           r.ha_entity_id, r.ha_action, r.ha_action_data
+      AND (r.is_ha_automation IS NULL OR r.is_ha_automation = false)
+    RETURN r.title, r.due_date, r.reminder_type, r.priority, r.description, r.recurrence, r.persistent
     ORDER BY r.priority DESC, r.due_date
     LIMIT 30
     """
@@ -179,14 +183,43 @@ async def due_reminders(request: Request):
             "recurrence": r[5],
             "persistent": bool(r[6]) if r[6] is not None else False,
         }
-        if r[7]:
-            entry["ha_entity_id"] = r[7]
-        if r[8]:
-            entry["ha_action"] = r[8]
-        if r[9]:
-            entry["ha_action_data"] = r[9]
         reminders.append(entry)
     return {"due_reminders": reminders}
+
+
+@router.get("/due-ha-automations")
+async def due_ha_automations(request: Request):
+    """HA automations only — checked by fast 1-min job."""
+    graph = request.app.state.retrieval.graph
+    now_str = _now_local().isoformat()
+    q = """
+    MATCH (r:Reminder)
+    WHERE r.status = 'pending'
+      AND r.due_date IS NOT NULL
+      AND r.due_date <= $now
+      AND (r.notified_at IS NULL)
+      AND r.is_ha_automation = true
+    RETURN r.title, r.due_date, r.ha_entity_id, r.ha_action, r.ha_action_data, r.recurrence, r.persistent
+    ORDER BY r.due_date
+    LIMIT 30
+    """
+    rows = await graph.query(q, {"now": now_str})
+    automations = []
+    for r in rows or []:
+        entry = {
+            "title": r[0],
+            "due_date": r[1],
+            "ha_entity_id": r[2],
+            "ha_action": r[3],
+        }
+        if r[4]:
+            entry["ha_action_data"] = r[4]
+        if r[5]:
+            entry["recurrence"] = r[5]
+        if r[6]:
+            entry["persistent"] = True
+        automations.append(entry)
+    return {"ha_automations": automations}
 
 
 @router.post("/advance-reminder")

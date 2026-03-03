@@ -532,7 +532,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "query_device",
-            "description": "استعلام عن حالة جهاز ذكي أو قائمة الأجهزة المتاحة.",
+            "description": "استعلام عن حالة جهاز ذكي أو قائمة الأجهزة، أو عرض/إلغاء أوامر الأجهزة المجدولة (أوتوميشن).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -542,6 +542,14 @@ TOOLS = [
                         "enum": ["light", "switch", "climate", "cover", "media_player",
                                  "sensor", "fan", "lock", "automation"],
                         "description": "فلتر حسب النوع (اختياري): أنوار=light، سويتشات=switch، مكيفات=climate، ستائر=cover، ميديا=media_player، سنسورات=sensor",
+                    },
+                    "list_automations": {
+                        "type": "boolean",
+                        "description": "true = عرض أوامر الأجهزة المجدولة (أوتوميشن HA) — مثل 'ايش أوامر اللمبات'",
+                    },
+                    "cancel_automation": {
+                        "type": "string",
+                        "description": "عنوان أوتوميشن لإلغائه (مثل 'طفي نور المطبخ')",
                     },
                 },
                 "required": [],
@@ -712,7 +720,7 @@ class ToolCallingService:
     async def _handle_search_reminders(self, status: str = "pending", query: str | None = None) -> dict:
         if query:
             status_filter = f"['{status}']" if status and status != "all" else ""
-            matches = await self.graph._find_matching_reminders(query, status_filter=status_filter)
+            matches = await self.graph._find_matching_reminders(query, status_filter=status_filter, exclude_ha=True)
             if not matches:
                 return {"reminders": f"لا توجد تذكيرات تطابق '{query}'"}
             lines = [f"  - {r[0]}" for r in matches]
@@ -777,7 +785,7 @@ class ToolCallingService:
         if location_type:
             props["location_type"] = location_type
 
-        # Home Assistant action (Phase 26)
+        # Home Assistant action (Phase 26) — stored as HA automation, NOT a regular reminder
         if ha_entity_id and ha_action:
             # Resolve device name → entity_id if needed
             if self.ha and "." not in ha_entity_id:
@@ -788,6 +796,7 @@ class ToolCallingService:
             props["ha_action"] = ha_action
             if ha_action_data:
                 props["ha_action_data"] = ha_action_data
+            props["is_ha_automation"] = True
 
         # Cross-user: switch to target's graph context
         if target:
@@ -1601,10 +1610,30 @@ class ToolCallingService:
 
     async def _handle_query_device(
         self, device: str | None = None, domain: str | None = None,
+        list_automations: bool = False, cancel_automation: str | None = None,
     ) -> dict:
-        """Query device state or list devices by domain."""
+        """Query device state, list devices, list/cancel HA automations."""
         if not self.ha:
             return {"error": "Home Assistant غير مفعل"}
+
+        # Cancel a scheduled HA automation
+        if cancel_automation:
+            cancelled = await self.graph.cancel_ha_automation(cancel_automation)
+            if cancelled:
+                return {"status": "cancelled", "title": cancel_automation}
+            return {"error": f"ما لقيت أوتوميشن باسم '{cancel_automation}'"}
+
+        # List scheduled HA automations
+        if list_automations:
+            automations = await self.graph.query_ha_automations()
+            if not automations:
+                return {"automations": "لا توجد أوامر أجهزة مجدولة"}
+            lines = []
+            for a in automations:
+                due = f" ({a['due_date']})" if a.get("due_date") else ""
+                recur = f" [{a['recurrence']}]" if a.get("recurrence") else ""
+                lines.append(f"  - {a['title']}: {a['ha_action']} → {a['ha_entity_id']}{due}{recur}")
+            return {"automations": "\n".join(lines), "count": len(lines)}
 
         if device:
             entity_id = await self.ha.resolve_entity(device)
