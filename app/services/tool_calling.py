@@ -70,7 +70,11 @@ TOOLS = [
                     "priority": {"type": "integer", "minimum": 1, "maximum": 5},
                     "persistent": {
                         "type": "boolean",
-                        "description": "كرر التذكير لحد ما يقول أبو إبراهيم خلصت أو ألغه",
+                        "description": "كرر التذكير لحد ما المستخدم يقول خلصت أو ألغه",
+                    },
+                    "target_user": {
+                        "type": "string",
+                        "description": "اسم مستخدم آخر لإنشاء التذكير عنده (خالد، روابي، أبو إبراهيم، أم سليمان)",
                     },
                     "location_place": {
                         "type": "string",
@@ -464,6 +468,27 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_to_user",
+            "description": "أرسل رسالة فورية لمستخدم آخر عبر تلقرام.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user": {
+                        "type": "string",
+                        "description": "اسم المستخدم (خالد، روابي، أبو إبراهيم، أم سليمان)",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "نص الرسالة بالعربي",
+                    },
+                },
+                "required": ["user", "message"],
+            },
+        },
+    },
 ]
 
 
@@ -560,12 +585,13 @@ class ToolCallingService:
 
     MAX_ITERATIONS = 3
 
-    def __init__(self, llm, graph, vector, memory, ner=None):
+    def __init__(self, llm, graph, vector, memory, ner=None, user_registry=None):
         self.llm = llm
         self.graph = graph
         self.vector = vector
         self.memory = memory
         self.ner = ner
+        self.user_registry = user_registry
 
         self._TOOL_HANDLERS = {
             "search_reminders": self._handle_search_reminders,
@@ -592,6 +618,7 @@ class ToolCallingService:
             "get_productivity_stats": self._handle_get_productivity_stats,
             "manage_places": self._handle_manage_places,
             "retrieve_file": self._handle_retrieve_file,
+            "send_to_user": self._handle_send_to_user,
         }
 
     # ------------------------------------------------------------------
@@ -617,7 +644,22 @@ class ToolCallingService:
         priority: int | None = None, repeat_day: str | None = None,
         prayer: str | None = None, persistent: bool = False,
         location_place: str | None = None, location_type: str | None = None,
+        target_user: str | None = None,
     ) -> dict:
+        from app.middleware.auth import (
+            _current_graph_name, _current_collection, _current_redis_prefix,
+            _current_user_nickname,
+        )
+
+        # Cross-user: resolve target and prepend attribution
+        target = None
+        if target_user:
+            target = self._resolve_target_user(target_user)
+            if not target:
+                return {"error": f"ما لقيت مستخدم باسم '{target_user}'"}
+            sender = _current_user_nickname.get() or "مستخدم"
+            title = f"📩 من {sender}: {title}"
+
         # Auto-compute due_date from repeat_day for weekly reminders
         if repeat_day and recurrence == "weekly":
             computed = _next_weekday(repeat_day)
@@ -648,6 +690,20 @@ class ToolCallingService:
             props["location_place"] = location_place
         if location_type:
             props["location_type"] = location_type
+
+        # Cross-user: switch to target's graph context
+        if target:
+            g_tok = _current_graph_name.set(target.graph_name)
+            c_tok = _current_collection.set(target.collection_name)
+            r_tok = _current_redis_prefix.set(target.redis_prefix)
+            try:
+                await self.graph.create_reminder(title, **props)
+            finally:
+                _current_graph_name.reset(g_tok)
+                _current_collection.reset(c_tok)
+                _current_redis_prefix.reset(r_tok)
+            return {"status": "created", "title": title, "target_user": target.display_name, **props}
+
         await self.graph.create_reminder(title, **props)
         return {"status": "created", "title": title, **props}
 
@@ -1377,6 +1433,47 @@ class ToolCallingService:
 
         return {"error": f"Unknown action: {action}"}
 
+    # --- Cross-user helpers ---
+
+    def _resolve_target_user(self, name: str):
+        """Resolve a target user by id, display_name, display_name_ar, or nickname."""
+        if not self.user_registry:
+            return None
+        for user in self.user_registry.list_users():
+            if user.user_id == name.lower():
+                return user
+            if user.display_name and user.display_name.lower() == name.lower():
+                return user
+            if user.display_name_ar and user.display_name_ar == name:
+                return user
+            if user.nickname and user.nickname == name:
+                return user
+        return None
+
+    async def _send_telegram_direct(self, bot_token: str, chat_id: str, text: str) -> bool:
+        """Send a Telegram message via Bot HTTP API."""
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(url, json={"chat_id": chat_id, "text": text})
+                return resp.status_code == 200
+        except Exception as e:
+            logger.error("Telegram direct send failed: %s", e)
+            return False
+
+    async def _handle_send_to_user(self, user: str, message: str) -> dict:
+        """Send an immediate Telegram message to another user."""
+        from app.middleware.auth import _current_user_nickname
+        sender = _current_user_nickname.get() or "مستخدم"
+        target = self._resolve_target_user(user)
+        if not target:
+            return {"error": f"ما لقيت مستخدم باسم '{user}'"}
+        if not target.tg_chat_id or not target.telegram_bot_token:
+            return {"error": f"{target.display_name} ما عنده تلقرام مربوط"}
+        text = f"📩 من {sender}:\n{message}"
+        ok = await self._send_telegram_direct(target.telegram_bot_token, target.tg_chat_id, text)
+        return {"status": "sent", "to": target.display_name} if ok else {"error": "فشل الإرسال"}
+
     async def _handle_retrieve_file(self, query: str) -> dict:
         """Find a saved file matching the query and return info for delivery."""
         query_en = await self.llm.translate_to_english(query)
@@ -1540,6 +1637,8 @@ class ToolCallingService:
                     parts.append(f"تم دمج {data.get('sources_deleted', 0)} مشاريع ونقل {data.get('tasks_moved', 0)} مهام إلى {data.get('target', '')}")
                 elif tool == "get_productivity_stats":
                     parts.append(str(data))
+                elif tool == "send_to_user":
+                    parts.append(f"تم إرسال رسالة إلى {data.get('to', '')}")
                 else:
                     parts.append(f"تم تنفيذ {tool}")
             else:
@@ -1807,7 +1906,7 @@ class ToolCallingService:
         "create_reminder", "delete_reminder", "update_reminder",
         "add_expense", "record_debt", "pay_debt", "store_note",
         "manage_inventory", "manage_tasks", "manage_projects", "merge_projects",
-        "manage_lists", "manage_places",
+        "manage_lists", "manage_places", "send_to_user",
     }
 
     # Lightweight keyword check for storable content (Arabic + English)

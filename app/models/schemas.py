@@ -18,12 +18,14 @@ class UserContext:
     nickname: str = ""
     gender: str = "male"
     anthropic_api_key: str = ""
+    telegram_bot_token: str = ""
 
 
 class UserProfile(BaseModel):
     user_id: str
     api_key_hash: str = ""
     display_name: str = ""
+    display_name_ar: str = ""
     nickname: str = ""
     gender: str = "male"
     anthropic_api_key: str = ""
@@ -31,6 +33,7 @@ class UserProfile(BaseModel):
     collection_name: str = ""
     redis_prefix: str = ""
     tg_chat_id: str = ""
+    telegram_bot_token: str = ""
     enabled: bool = True
 
 

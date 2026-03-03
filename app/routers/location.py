@@ -120,8 +120,9 @@ async def location_update(body: LocationUpdateRequest, request: Request):
     notified_count = 0
     if fired_reminders:
         tg_chat_id = _get_tg_chat_id(request)
-        if tg_chat_id:
-            await _send_location_reminders(fired_reminders, entered, tg_chat_id)
+        bot_token = _get_bot_token(request)
+        if tg_chat_id and bot_token:
+            await _send_location_reminders(fired_reminders, entered, tg_chat_id, bot_token)
             notified_count = len(fired_reminders)
 
         # 8. Mark notified
@@ -213,11 +214,21 @@ def _get_tg_chat_id(request: Request) -> str:
     return settings.tg_chat_id
 
 
+def _get_bot_token(request: Request) -> str:
+    """Get Telegram bot token from user context or settings."""
+    user_ctx = getattr(request.state, "user_ctx", None)
+    if user_ctx and getattr(user_ctx, "telegram_bot_token", ""):
+        return user_ctx.telegram_bot_token
+    return settings.telegram_bot_token
+
+
 async def _send_location_reminders(
-    reminders: list[dict], entered_places: list[dict], tg_chat_id: str,
+    reminders: list[dict], entered_places: list[dict],
+    tg_chat_id: str, bot_token: str = "",
 ) -> None:
     """Send Telegram notification for location-triggered reminders."""
-    if not settings.telegram_bot_token or not tg_chat_id:
+    bot_token = bot_token or settings.telegram_bot_token
+    if not bot_token or not tg_chat_id:
         return
 
     lines = ["📍 تذكيرات حسب الموقع:\n"]
@@ -239,7 +250,7 @@ async def _send_location_reminders(
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             await client.post(
-                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
                 json={"chat_id": tg_chat_id, "text": text},
             )
     except Exception as e:

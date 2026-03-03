@@ -53,6 +53,7 @@ def _default_user_context() -> UserContext:
         tg_chat_id=settings.tg_chat_id,
         nickname="أبو إبراهيم",
         gender="male",
+        telegram_bot_token=settings.telegram_bot_token,
     )
 
 
@@ -110,4 +111,5 @@ class AuthMiddleware(BaseHTTPMiddleware):
             nickname=profile.nickname,
             gender=profile.gender,
             anthropic_api_key=profile.anthropic_api_key,
+            telegram_bot_token=profile.telegram_bot_token,
         )

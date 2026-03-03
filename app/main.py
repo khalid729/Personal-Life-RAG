@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
     backup_service = BackupService(graph, vector, memory)
     app.state.backup_service = backup_service
 
-    tool_calling = ToolCallingService(llm, graph, vector, memory, ner=ner)
+    tool_calling = ToolCallingService(llm, graph, vector, memory, ner=ner, user_registry=user_registry)
     app.state.tool_calling = tool_calling
 
     logger.info("All services started. API is ready.")

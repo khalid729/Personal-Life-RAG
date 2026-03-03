@@ -44,6 +44,7 @@ class UserRegistry:
                         user_id=user_id,
                         api_key_hash=key_hash,
                         display_name=info.get("display_name", ""),
+                        display_name_ar=info.get("display_name_ar", ""),
                         nickname=info.get("nickname", ""),
                         gender=info.get("gender", "male"),
                         anthropic_api_key=info.get("anthropic_api_key", ""),
@@ -51,6 +52,7 @@ class UserRegistry:
                         collection_name=info.get("collection_name", settings.qdrant_collection),
                         redis_prefix=info.get("redis_prefix", ""),
                         tg_chat_id=info.get("tg_chat_id", ""),
+                        telegram_bot_token=info.get("telegram_bot_token", ""),
                         enabled=info.get("enabled", True),
                     )
                     await self._store_profile(profile, raw_key)
