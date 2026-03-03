@@ -1304,7 +1304,33 @@ async def job_check_reminders(bot: Bot):
                     for r in reminders
                 )
 
-            # 2. Send one batched message
+            # 2a. Execute HA actions on reminders that have them
+            for r in reminders:
+                ha_entity = r.get("ha_entity_id")
+                ha_action = r.get("ha_action")
+                if ha_entity and ha_action:
+                    try:
+                        domain = ha_entity.split(".")[0] if "." in ha_entity else ""
+                        if domain:
+                            ha_data = {"entity_id": ha_entity, "data": None}
+                            ha_extra = r.get("ha_action_data")
+                            if ha_extra:
+                                import json as _json
+                                try:
+                                    ha_data["data"] = _json.loads(ha_extra)
+                                except Exception:
+                                    pass
+                            await api_post(
+                                f"/ha/services/{domain}/{ha_action}",
+                                json=ha_data,
+                                api_key=ak,
+                            )
+                            fn = r.get("title", ha_entity)
+                            text += f"\n✅ تم تنفيذ: {fn}"
+                    except Exception as e:
+                        logger.warning("HA action failed for reminder '%s': %s", r.get("title"), e)
+
+            # 2b. Send one batched message
             for part in split_message(text):
                 await bot.send_message(chat_id=tg_id, text=part)
 
@@ -1339,6 +1365,60 @@ async def job_check_reminders(bot: Bot):
             logger.info("Sent %d due reminder(s) to %s", len(reminders), user.get("user_id", tg_id))
         except Exception as e:
             logger.error("Reminder check for %s failed: %s", user.get("user_id", tg_id), e)
+
+
+async def job_check_ha_reminders(bot: Bot):
+    """Fast check (every 1 min) for HA-action reminders only."""
+    for tg_id, user in _tg_user_cache.items():
+        try:
+            ak = user.get("api_key", "")
+            data = await api_get("/proactive/due-reminders", api_key=ak)
+            reminders = data.get("due_reminders", [])
+            # Filter to only HA-action reminders
+            ha_reminders = [r for r in reminders if r.get("ha_entity_id") and r.get("ha_action")]
+            if not ha_reminders:
+                continue
+
+            for r in ha_reminders:
+                ha_entity = r["ha_entity_id"]
+                ha_action = r["ha_action"]
+                domain = ha_entity.split(".")[0] if "." in ha_entity else ""
+                if not domain:
+                    continue
+
+                # Execute HA action
+                try:
+                    ha_data = {"entity_id": ha_entity, "data": None}
+                    ha_extra = r.get("ha_action_data")
+                    if ha_extra:
+                        import json as _json
+                        try:
+                            ha_data["data"] = _json.loads(ha_extra)
+                        except Exception:
+                            pass
+                    await api_post(
+                        f"/ha/services/{domain}/{ha_action}",
+                        json=ha_data,
+                        api_key=ak,
+                    )
+                    # Notify user
+                    fn = r.get("title", ha_entity)
+                    await bot.send_message(
+                        chat_id=tg_id,
+                        text=f"🏠 تم تنفيذ: {fn}",
+                    )
+                except Exception as e:
+                    logger.warning("HA action failed for '%s': %s", r.get("title"), e)
+
+                # Mark notified
+                try:
+                    await api_post("/proactive/mark-notified", json={"title": r["title"]}, api_key=ak)
+                except Exception:
+                    pass
+
+            logger.info("Executed %d HA reminder(s) for %s", len(ha_reminders), user.get("user_id", tg_id))
+        except Exception as e:
+            logger.error("HA reminder check for %s failed: %s", user.get("user_id", tg_id), e)
 
 
 async def job_daily_backup(bot: Bot):
@@ -1432,6 +1512,12 @@ async def main():
             IntervalTrigger(minutes=settings.proactive_reminder_check_minutes),
             args=[bot],
             id="reminders",
+        )
+        scheduler.add_job(
+            job_check_ha_reminders,
+            IntervalTrigger(minutes=1),
+            args=[bot],
+            id="ha_reminders",
         )
         scheduler.add_job(
             job_smart_alerts,

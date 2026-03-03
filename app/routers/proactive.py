@@ -162,14 +162,15 @@ async def due_reminders(request: Request):
       AND r.due_date IS NOT NULL
       AND r.due_date <= $now
       AND (r.notified_at IS NULL)
-    RETURN r.title, r.due_date, r.reminder_type, r.priority, r.description, r.recurrence, r.persistent
+    RETURN r.title, r.due_date, r.reminder_type, r.priority, r.description, r.recurrence, r.persistent,
+           r.ha_entity_id, r.ha_action, r.ha_action_data
     ORDER BY r.priority DESC, r.due_date
     LIMIT 30
     """
     rows = await graph.query(q, {"now": now_str})
     reminders = []
     for r in rows or []:
-        reminders.append({
+        entry = {
             "title": r[0],
             "due_date": r[1],
             "reminder_type": r[2],
@@ -177,7 +178,14 @@ async def due_reminders(request: Request):
             "description": r[4],
             "recurrence": r[5],
             "persistent": bool(r[6]) if r[6] is not None else False,
-        })
+        }
+        if r[7]:
+            entry["ha_entity_id"] = r[7]
+        if r[8]:
+            entry["ha_action"] = r[8]
+        if r[9]:
+            entry["ha_action_data"] = r[9]
+        reminders.append(entry)
     return {"due_reminders": reminders}
 
 

@@ -20,8 +20,8 @@ app/
 ├── config.py            # Settings via pydantic BaseSettings (.env overrides)
 ├── models/schemas.py    # Enums + Pydantic models (UserProfile, UserContext)
 ├── middleware/auth.py    # Multi-tenancy: context vars from X-API-Key
-├── services/            # 11 async services — see services/CLAUDE.md
-├── routers/             # 17 REST routers — see routers/CLAUDE.md
+├── services/            # 12 async services — see services/CLAUDE.md
+├── routers/             # 18 REST routers — see routers/CLAUDE.md
 ├── prompts/             # 6 prompt builders — see prompts/CLAUDE.md
 └── integrations/        # Telegram, Open WebUI, MCP — see integrations/CLAUDE.md
 ```
@@ -105,3 +105,6 @@ These are the essential constraints — violating any of them causes bugs.
 | Expense cascade | `tool_calling.py` (`_cascade_expense_update`), `graph.py` |
 | Cross-user msg not sent | `tool_calling.py` (`_handle_send_to_user`, `_resolve_target_user`) |
 | Cross-user reminder wrong graph | `tool_calling.py` (`_handle_create_reminder`, target_user) |
+| HA device not found | `homeassistant.py` (`resolve_entity`), `tool_calling.py` (`_handle_control_device`) |
+| HA action not executing | `homeassistant.py` (`call_service`), `telegram_bot.py` (`job_check_reminders` HA block) |
+| HA webhook not notifying | `routers/homeassistant.py` (`ha_webhook`), Telegram bot token |

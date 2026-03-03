@@ -85,6 +85,18 @@ TOOLS = [
                         "enum": ["بقالة", "صيدلية", "مطعم", "كافيه", "مول", "مسجد", "بنزينة", "بنك", "مستشفى", "مدرسة", "حديقة", "مغسلة", "مكتبة"],
                         "description": "نوع مكان — 'ذكرني لما أمر على بقالة' → location_type='بقالة'",
                     },
+                    "ha_entity_id": {
+                        "type": "string",
+                        "description": "معرف جهاز HA لتنفيذ إجراء عند حلول التذكير (مثل light.ktn_out)",
+                    },
+                    "ha_action": {
+                        "type": "string",
+                        "description": "إجراء HA (turn_on, turn_off, toggle, set_temperature, ...)",
+                    },
+                    "ha_action_data": {
+                        "type": "string",
+                        "description": "بيانات إضافية JSON (مثل {\"temperature\": 22})",
+                    },
                 },
                 "required": ["title"],
             },
@@ -489,6 +501,73 @@ TOOLS = [
             },
         },
     },
+    # --- Phase 26: Home Assistant ---
+    {
+        "type": "function",
+        "function": {
+            "name": "control_device",
+            "description": "تحكم بجهاز ذكي (نور، مكيف، ستائر، سويتش، سبيكر). شغل/طفي/toggle/حرارة.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string", "description": "اسم الجهاز بالعربي أو entity_id"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["turn_on", "turn_off", "toggle", "set_temperature",
+                                 "set_hvac_mode", "open_cover", "close_cover",
+                                 "lock", "unlock", "media_play", "media_pause",
+                                 "volume_set", "trigger"],
+                        "description": "الإجراء: شغل=turn_on، طفي=turn_off، بدّل=toggle، حرارة=set_temperature، افتح=open_cover، أقفل=lock",
+                    },
+                    "data": {
+                        "type": "object",
+                        "description": "بيانات إضافية (مثل temperature, hvac_mode, volume_level)",
+                    },
+                },
+                "required": ["device", "action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_device",
+            "description": "استعلام عن حالة جهاز ذكي أو قائمة الأجهزة المتاحة.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string", "description": "اسم جهاز معين (اختياري)"},
+                    "domain": {
+                        "type": "string",
+                        "enum": ["light", "switch", "climate", "cover", "media_player",
+                                 "sensor", "fan", "lock", "automation"],
+                        "description": "فلتر حسب النوع (اختياري): أنوار=light، سويتشات=switch، مكيفات=climate، ستائر=cover، ميديا=media_player، سنسورات=sensor",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_ha_names",
+            "description": "إدارة أسماء عربية مخصصة للأجهزة الذكية.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "set", "delete"],
+                        "description": "list=عرض الأسماء، set=ربط اسم عربي بجهاز، delete=حذف اسم",
+                    },
+                    "arabic_name": {"type": "string", "description": "الاسم العربي المخصص"},
+                    "entity_id": {"type": "string", "description": "معرف الجهاز في HA (مثل light.mb)"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 
@@ -585,13 +664,14 @@ class ToolCallingService:
 
     MAX_ITERATIONS = 3
 
-    def __init__(self, llm, graph, vector, memory, ner=None, user_registry=None):
+    def __init__(self, llm, graph, vector, memory, ner=None, user_registry=None, ha=None):
         self.llm = llm
         self.graph = graph
         self.vector = vector
         self.memory = memory
         self.ner = ner
         self.user_registry = user_registry
+        self.ha = ha
 
         self._TOOL_HANDLERS = {
             "search_reminders": self._handle_search_reminders,
@@ -619,6 +699,10 @@ class ToolCallingService:
             "manage_places": self._handle_manage_places,
             "retrieve_file": self._handle_retrieve_file,
             "send_to_user": self._handle_send_to_user,
+            # Phase 26: Home Assistant
+            "control_device": self._handle_control_device,
+            "query_device": self._handle_query_device,
+            "manage_ha_names": self._handle_manage_ha_names,
         }
 
     # ------------------------------------------------------------------
@@ -645,6 +729,8 @@ class ToolCallingService:
         prayer: str | None = None, persistent: bool = False,
         location_place: str | None = None, location_type: str | None = None,
         target_user: str | None = None,
+        ha_entity_id: str | None = None, ha_action: str | None = None,
+        ha_action_data: str | None = None,
     ) -> dict:
         from app.middleware.auth import (
             _current_graph_name, _current_collection, _current_redis_prefix,
@@ -690,6 +776,18 @@ class ToolCallingService:
             props["location_place"] = location_place
         if location_type:
             props["location_type"] = location_type
+
+        # Home Assistant action (Phase 26)
+        if ha_entity_id and ha_action:
+            # Resolve device name → entity_id if needed
+            if self.ha and "." not in ha_entity_id:
+                resolved = await self.ha.resolve_entity(ha_entity_id)
+                if resolved:
+                    ha_entity_id = resolved
+            props["ha_entity_id"] = ha_entity_id
+            props["ha_action"] = ha_action
+            if ha_action_data:
+                props["ha_action_data"] = ha_action_data
 
         # Cross-user: switch to target's graph context
         if target:
@@ -1474,6 +1572,87 @@ class ToolCallingService:
         ok = await self._send_telegram_direct(target.telegram_bot_token, target.tg_chat_id, text)
         return {"status": "sent", "to": target.display_name} if ok else {"error": "فشل الإرسال"}
 
+    # --- Phase 26: Home Assistant handlers ---
+
+    async def _handle_control_device(
+        self, device: str, action: str, data: dict | None = None,
+    ) -> dict:
+        """Control a smart home device via Home Assistant."""
+        if not self.ha:
+            return {"error": "Home Assistant غير مفعل"}
+
+        entity_id = await self.ha.resolve_entity(device)
+        if not entity_id:
+            return {"error": f"ما لقيت جهاز باسم '{device}'"}
+
+        domain = self.ha.get_domain(entity_id)
+        service_data = {"entity_id": entity_id}
+        if data:
+            service_data.update(data)
+
+        result = await self.ha.call_service(domain, action, service_data)
+        if result.get("success"):
+            # Get updated state
+            new_state = await self.ha.get_state(entity_id)
+            fn = (new_state or {}).get("attributes", {}).get("friendly_name", device)
+            st = (new_state or {}).get("state", "unknown")
+            return {"status": "ok", "device": fn, "entity_id": entity_id, "action": action, "new_state": st}
+        return {"error": result.get("error", "فشل تنفيذ الأمر")}
+
+    async def _handle_query_device(
+        self, device: str | None = None, domain: str | None = None,
+    ) -> dict:
+        """Query device state or list devices by domain."""
+        if not self.ha:
+            return {"error": "Home Assistant غير مفعل"}
+
+        if device:
+            entity_id = await self.ha.resolve_entity(device)
+            if not entity_id:
+                return {"error": f"ما لقيت جهاز باسم '{device}'"}
+            state = await self.ha.get_state(entity_id)
+            if not state:
+                return {"error": f"ما قدرت أجيب حالة '{device}'"}
+            return {"device": self.ha.format_state_summary(state), "entity_id": entity_id}
+
+        # List by domain
+        states = await self.ha.get_states(domain_filter=domain)
+        if not states:
+            return {"devices": "لا توجد أجهزة" + (f" من نوع {domain}" if domain else "")}
+
+        lines = []
+        for s in states:
+            lines.append(self.ha.format_state_summary(s))
+        return {"devices": "\n".join(lines), "count": len(lines)}
+
+    async def _handle_manage_ha_names(
+        self, action: str, arabic_name: str = "", entity_id: str = "",
+    ) -> dict:
+        """Manage custom Arabic names for HA entities."""
+        if not self.ha:
+            return {"error": "Home Assistant غير مفعل"}
+
+        if action == "list":
+            names = await self.ha.get_entity_names()
+            if not names:
+                return {"names": "لا توجد أسماء مخصصة"}
+            lines = [f"  {ar} → {eid}" for ar, eid in names.items()]
+            return {"names": "\n".join(lines)}
+
+        if action == "set":
+            if not arabic_name or not entity_id:
+                return {"error": "الاسم العربي ومعرف الجهاز مطلوبين"}
+            await self.ha.set_entity_name(entity_id, arabic_name)
+            return {"status": "ok", "arabic_name": arabic_name, "entity_id": entity_id}
+
+        if action == "delete":
+            if not arabic_name:
+                return {"error": "الاسم العربي مطلوب"}
+            await self.ha.delete_entity_name(arabic_name)
+            return {"status": "deleted", "name": arabic_name}
+
+        return {"error": f"Unknown action: {action}"}
+
     async def _handle_retrieve_file(self, query: str) -> dict:
         """Find a saved file matching the query and return info for delivery."""
         query_en = await self.llm.translate_to_english(query)
@@ -1907,6 +2086,7 @@ class ToolCallingService:
         "add_expense", "record_debt", "pay_debt", "store_note",
         "manage_inventory", "manage_tasks", "manage_projects", "merge_projects",
         "manage_lists", "manage_places", "send_to_user",
+        "control_device", "manage_ha_names",
     }
 
     # Lightweight keyword check for storable content (Arabic + English)

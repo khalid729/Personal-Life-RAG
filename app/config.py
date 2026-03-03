@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     prayer_offset_minutes: int = 20  # "بعد صلاة X" = prayer time + offset
     nag_interval_minutes: int = 30  # how often persistent reminders re-fire
 
+    # Home Assistant (Phase 26)
+    ha_enabled: bool = False
+    ha_url: str = ""           # http://192.168.68.72:8123
+    ha_token: str = ""         # Long-Lived Access Token
+    ha_cache_ttl: int = 30     # entity state cache seconds
+
     # Location-Based Reminders (Phase 24)
     location_enabled: bool = False
     location_default_radius: int = 150      # meters

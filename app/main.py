@@ -9,6 +9,7 @@ from app.middleware.auth import AuthMiddleware
 from app.routers import chat, files, financial, ingest, inventory, knowledge, proactive, productivity, projects, reminders, search, tasks
 from app.routers import backup as backup_router
 from app.routers import graph_viz
+from app.routers import homeassistant as ha_router
 from app.routers import location as location_router
 from app.routers import users as users_router
 from app.services.backup import BackupService
@@ -18,6 +19,7 @@ from app.services.llm import LLMService
 from app.services.memory import MemoryService
 from app.services.ner import NERService
 from app.services.retrieval import RetrievalService
+from app.services.homeassistant import HomeAssistantService
 from app.services.location import LocationService
 from app.services.tool_calling import ToolCallingService
 from app.services.user_registry import UserRegistry
@@ -77,6 +79,11 @@ async def lifespan(app: FastAPI):
     await location_svc.start()
     app.state.location = location_svc
 
+    # Home Assistant service (Phase 26)
+    ha_svc = HomeAssistantService(memory._redis)
+    await ha_svc.start()
+    app.state.ha = ha_svc
+
     graph.set_vector_service(vector)
 
     retrieval = RetrievalService(llm, graph, vector, memory, ner=ner)
@@ -88,7 +95,7 @@ async def lifespan(app: FastAPI):
     backup_service = BackupService(graph, vector, memory)
     app.state.backup_service = backup_service
 
-    tool_calling = ToolCallingService(llm, graph, vector, memory, ner=ner, user_registry=user_registry)
+    tool_calling = ToolCallingService(llm, graph, vector, memory, ner=ner, user_registry=user_registry, ha=ha_svc)
     app.state.tool_calling = tool_calling
 
     logger.info("All services started. API is ready.")
@@ -96,6 +103,7 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     logger.info("Shutting down services...")
+    await ha_svc.stop()
     await memory.stop()
     await vector.stop()
     await graph.stop()
@@ -133,6 +141,7 @@ app.include_router(inventory.router)
 app.include_router(productivity.router)
 app.include_router(backup_router.router)
 app.include_router(graph_viz.router)
+app.include_router(ha_router.router)
 app.include_router(location_router.router)
 app.include_router(users_router.router)
 

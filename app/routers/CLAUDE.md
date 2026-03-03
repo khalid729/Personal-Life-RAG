@@ -1,6 +1,6 @@
 # Routers
 
-17 REST routers, all use `request.app.state.<service>`.
+18 REST routers, all use `request.app.state.<service>`.
 
 ## Endpoints
 
@@ -20,6 +20,7 @@
 | proactive | `/proactive` | Morning/noon/evening summaries, smart alerts, reschedule-persistent |
 | backup | `/backup` | POST /create, GET /list, POST /restore/{timestamp} |
 | graph_viz | `/graph` | GET /export, /schema, /stats, POST /image |
+| homeassistant | `/ha` | GET /states, GET /states/{id}, POST /services/{d}/{s}, GET/POST/DELETE /names, POST /webhook |
 | location | `/location` | POST /update (webhook), GET/POST/DELETE /places, GET /current |
 | users | `/admin` | GET /users, POST /users, GET /users/by-telegram/{tg_id}, DELETE /users/{user_id} |
 
