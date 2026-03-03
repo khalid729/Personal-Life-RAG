@@ -11,6 +11,9 @@
 - **Image analysis summary**: uses `/chat/v2`
 - **File delivery**: `retrieve_file` tool → `done` NDJSON includes `files` array → bot downloads via `GET /ingest/file/{hash}` → sends as photo (jpg/png) or document (PDF/other)
 - **No confirmation flow** — tools execute directly
+- **Multi-user**: `_load_tg_users()` reads `data/users.json` seed file (not API). Filters by `settings.tg_chat_id` for per-bot isolation
+- **Two bot instances**: `rag-telegram` (Khalid) + `rag-telegram-rawabi` (Rawabi, `.env.rawabi` overrides)
+- All scheduler jobs iterate `_tg_user_cache.items()` with per-user API keys
 - Commands: `/help`, `/chat`, `/finance`, `/reminders`, `/projects`, `/tasks`, `/inventory`, `/focus`, `/sprint`, `/backup`, `/graph`
 - Scheduled: morning (7AM), noon (1PM), evening (9PM), reminders (30min), smart alerts (6h)
 - **Persistent nag loop**: `job_check_reminders()` — after mark-notified, persistent reminders call `/proactive/reschedule-persistent` to auto-reschedule for next nag cycle

@@ -63,5 +63,5 @@
 - `AuthMiddleware` in `app/middleware/auth.py` — runs on every request (skips `/health`, `/docs`)
 - When `multi_tenant_enabled=False` (default): sets context vars to existing settings (zero change)
 - When enabled: reads `X-API-Key` → `UserRegistry.get_user_by_api_key()` → sets context vars
-- Context vars (`_current_graph_name`, `_current_collection`, `_current_redis_prefix`) are task-local, inherited by `asyncio.create_task`
+- Context vars (`_current_graph_name`, `_current_collection`, `_current_redis_prefix`, `_current_user_nickname`, `_current_user_gender`, `_current_anthropic_key`) are task-local, inherited by `asyncio.create_task`
 - `request.state.user_ctx` available to all route handlers

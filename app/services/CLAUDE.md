@@ -6,7 +6,7 @@
 
 | Service | File | Backend |
 |---------|------|---------|
-| LLMService | llm.py | Claude API (chat/tools + vision) + vLLM :8000 (extraction/fallback) |
+| LLMService | llm.py | Claude API (chat/tools + vision, per-user key) + vLLM :8000 (extraction/fallback) |
 | GraphService | graph.py (110KB) | FalkorDB :6379 |
 | VectorService | vector.py | Qdrant :6333 + BGE-M3 GPU |
 | MemoryService | memory.py | Redis :6380 (3 layers) |
@@ -133,6 +133,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 - `get_user_by_tg_id(tg_chat_id)`: reverse lookup for Telegram bot
 - `register_user()`: creates profile with namespaced defaults (`personal_life_{user_id}`, `{user_id}:`)
 - Convention: default user (khalid) keeps `graph_name="personal_life"`, `redis_prefix=""` — zero migration
+- **UserProfile fields**: `nickname`, `gender`, `anthropic_api_key` for gender-aware prompt + per-user Claude key
 
 ## LocationService (location.py)
 
