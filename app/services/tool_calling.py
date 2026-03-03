@@ -87,7 +87,7 @@ TOOLS = [
                     },
                     "ha_entity_id": {
                         "type": "string",
-                        "description": "معرف جهاز HA لتنفيذ إجراء عند حلول التذكير (مثل light.ktn_out)",
+                        "description": "اسم الجهاز بالعربي (مثل 'اللمبه يسار' أو 'المكيف') — لا تستخدم entity_id انجليزي",
                     },
                     "ha_action": {
                         "type": "string",
@@ -787,8 +787,8 @@ class ToolCallingService:
 
         # Home Assistant action (Phase 26) — stored as HA automation, NOT a regular reminder
         if ha_entity_id and ha_action:
-            # Resolve device name → entity_id if needed
-            if self.ha and "." not in ha_entity_id:
+            # Always resolve — LLM may hallucinate entity_ids like "light.left"
+            if self.ha:
                 resolved = await self.ha.resolve_entity(ha_entity_id)
                 if resolved:
                     ha_entity_id = resolved
@@ -2018,21 +2018,7 @@ class ToolCallingService:
                 reply_text = fallback
                 break
 
-            # Text was streamed directly — done
-            if streamed_text:
-                reply_text = "".join(streamed_text)
-                # If post-tool response is junk, replace with fallback
-                if buffer_mode and reply_text.strip() in ("{}", "[]", "{{}}"):
-                    logger.warning("[stream] iter %d: junk response '%s', using fallback", i, reply_text.strip())
-                    reply_text = self._fallback_reply(tool_results)
-                    yield json.dumps({"type": "token", "content": reply_text}) + "\n"
-                elif buffer_mode:
-                    # Buffered text is valid — flush it now
-                    yield json.dumps({"type": "token", "content": reply_text}) + "\n"
-                logger.info("[stream] iter %d: text streamed, %d chars in %.1fms",
-                            i, sum(len(c) for c in streamed_text), (_time.monotonic() - t_llm) * 1000)
-                break
-
+            # Tool calls take priority over streamed text — Haiku sometimes emits both
             if tool_calls_found:
                 # Execute all tool calls in parallel
                 parsed_calls = []
@@ -2067,8 +2053,25 @@ class ToolCallingService:
                     }
                     messages.append(tool_msg)
                     new_turns.append(tool_msg)
+                # Discard any partial text emitted alongside tool calls
+                streamed_text.clear()
                 # Next iteration streams the response with tool results in context
                 continue
+
+            # Text was streamed directly — done
+            if streamed_text:
+                reply_text = "".join(streamed_text)
+                # If post-tool response is junk, replace with fallback
+                if buffer_mode and reply_text.strip() in ("{}", "[]", "{{}}"):
+                    logger.warning("[stream] iter %d: junk response '%s', using fallback", i, reply_text.strip())
+                    reply_text = self._fallback_reply(tool_results)
+                    yield json.dumps({"type": "token", "content": reply_text}) + "\n"
+                elif buffer_mode:
+                    # Buffered text is valid — flush it now
+                    yield json.dumps({"type": "token", "content": reply_text}) + "\n"
+                logger.info("[stream] iter %d: text streamed, %d chars in %.1fms",
+                            i, sum(len(c) for c in streamed_text), (_time.monotonic() - t_llm) * 1000)
+                break
 
             # Neither text nor tools — break
             break
