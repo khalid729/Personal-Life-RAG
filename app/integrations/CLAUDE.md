@@ -13,7 +13,7 @@
 - **No confirmation flow** — tools execute directly
 - **Multi-user**: `_load_tg_users()` reads `data/users.json` seed file (not API). Filters by `settings.tg_chat_id` for per-bot isolation
 - **Two bot instances**: `rag-telegram` (Khalid) + `rag-telegram-rawabi` (Rawabi, `.env.rawabi` overrides)
-- All scheduler jobs iterate `_tg_user_cache.items()` with per-user API keys
+- All scheduler jobs iterate `_tg_user_cache.items()` with per-user API keys + `nickname` for gender-aware formatting
 - Commands: `/help`, `/chat`, `/finance`, `/reminders`, `/projects`, `/tasks`, `/inventory`, `/focus`, `/sprint`, `/backup`, `/graph`
 - Scheduled: morning (7AM), noon (1PM), evening (9PM), reminders (30min), HA automations (1min), smart alerts (6h)
 - **Persistent nag loop**: `job_check_reminders()` — after mark-notified, persistent reminders call `/proactive/reschedule-persistent` to auto-reschedule for next nag cycle

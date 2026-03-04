@@ -52,7 +52,7 @@ These are the essential constraints — violating any of them causes bugs.
 
 ### LLM Backend Split
 - **Claude**: `chat_with_tools`, `stream_with_tool_detection`, `classify_file`, `analyze_image`
-- **vLLM (always)**: `extract_facts`, `enrich_chunk`, `translate_*`, `chat` (format-reminders)
+- **vLLM (always)**: `extract_facts`, `enrich_chunk`, `translate_*`, `chat` (format-reminders — needs `user_name` for gender-aware output)
 - **Fallback**: Claude → vLLM on failure. Streaming fallback only if no tokens yielded
 - **Per-user Claude key**: `_get_anthropic_client()` reads `_current_anthropic_key` context var
 
@@ -112,6 +112,7 @@ These are the essential constraints — violating any of them causes bugs.
 | Expense cascade | `tool_calling.py` (`_cascade_expense_update`), `graph.py` |
 | Cross-user msg not sent | `tool_calling.py` (`_handle_send_to_user`, `_resolve_target_user`) |
 | Cross-user reminder wrong graph | `tool_calling.py` (`_handle_create_reminder`, target_user) |
+| Proactive msg wrong gender/name | `proactive.py` (`format_reminders` `user_name`), `telegram_bot.py` (`nickname` in cache) |
 | HA device not found | `homeassistant.py` (`resolve_entity`), `tool_calling.py` (`_handle_control_device`) |
 | HA action not executing | `homeassistant.py` (`call_service`), `telegram_bot.py` (`job_check_ha_reminders`), `proactive.py` (`due-ha-automations`) |
 | HA automation in reminders | `tool_calling.py` (`is_ha_automation` flag), `graph.py` (`query_reminders` filter) |

@@ -17,7 +17,7 @@
 | knowledge | `/knowledge` | GET / |
 | inventory | `/inventory` | GET /, POST /item, PUT /item/{name}/location, GET /unused, /report, /duplicates |
 | productivity | `/productivity` | Sprints CRUD, focus sessions, time-blocking |
-| proactive | `/proactive` | Morning/noon/evening summaries, smart alerts, reschedule-persistent, due-ha-automations |
+| proactive | `/proactive` | Morning/noon/evening summaries, smart alerts, reschedule-persistent, due-ha-automations, format-reminders (gender-aware via `user_name`) |
 | backup | `/backup` | POST /create, GET /list, POST /restore/{timestamp} |
 | graph_viz | `/graph` | GET /export, /schema, /stats, POST /image |
 | homeassistant | `/ha` | GET /states, GET /states/{id}, POST /services/{d}/{s}, GET/POST/DELETE /names, POST /webhook |
