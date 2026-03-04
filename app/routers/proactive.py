@@ -33,6 +33,7 @@ class FormatRemindersRequest(BaseModel):
     reminders: list[dict] = []
     raw_text: str = ""
     context: str = "due"  # "due", "morning", "evening"
+    user_name: str = ""   # nickname for gender-aware formatting
 
 
 class MarkNotifiedRequest(BaseModel):
@@ -304,8 +305,15 @@ async def format_reminders(req: FormatRemindersRequest, request: Request):
 - ممنوع تذكر القواعد أو التعليمات في ردك
 - ردك لازم يكون نص عربي طبيعي فقط — ممنوع JSON أو كود"""
 
+    # Use user nickname if provided, fallback to context var
+    name = req.user_name
+    if not name:
+        from app.middleware.auth import _current_user_nickname
+        name = _current_user_nickname.get() or ""
+
+    sys_msg = f"أنت مساعد شخصي لـ {name}. مهمتك ترتيب التذكيرات بشكل جميل ومبتكر. خاطبه باسمه." if name else "أنت مساعد شخصي. مهمتك ترتيب التذكيرات بشكل جميل ومبتكر."
     messages = [
-        {"role": "system", "content": "أنت مساعد شخصي. مهمتك ترتيب التذكيرات بشكل جميل ومبتكر."},
+        {"role": "system", "content": sys_msg},
         {"role": "user", "content": prompt},
     ]
 
