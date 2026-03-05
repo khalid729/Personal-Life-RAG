@@ -15,6 +15,25 @@ from app.middleware.auth import _current_redis_prefix
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+
+def _normalize_ar(text: str) -> str:
+    """Normalize Arabic text for fuzzy matching.
+
+    Treats ة=ه, أ=إ=آ=ا, ى=ي, removes tashkeel.
+    """
+    t = text.lower().strip()
+    # Tashkeel removal (diacritics)
+    for c in "\u064B\u064C\u064D\u064E\u064F\u0650\u0651\u0652":
+        t = t.replace(c, "")
+    # Normalize alef variants
+    for c in "أإآ":
+        t = t.replace(c, "ا")
+    # taa marbuta ↔ haa
+    t = t.replace("ة", "ه")
+    # alef maqsura → yaa
+    t = t.replace("ى", "ي")
+    return t
+
 # Domain → HA service mapping for common actions
 _DOMAIN_ACTIONS = {
     "light": ["turn_on", "turn_off", "toggle"],
@@ -149,39 +168,40 @@ class HomeAssistantService:
 
         # 3. Fuzzy match on friendly_name from cached states
         states = await self.get_states()
-        name_lower = name.lower().strip()
+        name_norm = _normalize_ar(name)
 
-        # Exact match first
+        # Exact match first (normalized)
         for s in states:
-            fn = (s.get("attributes", {}).get("friendly_name") or "").lower()
-            if fn == name_lower:
+            fn = _normalize_ar(s.get("attributes", {}).get("friendly_name") or "")
+            if fn == name_norm:
                 return s["entity_id"]
 
         # Strip common Arabic prefixes (ال, اللمبه, النور, جهاز, نور, لمبة)
-        _STRIP_PREFIXES = ["اللمبه ", "اللمبة ", "النور ", "نور ", "لمبة ", "لمبه ", "جهاز "]
-        stripped = name_lower
+        _STRIP_PREFIXES = ["اللمبه ", "اللمبة ", "النور ", "نور ", "لمبة ", "لمبه ", "جهاز ", "مفتاح "]
+        stripped = name_norm
         for p in _STRIP_PREFIXES:
-            if stripped.startswith(p):
-                stripped = stripped[len(p):]
+            p_norm = _normalize_ar(p)
+            if stripped.startswith(p_norm):
+                stripped = stripped[len(p_norm):]
                 break
 
         # Substring match (both directions) + stripped query
         matches: list[tuple[int, dict]] = []  # (score, state)
-        query_words = set(name_lower.split())
+        query_words = set(name_norm.split())
 
         for s in states:
-            fn = (s.get("attributes", {}).get("friendly_name") or "").lower()
+            fn = _normalize_ar(s.get("attributes", {}).get("friendly_name") or "")
             eid = s.get("entity_id", "")
             if not fn:
                 continue
 
             # Query in friendly_name (e.g., "المطبخ" in "نور المطبخ")
-            if name_lower in fn:
+            if name_norm in fn:
                 matches.append((3, s))
                 continue
 
             # Friendly_name in query (e.g., "يمين" in "اللمبه يمين")
-            if fn in name_lower:
+            if fn in name_norm:
                 matches.append((2, s))
                 continue
 
@@ -198,14 +218,37 @@ class HomeAssistantService:
                 continue
 
             # entity_id match
-            if name_lower in eid.lower() or stripped in eid.lower():
+            if name_norm in eid.lower() or stripped in eid.lower():
                 matches.append((1, s))
 
         if not matches:
             return None
 
-        # Sort by score desc, then shorter friendly_name (more specific)
-        matches.sort(key=lambda m: (-m[0], len(m[1].get("attributes", {}).get("friendly_name", ""))))
+        # Domain preference based on query keywords (all normalized)
+        # Maps keyword → set of preferred domains (light/switch are interchangeable for lighting)
+        _DOMAIN_HINTS: list[tuple[list[str], set[str]]] = [
+            (["لمبه", "نور", "اضاءه"], {"light", "switch"}),
+            (["مفتاح", "سويتش"], {"switch", "light"}),
+            (["مكيف", "تكييف", "حراره"], {"climate"}),
+            (["ستاره", "ستائر"], {"cover"}),
+            (["سبيكر", "مكبر", "ميديا", "تلفزيون", "شاشه"], {"media_player"}),
+        ]
+        preferred_domains: set[str] = set()
+        for keywords, domains in _DOMAIN_HINTS:
+            if any(_normalize_ar(kw) in name_norm for kw in keywords):
+                preferred_domains = domains
+                break
+
+        def _sort_key(m):
+            score, state = m
+            eid = state.get("entity_id", "")
+            fn_len = len(state.get("attributes", {}).get("friendly_name", ""))
+            # Bonus for matching preferred domain
+            domain = eid.split(".")[0] if "." in eid else ""
+            domain_bonus = 1 if preferred_domains and domain in preferred_domains else 0
+            return (-score, -domain_bonus, fn_len)
+
+        matches.sort(key=_sort_key)
         return matches[0][1]["entity_id"]
 
     # ------------------------------------------------------------------

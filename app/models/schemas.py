@@ -18,6 +18,7 @@ class UserContext:
     nickname: str = ""
     gender: str = "male"
     anthropic_api_key: str = ""
+    anthropic_model: str = ""
     telegram_bot_token: str = ""
 
 
@@ -29,6 +30,7 @@ class UserProfile(BaseModel):
     nickname: str = ""
     gender: str = "male"
     anthropic_api_key: str = ""
+    anthropic_model: str = ""
     graph_name: str = ""
     collection_name: str = ""
     redis_prefix: str = ""

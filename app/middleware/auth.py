@@ -38,6 +38,9 @@ _current_user_gender: contextvars.ContextVar[str] = contextvars.ContextVar(
 _current_anthropic_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "_current_anthropic_key", default="",
 )
+_current_anthropic_model: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_current_anthropic_model", default="",
+)
 
 # Paths that skip auth entirely
 _SKIP_AUTH_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
@@ -74,6 +77,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         n_token = _current_user_nickname.set(ctx.nickname)
         gn_token = _current_user_gender.set(ctx.gender)
         ak_token = _current_anthropic_key.set(ctx.anthropic_api_key)
+        am_token = _current_anthropic_model.set(ctx.anthropic_model)
         try:
             return await call_next(request)
         finally:
@@ -83,6 +87,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             _current_user_nickname.reset(n_token)
             _current_user_gender.reset(gn_token)
             _current_anthropic_key.reset(ak_token)
+            _current_anthropic_model.reset(am_token)
 
     def _resolve_user(self, request: Request) -> UserContext:
         """Resolve user from API key or return default."""
@@ -111,5 +116,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
             nickname=profile.nickname,
             gender=profile.gender,
             anthropic_api_key=profile.anthropic_api_key,
+            anthropic_model=profile.anthropic_model,
             telegram_bot_token=profile.telegram_bot_token,
         )

@@ -835,7 +835,7 @@ class GraphService:
         MATCH (r:Reminder)
         WHERE toLower(r.title) = toLower($title)
           AND r.status IN ['pending', 'snoozed']
-        SET r.updated_at = $now{sets}
+        SET r.updated_at = $now, r.notified_at = NULL{sets}
         RETURN r.title
         """
         params = {"title": title, "now": _now(), **extra}

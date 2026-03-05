@@ -48,6 +48,7 @@ class UserRegistry:
                         nickname=info.get("nickname", ""),
                         gender=info.get("gender", "male"),
                         anthropic_api_key=info.get("anthropic_api_key", ""),
+                        anthropic_model=info.get("anthropic_model", ""),
                         graph_name=info.get("graph_name", settings.falkordb_graph_name),
                         collection_name=info.get("collection_name", settings.qdrant_collection),
                         redis_prefix=info.get("redis_prefix", ""),

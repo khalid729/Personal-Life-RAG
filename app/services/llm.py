@@ -64,6 +64,12 @@ class LLMService:
             return self._anthropic_clients[key]
         return self._anthropic_client  # default from settings
 
+    def _get_anthropic_model(self) -> str:
+        """Return per-user model (from context var) or default from settings."""
+        from app.middleware.auth import _current_anthropic_model
+        model = _current_anthropic_model.get()
+        return model or settings.anthropic_model
+
     async def stop(self):
         if self._vllm_client:
             await self._vllm_client.aclose()
@@ -149,7 +155,7 @@ class LLMService:
         """Send an image + text prompt to Claude Vision API."""
         client = self._get_anthropic_client()
         response = await client.messages.create(
-            model=settings.anthropic_model,
+            model=self._get_anthropic_model(),
             system=[{
                 "type": "text",
                 "text": system_text,
@@ -474,7 +480,7 @@ class LLMService:
 
         client = self._get_anthropic_client()
         response = await client.messages.create(
-            model=settings.anthropic_model,
+            model=self._get_anthropic_model(),
             system=system_content,
             messages=anthropic_messages,
             tools=anthropic_tools,
@@ -618,7 +624,7 @@ class LLMService:
         client = self._get_anthropic_client()
 
         async with client.messages.stream(
-            model=settings.anthropic_model,
+            model=self._get_anthropic_model(),
             system=system_content,
             messages=anthropic_messages,
             tools=anthropic_tools,
