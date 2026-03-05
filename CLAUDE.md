@@ -55,6 +55,7 @@ These are the essential constraints — violating any of them causes bugs.
 - **vLLM (always)**: `extract_facts`, `enrich_chunk`, `translate_*`, `chat` (format-reminders — needs `user_name` for gender-aware output)
 - **Fallback**: Claude → vLLM on failure. Streaming fallback only if no tokens yielded
 - **Per-user Claude key**: `_get_anthropic_client()` reads `_current_anthropic_key` context var
+- **Per-user Claude model**: `_get_anthropic_model()` reads `_current_anthropic_model` context var (e.g., Khalid→Haiku, Rawabi→Sonnet)
 
 ### Prompts
 - **MUST include current date/time (UTC+3)** in system + extract prompts
@@ -63,7 +64,7 @@ These are the essential constraints — violating any of them causes bugs.
 - **Gender-aware**: `build_tool_system_prompt(user_name=, is_female=)` — `_FEMALE_REPLACEMENTS` for female users
 
 ### Multi-Tenancy
-- **6 context vars** in `auth.py`: `_current_graph_name`, `_current_collection`, `_current_redis_prefix`, `_current_user_nickname`, `_current_user_gender`, `_current_anthropic_key`
+- **7 context vars** in `auth.py`: `_current_graph_name`, `_current_collection`, `_current_redis_prefix`, `_current_user_nickname`, `_current_user_gender`, `_current_anthropic_key`, `_current_anthropic_model`
 - `asyncio.create_task` inherits context — background tasks are correctly scoped
 - `_resolution_cache` keyed by `(graph_name, name, type)` to prevent cross-user leaks
 - Users: Khalid (أبو إبراهيم, `personal_life`) + Rawabi (أم سليمان, `personal_life_rawabi`)
@@ -80,10 +81,13 @@ These are the essential constraints — violating any of them causes bugs.
 - **`due_date + time` must be merged**: LLM sends separate fields, FalkorDB uses string comparison → date-only fires at midnight. Fix: `_handle_create_reminder` merges → `"2026-03-02T20:00"`
 - Snooze keeps `status='pending'` (old `'snoozed'` status was a bug — dropped from query)
 - Persistent + recurring: persistent priority in `job_check_reminders`, on "done" → `advance_recurring_reminder`
+- **`create_reminder` clears `notified_at`**: when reusing an existing pending reminder, `notified_at=NULL` ensures it fires again
 - **HA automations are NOT reminders**: `is_ha_automation=true` flag on Reminder nodes with `ha_entity_id`+`ha_action` — excluded from all reminder queries, daily plan, summaries, search
 
 ### Home Assistant (Phase 26)
 - **Entity resolution**: always resolve via `ha.resolve_entity()` — LLM may hallucinate entity_ids like `light.left`
+- **Arabic normalization**: `_normalize_ar()` treats ة=ه, أ/إ/آ=ا, ى=ي — fixes "غرفة نومي" matching "غرفه نومي"
+- **Domain-aware matching**: query keywords (لمبة→light/switch, مكيف→climate) prevent wrong domain matches
 - **`ha_entity_id` must be Arabic name**: tool description + prompt instruct LLM to send Arabic device name, not English entity_id
 - **HA automations separate from reminders**: `is_ha_automation=true` on Reminder node → filtered from `query_reminders`, `query_daily_plan`, `due-reminders`, `noon-checkin`, `evening-summary`, `search_reminders`
 - **Streaming fix**: tool calls take priority over streamed text — Haiku emits both simultaneously, tools must execute first
@@ -114,7 +118,8 @@ These are the essential constraints — violating any of them causes bugs.
 | Cross-user reminder wrong graph | `tool_calling.py` (`_handle_create_reminder`, target_user) |
 | Proactive msg wrong gender/name | `proactive.py` (`format_reminders` `user_name`), `telegram_bot.py` (`nickname` in cache) |
 | HA device not found | `homeassistant.py` (`resolve_entity`), `tool_calling.py` (`_handle_control_device`) |
-| HA action not executing | `homeassistant.py` (`call_service`), `telegram_bot.py` (`job_check_ha_reminders`), `proactive.py` (`due-ha-automations`) |
+| HA action not executing | `homeassistant.py` (`call_service`), `telegram_bot.py` (`job_check_ha_reminders`), `proactive.py` (`due-ha-automations`), `graph.py` (`create_reminder` notified_at reset) |
+| HA resolves wrong device | `homeassistant.py` (`_normalize_ar`, domain hints in `resolve_entity`) |
 | HA automation in reminders | `tool_calling.py` (`is_ha_automation` flag), `graph.py` (`query_reminders` filter) |
 | Stream skips tool calls | `tool_calling.py` (`chat_stream` — tool_calls_found must precede streamed_text check) |
 | HA webhook not notifying | `routers/homeassistant.py` (`ha_webhook`), Telegram bot token |

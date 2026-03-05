@@ -6,7 +6,7 @@
 
 | Service | File | Backend |
 |---------|------|---------|
-| LLMService | llm.py | Claude API (chat/tools + vision, per-user key) + vLLM :8000 (extraction/fallback) |
+| LLMService | llm.py | Claude API (chat/tools + vision, per-user key + model) + vLLM :8000 (extraction/fallback) |
 | GraphService | graph.py (110KB) | FalkorDB :6379 |
 | VectorService | vector.py | Qdrant :6333 + BGE-M3 GPU |
 | MemoryService | memory.py | Redis :6380 (3 layers) |
@@ -60,6 +60,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 - `update_expense()` / `delete_expense()`: find by desc/vendor/file_hash, update/delete with old data returned
 - **Place CRUD** (Phase 24): `create_place()`, `update_place()`, `delete_place()`, `query_places()`, `get_place_by_name()`, `query_location_reminders()`
 - **HA Automations** (Phase 26): `query_ha_automations(status)` lists scheduled HA commands; `cancel_ha_automation(title)` marks done; `query_reminders()` and `query_daily_plan()` filter out `is_ha_automation=true`
+- **`create_reminder` notified_at reset**: when reusing existing pending reminder (same title), clears `notified_at=NULL` so it fires again — prevents HA automations from being silently skipped
 
 ### FalkorDB Rules
 - `GRAPH.CONSTRAINT CREATE` (not Cypher)
@@ -144,7 +145,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 
 - Async httpx client for HA REST API (`/api/states`, `/api/services/{domain}/{service}`)
 - **State caching**: Redis key `ha:states` with TTL `ha_cache_ttl` (30s); invalidated on `call_service()`
-- **Entity resolution** (`resolve_entity(name)`): (1) direct entity_id check, (2) custom Arabic nickname from Redis, (3) fuzzy match on HA `friendly_name` (exact → substring with Arabic prefix stripping → word-level → entity_id match; score-ranked, shorter name wins ties). **Always called** even for dotted names — LLM hallucinates entity_ids
+- **Entity resolution** (`resolve_entity(name)`): (1) direct entity_id check, (2) custom Arabic nickname from Redis, (3) fuzzy match on HA `friendly_name` with `_normalize_ar()` (ة=ه, أ/إ/آ=ا, ى=ي). Matching: exact → substring with Arabic prefix stripping → word-level → entity_id; domain-aware scoring (لمبة→light/switch, مكيف→climate). **Always called** even for dotted names — LLM hallucinates entity_ids
 - **Custom Arabic names**: per-user Redis hash `{prefix}ha:names` — HSET/HGET/HDEL
 - **Multi-tenant**: HA URL/token shared (single HA instance); custom names separated by `_current_redis_prefix`
 - `format_state_summary(state)`: domain-specific display (climate: temp+mode, media: title, sensor: unit)
