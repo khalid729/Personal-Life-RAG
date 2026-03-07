@@ -86,6 +86,7 @@ async def _load_tg_users() -> None:
                     "tg_chat_id": tg_id,
                     "display_name": info.get("display_name", ""),
                     "nickname": info.get("nickname", ""),
+                    "gender": info.get("gender", "male"),
                 }
             logger.info("Loaded %d Telegram users from seed file", len(_tg_user_cache))
         except Exception as e:
@@ -1199,7 +1200,7 @@ async def job_morning_summary(bot: Bot):
                 try:
                     fmt = await api_post(
                         "/proactive/format-reminders",
-                        json={"raw_text": plan, "context": "morning", "user_name": user.get("nickname", "")},
+                        json={"raw_text": plan, "context": "morning", "user_name": user.get("nickname", ""), "is_female": user.get("gender") == "female"},
                         api_key=ak,
                     )
                     text = fmt.get("formatted", "")
@@ -1231,7 +1232,7 @@ async def job_noon_checkin(bot: Bot):
             try:
                 fmt = await api_post(
                     "/proactive/format-reminders",
-                    json={"reminders": overdue, "context": "noon", "user_name": user.get("nickname", "")},
+                    json={"reminders": overdue, "context": "noon", "user_name": user.get("nickname", ""), "is_female": user.get("gender") == "female"},
                     api_key=ak,
                 )
                 text = fmt.get("formatted", "")
@@ -1268,7 +1269,7 @@ async def job_evening_summary(bot: Bot):
             try:
                 fmt = await api_post(
                     "/proactive/format-reminders",
-                    json={"raw_text": raw, "context": "evening", "user_name": user.get("nickname", "")},
+                    json={"raw_text": raw, "context": "evening", "user_name": user.get("nickname", ""), "is_female": user.get("gender") == "female"},
                     api_key=ak,
                 )
                 text = fmt.get("formatted", "")
@@ -1295,7 +1296,7 @@ async def job_check_reminders(bot: Bot):
             try:
                 fmt = await api_post(
                     "/proactive/format-reminders",
-                    json={"reminders": reminders, "context": "due", "user_name": user.get("nickname", "")},
+                    json={"reminders": reminders, "context": "due", "user_name": user.get("nickname", ""), "is_female": user.get("gender") == "female"},
                     api_key=ak,
                 )
                 text = fmt.get("formatted", "")

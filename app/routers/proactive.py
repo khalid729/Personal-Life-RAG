@@ -34,6 +34,7 @@ class FormatRemindersRequest(BaseModel):
     raw_text: str = ""
     context: str = "due"  # "due", "morning", "evening"
     user_name: str = ""   # nickname for gender-aware formatting
+    is_female: bool = False
 
 
 class MarkNotifiedRequest(BaseModel):
@@ -311,7 +312,12 @@ async def format_reminders(req: FormatRemindersRequest, request: Request):
         from app.middleware.auth import _current_user_nickname
         name = _current_user_nickname.get() or ""
 
-    sys_msg = f"أنت مساعد شخصي لـ {name}. مهمتك ترتيب التذكيرات بشكل جميل ومبتكر. خاطبه باسمه." if name else "أنت مساعد شخصي. مهمتك ترتيب التذكيرات بشكل جميل ومبتكر."
+    if name:
+        title = f"عمتي {name}" if req.is_female else name
+        addr = f"خاطبها بـ «عمتي {name}» احتراماً." if req.is_female else f"خاطبه بلقبه الكامل «{name}»."
+        sys_msg = f"أنت مساعد شخصي لـ {title}. مهمتك ترتيب التذكيرات بشكل جميل ومبتكر. {addr} ممنوع تختصر اللقب أو تستخدم اسم ثاني."
+    else:
+        sys_msg = "أنت مساعد شخصي. مهمتك ترتيب التذكيرات بشكل جميل ومبتكر."
     messages = [
         {"role": "system", "content": sys_msg},
         {"role": "user", "content": prompt},
