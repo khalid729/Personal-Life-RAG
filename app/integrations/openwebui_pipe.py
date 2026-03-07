@@ -164,19 +164,40 @@ class Pipe:
     ) -> Generator:
         """Process files while yielding progress tokens, then stream chat response."""
         import sys
+        import threading
 
         yield "جاري معالجة الملف"
 
         clean_text = self._strip_owui_rag_context(user_text)
-        file_context = self._process_files(
-            body, last_msg, clean_text, owui_files, metadata, user,
-            session_id=session_id,
-        )
 
+        # Process files in a thread so we can yield keepalive dots
+        result = {"context": None, "done": False}
+
+        def _do_process():
+            try:
+                result["context"] = self._process_files(
+                    body, last_msg, clean_text, owui_files, metadata, user,
+                    session_id=session_id,
+                )
+            except Exception as e:
+                print(f"[PIPE] file processing error: {e}", file=sys.stderr)
+            result["done"] = True
+
+        t = threading.Thread(target=_do_process, daemon=True)
+        t.start()
+
+        # Yield keepalive dots every 3 seconds while processing
+        import time
+        while not result["done"]:
+            time.sleep(3)
+            if not result["done"]:
+                yield " ."
+
+        file_context = result["context"]
         final_text = (clean_text + "\n\n" + file_context) if file_context else clean_text
         payload = {"message": final_text, "session_id": session_id}
 
-        yield "...\n\n"
+        yield "\n\n"
 
         # Now stream the chat response
         url = self.valves.api_url.rstrip("/")
