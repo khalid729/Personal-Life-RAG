@@ -50,6 +50,8 @@ class Pipe:
     def __init__(self):
         self.valves = self.Valves()
         self._ingested_files: set = set()  # track already-ingested file IDs
+        self._pending_files: list = []     # files from non-streaming response (for streaming fallback)
+        self._pending_files_ts: float = 0  # timestamp of pending files
 
     # ========================
     # ENTRY POINT
@@ -222,6 +224,21 @@ class Pipe:
                         if etype == "token":
                             yield event.get("content", "")
                         elif etype == "done":
+                            # Yield file download links if retrieve_file returned files
+                            files = event.get("files", [])
+                            if not files:
+                                import time
+                                if self._pending_files and (time.time() - self._pending_files_ts) < 30:
+                                    files = self._pending_files
+                                    self._pending_files = []
+                            if files:
+                                dl_url = url.replace("host.docker.internal", "192.168.68.62")
+                                yield "\n\n📎 **الملفات:**\n"
+                                for f in files:
+                                    fname = f.get("filename", "file")
+                                    fhash = f.get("file_hash", "") or f.get("hash", "")
+                                    if fhash:
+                                        yield f"\n📄 [{fname}]({dl_url}/ingest/file/{fhash})"
                             break
                     except Exception:
                         continue
@@ -271,6 +288,23 @@ class Pipe:
                         # Flush any buffered content that never reached 2 chars
                         if first_chunk and buffer:
                             yield buffer
+                        # Yield file download links if retrieve_file returned files
+                        files = data.get("files", [])
+                        if not files:
+                            # Fallback: check pending files from non-streaming call
+                            # (OWUI calls pipe twice: stream=False then stream=True)
+                            import time
+                            if self._pending_files and (time.time() - self._pending_files_ts) < 30:
+                                files = self._pending_files
+                                self._pending_files = []
+                        if files:
+                            dl_url = url.replace("host.docker.internal", "192.168.68.62")
+                            yield "\n\n📎 **الملفات:**\n"
+                            for f in files:
+                                fname = f.get("filename", "file")
+                                fhash = f.get("file_hash", "") or f.get("hash", "")
+                                if fhash:
+                                    yield f"\n📄 [{fname}]({dl_url}/ingest/file/{fhash})"
                         break
         except requests.exceptions.ConnectionError:
             yield "خطأ: لا يمكن الاتصال بالـ API. تأكد من تشغيل الخادم."
@@ -341,13 +375,43 @@ class Pipe:
             resp = requests.post(f"{url}/chat/v2", json=payload, timeout=120)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("reply", "لا توجد إجابة.")
+            reply = data.get("reply", "لا توجد إجابة.")
+
+            # Extract files from retrieve_file tool calls
+            files = self._extract_retrieve_files(data.get("tool_calls", []))
+            if files:
+                import time
+                # Save for streaming fallback (OWUI may call pipe again with stream=True)
+                self._pending_files = files
+                self._pending_files_ts = time.time()
+                # Append download links to reply text
+                dl_url = url.replace("host.docker.internal", "192.168.68.62")
+                reply += "\n\n📎 **الملفات:**\n"
+                for f in files:
+                    fhash = f["file_hash"]
+                    fname = f["filename"]
+                    reply += f"\n📄 [{fname}]({dl_url}/ingest/file/{fhash})"
+
+            return reply
         except requests.exceptions.ConnectionError:
             return "خطأ: لا يمكن الاتصال بالـ API. تأكد من تشغيل الخادم."
         except requests.exceptions.Timeout:
             return "خطأ: انتهت مهلة الاتصال."
         except Exception as e:
             return f"خطأ: {str(e)}"
+
+    def _extract_retrieve_files(self, tool_calls: list) -> list:
+        """Extract file info from retrieve_file tool call results."""
+        files = []
+        for tc in tool_calls:
+            if tc.get("tool") == "retrieve_file" and tc.get("success"):
+                tc_data = tc.get("data", {})
+                if isinstance(tc_data, dict):
+                    fhash = tc_data.get("file_hash", "")
+                    fname = tc_data.get("filename", "file")
+                    if fhash:
+                        files.append({"file_hash": fhash, "filename": fname})
+        return files
 
     # ========================
     # FILE PROCESSING
