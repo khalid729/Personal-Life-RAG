@@ -6,7 +6,7 @@ Arabic-first personal knowledge management: agentic RAG + knowledge graph + mult
 
 ```
 FastAPI :8500 → Claude API (chat/tool-calling + vision)
-               → vLLM :8000 (extraction/enrichment/translation)
+               → vLLM :8000 Qwen3.5-35B-A3B MoE (extraction/enrichment/translation)
                → FalkorDB :6379 (knowledge graph)
                → Qdrant :6333 (BGE-M3, 1024-dim)
                → Redis :6380 (3-layer memory)
@@ -52,7 +52,8 @@ These are the essential constraints — violating any of them causes bugs.
 
 ### LLM Backend Split
 - **Claude**: `chat_with_tools`, `stream_with_tool_detection`, `classify_file`, `analyze_image`
-- **vLLM (always)**: `extract_facts`, `enrich_chunk`, `translate_*`, `chat` (format-reminders — needs `user_name` for gender-aware output)
+- **vLLM (always)**: `extract_facts`, `enrich_chunk`, `translate_*`, `chat` (format-reminders — needs `user_name` + `is_female` for gender-aware output)
+- **vLLM model**: Qwen3.5-35B-A3B (MoE, 3B active params, vision built-in) — `--enforce-eager` required (CUDA graph bug with Gated DeltaNet)
 - **Fallback**: Claude → vLLM on failure. Streaming fallback only if no tokens yielded
 - **Per-user Claude key**: `_get_anthropic_client()` reads `_current_anthropic_key` context var
 - **Per-user Claude model**: `_get_anthropic_model()` reads `_current_anthropic_model` context var (e.g., Khalid→Haiku, Rawabi→Sonnet)
@@ -95,7 +96,7 @@ These are the essential constraints — violating any of them causes bugs.
 ### Config
 - `.env` overrides `config.py` — always check `.env` first
 - `datetime.utcnow()` deprecated → `datetime.now(timezone(timedelta(hours=3)))`
-- Qwen3: needs `enable_thinking: False` (handled in `llm.py`)
+- Qwen3/3.5: needs `enable_thinking: False` (handled in `llm.py` — `"Qwen3" in model` matches both)
 - Server restart required after `.env` changes
 
 ## Problem → Where to Look
@@ -116,7 +117,7 @@ These are the essential constraints — violating any of them causes bugs.
 | Expense cascade | `tool_calling.py` (`_cascade_expense_update`), `graph.py` |
 | Cross-user msg not sent | `tool_calling.py` (`_handle_send_to_user`, `_resolve_target_user`) |
 | Cross-user reminder wrong graph | `tool_calling.py` (`_handle_create_reminder`, target_user) |
-| Proactive msg wrong gender/name | `proactive.py` (`format_reminders` `user_name`), `telegram_bot.py` (`nickname` in cache) |
+| Proactive msg wrong gender/name | `proactive.py` (`format_reminders` `user_name` + `is_female`), `telegram_bot.py` (`nickname` + `gender` in cache) |
 | HA device not found | `homeassistant.py` (`resolve_entity`), `tool_calling.py` (`_handle_control_device`) |
 | HA action not executing | `homeassistant.py` (`call_service`), `telegram_bot.py` (`job_check_ha_reminders`), `proactive.py` (`due-ha-automations`), `graph.py` (`create_reminder` notified_at reset) |
 | HA resolves wrong device | `homeassistant.py` (`_normalize_ar`, domain hints in `resolve_entity`) |
