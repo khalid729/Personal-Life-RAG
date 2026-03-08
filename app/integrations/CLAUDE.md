@@ -7,7 +7,8 @@
 - aiogram 3.x + APScheduler
 - **Text**: streams via `/chat/v2/stream`, fallback to `/chat/v2` non-streaming
 - **Reply context**: when user replies to a message, quoted text (first 200 chars) is prepended as `[رد على: "..."]` — enables updating a reminder by quoting its notification and replying "أجله لبكرة"
-- **Voice/Photos/Files**: processed via `/ingest/file`, then result injected into chat
+- **Voice**: processed via `/ingest/file` → Deepgram Nova-3 (`ar-SA`) → transcript sent to `/chat/v2/stream` with streaming response. Passes `api_key` for multi-tenancy.
+- **Photos/Files**: processed via `/ingest/file`, then result injected into chat
 - **Image analysis summary**: uses `/chat/v2`
 - **File delivery**: `retrieve_file` tool → `done` NDJSON includes `files` array → bot downloads via `GET /ingest/file/{hash}` → sends as photo (jpg/png) or document (PDF/other)
 - **No confirmation flow** — tools execute directly

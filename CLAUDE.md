@@ -7,6 +7,7 @@ Arabic-first personal knowledge management: agentic RAG + knowledge graph + mult
 ```
 FastAPI :8500 → Claude API (chat/tool-calling + vision)
                → vLLM :8000 Qwen3.5-35B-A3B MoE (extraction/enrichment/translation)
+               → Deepgram API (Nova-3 Arabic STT, ar-SA dialect)
                → FalkorDB :6379 (knowledge graph)
                → Qdrant :6333 (BGE-M3, 1024-dim)
                → Redis :6380 (3-layer memory)
@@ -108,6 +109,7 @@ These are the essential constraints — violating any of them causes bugs.
 | Reminder timing wrong | `tool_calling.py` (`_handle_create_reminder`), `proactive.py` |
 | Search returns nothing | `graph.py` (`search_nodes`), `vector.py`, `tool_calling.py` |
 | File upload fails | `files.py`, `retrieval.py`, `graph.py` (`ensure_file_stub`) |
+| Voice transcription fails | `files.py` (`_transcribe_deepgram`), check `DEEPGRAM_API_KEY` in `.env` |
 | Telegram bot silent | `telegram_bot.py` (`authorized`, `_load_tg_users`) |
 | Open WebUI garbage | `openwebui_pipe.py` (`_strip_owui_rag_context`) |
 | Claude API error | `llm.py` (`_get_anthropic_client`, `_convert_messages_to_anthropic`) |

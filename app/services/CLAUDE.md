@@ -100,7 +100,7 @@ LocationService(redis)                   # uses MemoryService's Redis connection
 
 - Image: classify → vision (Claude Vision with vLLM fallback) → `_analysis_to_text()` (uses `name_ar:` prefix for Arabic names) → prepend `user_context` → ingest. `user_context` (upload caption) stored on File node + embedded in Qdrant for future search
 - PDF: pymupdf4llm; if <200 chars → render pages → vision (Claude Vision with vLLM fallback)
-- Audio: WhisperX (lazy-loaded, GPU, Arabic)
+- Audio: **Deepgram Nova-3** API (`ar-SA` dialect, async httpx, no GPU); WhisperX as fallback when `deepgram_api_key` empty
 - Text: decode (utf-8/cp1256/latin-1) → ingest
 - **URL**: `process_url()` — GitHub URL parser + generic web fetch → strip HTML → ingest
   - GitHub: repo root → README (main/master fallback), blob → raw file, tree → subpath README
