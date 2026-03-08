@@ -44,12 +44,17 @@ class Settings(BaseSettings):
     file_storage_path: str = "data/files"
     max_file_size_mb: int = 50
 
-    # WhisperX
+    # WhisperX (legacy — replaced by Deepgram)
     whisperx_model: str = "large-v3"
     whisperx_compute_type: str = "float16"
     whisperx_batch_size: int = 8
     whisperx_language: str = "ar"
     whisperx_beam_size: int = 5
+
+    # Deepgram STT (Nova-3 Arabic)
+    deepgram_api_key: str = ""
+    deepgram_model: str = "nova-3"
+    deepgram_language: str = "ar-SA"
 
     # Agentic RAG
     agentic_max_retries: int = 1

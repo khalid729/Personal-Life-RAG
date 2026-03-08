@@ -637,26 +637,29 @@ class FileService:
         topic: str | None,
         steps: list[str],
     ) -> dict:
-        # Transcribe with WhisperX (serialized via lock, on-demand load)
-        async with self._whisper_lock:
-            loop = asyncio.get_event_loop()
-            try:
-                transcript = await loop.run_in_executor(
-                    None, self._transcribe_audio, file_path
-                )
-                steps.append(f"transcribed:{len(transcript)}chars")
-            except Exception as e:
-                logger.error("Audio transcription failed for %s: %s", filename, e)
-                return {
-                    "status": "error",
-                    "filename": filename,
-                    "file_type": "audio_recording",
-                    "file_hash": file_hash,
-                    "analysis": {"error": str(e)},
-                    "chunks_stored": 0,
-                    "facts_extracted": 0,
-                    "processing_steps": steps + [f"audio_error:{e}"],
-                }
+        try:
+            if settings.deepgram_api_key:
+                transcript = await self._transcribe_deepgram(file_path)
+                steps.append(f"deepgram:{len(transcript)}chars")
+            else:
+                async with self._whisper_lock:
+                    loop = asyncio.get_event_loop()
+                    transcript = await loop.run_in_executor(
+                        None, self._transcribe_whisperx, file_path
+                    )
+                    steps.append(f"whisperx:{len(transcript)}chars")
+        except Exception as e:
+            logger.error("Audio transcription failed for %s: %s", filename, e)
+            return {
+                "status": "error",
+                "filename": filename,
+                "file_type": "audio_recording",
+                "file_hash": file_hash,
+                "analysis": {"error": str(e)},
+                "chunks_stored": 0,
+                "facts_extracted": 0,
+                "processing_steps": steps + [f"audio_error:{e}"],
+            }
 
         if not transcript.strip():
             return {
@@ -690,13 +693,54 @@ class FileService:
             "processing_steps": steps,
         }
 
-    def _transcribe_audio(self, file_path: str) -> str:
-        """Load WhisperX on-demand, transcribe, then release GPU memory."""
+    async def _transcribe_deepgram(self, file_path: str) -> str:
+        """Transcribe audio via Deepgram Nova-3 API (no GPU needed)."""
+        import httpx
+
+        ext = Path(file_path).suffix.lower()
+        content_type_map = {
+            ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".wav": "audio/wav",
+            ".flac": "audio/flac", ".m4a": "audio/mp4", ".aac": "audio/aac",
+        }
+        content_type = content_type_map.get(ext, "audio/ogg")
+
+        with open(file_path, "rb") as f:
+            audio_bytes = f.read()
+
+        params = {
+            "model": settings.deepgram_model,
+            "language": settings.deepgram_language,
+            "smart_format": "true",
+            "punctuate": "true",
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.deepgram.com/v1/listen",
+                params=params,
+                headers={
+                    "Authorization": f"Token {settings.deepgram_api_key}",
+                    "Content-Type": content_type,
+                },
+                content=audio_bytes,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        channels = data.get("results", {}).get("channels", [])
+        if not channels:
+            return ""
+        alternatives = channels[0].get("alternatives", [])
+        if not alternatives:
+            return ""
+        transcript = alternatives[0].get("transcript", "")
+        logger.info("Deepgram transcription: %d chars, model=%s", len(transcript), settings.deepgram_model)
+        return transcript
+
+    def _transcribe_whisperx(self, file_path: str) -> str:
+        """Fallback: load WhisperX on-demand, transcribe, then release GPU memory."""
         import torch
         import whisperx
 
-        # PyTorch 2.6+ treats weights_only=None as True. Lightning passes
-        # None explicitly, so we wrap torch.load to convert None→False.
         _orig_torch_load = torch.load.__wrapped__ if hasattr(torch.load, "__wrapped__") else torch.load
         def _patched_load(*a, **kw):
             if kw.get("weights_only") is None:
@@ -709,15 +753,12 @@ class FileService:
         model = None
         audio = None
         try:
-            # Load model
             model = whisperx.load_model(
                 settings.whisperx_model,
                 device=device,
                 compute_type=settings.whisperx_compute_type,
                 language=settings.whisperx_language,
             )
-
-            # Load and transcribe audio
             audio = whisperx.load_audio(file_path)
             result = model.transcribe(
                 audio,
@@ -725,16 +766,10 @@ class FileService:
                 beam_size=settings.whisperx_beam_size,
                 initial_prompt="محادثة باللهجة السعودية العربية.",
             )
-
-            # Build transcript text
             segments = result.get("segments", [])
-            transcript = " ".join(seg.get("text", "") for seg in segments).strip()
-
-            return transcript
+            return " ".join(seg.get("text", "") for seg in segments).strip()
         finally:
-            # Restore original torch.load
             torch.load = _orig_torch_load
-            # Release GPU memory
             if model is not None:
                 del model
             if audio is not None:

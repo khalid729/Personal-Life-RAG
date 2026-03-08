@@ -781,19 +781,26 @@ async def handle_voice(message: Message):
         return
     await message.answer("🎤 جاري معالجة الصوت...")
     bot = message.bot
-    file = await bot.get_file(message.voice.file_id)
-    file_data = io.BytesIO()
-    await bot.download_file(file.file_path, file_data)
-    file_bytes = file_data.getvalue()
+    api_key = _get_api_key(message)
+    try:
+        file = await bot.get_file(message.voice.file_id)
+        file_data = io.BytesIO()
+        await bot.download_file(file.file_path, file_data)
+        file_bytes = file_data.getvalue()
 
-    sid = session_id(message.from_user.id)
-    result = await api_post_file(
-        "/ingest/file",
-        file_bytes=file_bytes,
-        filename="voice.ogg",
-        content_type="audio/ogg",
-        data={"context": "", "tags": "", "topic": "", "session_id": sid},
-    )
+        sid = session_id(message.from_user.id)
+        result = await api_post_file(
+            "/ingest/file",
+            file_bytes=file_bytes,
+            filename="voice.ogg",
+            content_type="audio/ogg",
+            data={"context": "", "tags": "", "topic": "", "session_id": sid},
+            api_key=api_key,
+        )
+    except Exception as e:
+        logger.error("Voice processing failed: %s", e)
+        await message.answer(f"❌ فشل معالجة الصوت: {e}")
+        return
 
     analysis = result.get("analysis", {})
 
@@ -809,15 +816,28 @@ async def handle_voice(message: Message):
         await message.answer("❌ ما قدرت أفهم الكلام في المقطع.")
         return
 
-    # Send transcript to chat API for an actual response
+    # Send transcript to chat API with streaming
     sid = session_id(message.from_user.id)
-    chat_result = await chat_api(transcript, sid)
-    reply = chat_result.get("reply", "")
+    placeholder = await message.answer(f"🎤 \"{transcript}\"\n\n...")
+    stream_result = await chat_api_stream(transcript, sid, placeholder, api_key=api_key)
+    reply_text = stream_result.get("text", "")
 
-    reply_parts = [f"🎤 \"{transcript}\""]
-    if reply:
-        reply_parts.append(reply)
-    await send_reply(message, "\n\n".join(reply_parts))
+    if not reply_text.strip():
+        try:
+            await placeholder.delete()
+        except Exception:
+            pass
+        chat_result = await chat_api(transcript, sid, api_key=api_key)
+        reply_text = chat_result.get("reply", "")
+
+    final = f"🎤 \"{transcript}\"\n\n{reply_text}" if reply_text else f"🎤 \"{transcript}\""
+    try:
+        await placeholder.edit_text(final, parse_mode="Markdown")
+    except Exception:
+        try:
+            await placeholder.edit_text(final)
+        except Exception:
+            pass
 
 
 # --- Photo messages ---
