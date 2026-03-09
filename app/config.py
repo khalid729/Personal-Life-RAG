@@ -106,7 +106,7 @@ class Settings(BaseSettings):
     proactive_morning_hour: int = 7
     proactive_noon_hour: int = 13
     proactive_evening_hour: int = 21
-    proactive_reminder_check_minutes: int = 30
+    proactive_reminder_check_minutes: int = 1
     proactive_alert_check_hours: int = 6
     proactive_stalled_days: int = 14
     proactive_old_debt_days: int = 30
