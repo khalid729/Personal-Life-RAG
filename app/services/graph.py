@@ -136,6 +136,22 @@ class GraphService:
         except Exception as e:
             logger.debug("Alias storage skipped: %s", e)
 
+    async def get_existing_entity_names(self, types: list[str] | None = None, limit: int = 50) -> dict[str, list[str]]:
+        """Fetch existing entity names by type — used to guide extraction prompts."""
+        types = types or ["Project", "Person", "Company", "Topic"]
+        result: dict[str, list[str]] = {}
+        for t in types:
+            key = "title" if t in ("Task", "Idea", "Reminder", "Knowledge") else "name"
+            try:
+                q = f"MATCH (n:{t}) RETURN n.{key} LIMIT {limit}"
+                rows = await self.query(q)
+                names = [r[0] for r in (rows or []) if r[0]]
+                if names:
+                    result[t] = names
+            except Exception as e:
+                logger.debug("Failed to fetch %s names: %s", t, e)
+        return result
+
     async def resolve_entity_names_batch(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], str]:
         """Batch-resolve entity names: one GPU embed, parallel Qdrant searches, one batch register."""
         if not self._vector_service or not settings.entity_resolution_enabled:

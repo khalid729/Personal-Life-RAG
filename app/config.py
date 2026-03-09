@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-5-20250929"
     use_claude_for_chat: bool = False
     use_claude_for_vision: bool = False
+    use_claude_for_extraction: bool = False  # Route extraction/enrichment/translation to Claude instead of vLLM
 
     # Timezone
     timezone_offset_hours: int = 3  # Asia/Riyadh UTC+3

@@ -6,7 +6,7 @@
 
 | Service | File | Backend |
 |---------|------|---------|
-| LLMService | llm.py | Claude API (chat/tools + vision, per-user key + model) + vLLM :8000 Qwen3.5-35B-A3B MoE (extraction/fallback) |
+| LLMService | llm.py | Claude API (chat/tools + vision, per-user key + model) + vLLM :8000 Qwen3.5-35B-A3B MoE (fallback). `USE_CLAUDE_FOR_EXTRACTION=true` routes extraction/enrichment/translation to Claude too |
 | GraphService | graph.py (110KB) | FalkorDB :6379 |
 | VectorService | vector.py | Qdrant :6333 + BGE-M3 GPU |
 | MemoryService | memory.py | Redis :6380 (3 layers) |

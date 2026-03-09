@@ -76,7 +76,7 @@ Respond with ONLY the contextualized chunk in this format:
 """
 
 
-def build_extract(text: str, ner_hints: str = "", project_name: str | None = None) -> list[dict]:
+def build_extract(text: str, ner_hints: str = "", project_name: str | None = None, existing_entities: dict[str, list[str]] | None = None) -> list[dict]:
     from datetime import datetime, timedelta, timezone
     from app.config import get_settings as _gs
     riyadh_tz = timezone(timedelta(hours=_gs().timezone_offset_hours))
@@ -86,6 +86,13 @@ def build_extract(text: str, ner_hints: str = "", project_name: str | None = Non
     date_hint = f"\n\nToday's date: {today}. Tomorrow: {tomorrow}. Use these to resolve relative dates like 'بكرة', 'tomorrow', 'next week', etc."
 
     system_content = EXTRACT_SYSTEM + date_hint
+
+    if existing_entities:
+        system_content += "\n\n=== Existing entities in the knowledge graph ==="
+        system_content += "\nIMPORTANT: If the text refers to any of these entities (even by a different name, alias, or translation), use the EXACT existing name below instead of creating a new entity."
+        system_content += "\nFor example, if 'Private Villa' in a document refers to an existing project 'بيتي', use 'بيتي' as the entity_name.\n"
+        for etype, names in existing_entities.items():
+            system_content += f"\n{etype}: {', '.join(names)}"
 
     if project_name:
         system_content += f"""

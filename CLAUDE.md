@@ -53,11 +53,12 @@ These are the essential constraints — violating any of them causes bugs.
 
 ### LLM Backend Split
 - **Claude**: `chat_with_tools`, `stream_with_tool_detection`, `classify_file`, `analyze_image`
-- **vLLM (always)**: `extract_facts`, `enrich_chunk`, `translate_*`, `chat` (format-reminders — needs `user_name` + `is_female` for gender-aware output)
+- **`USE_CLAUDE_FOR_EXTRACTION=true`** (experimental): routes `extract_facts`, `enrich_chunk`, `translate_*`, `summarize_*` to Claude instead of vLLM. Fallback to vLLM on failure
 - **vLLM model**: Qwen3.5-35B-A3B (MoE, 3B active params, vision built-in) — `--enforce-eager` required (CUDA graph bug with Gated DeltaNet)
 - **Fallback**: Claude → vLLM on failure. Streaming fallback only if no tokens yielded
 - **Per-user Claude key**: `_get_anthropic_client()` reads `_current_anthropic_key` context var
 - **Per-user Claude model**: `_get_anthropic_model()` reads `_current_anthropic_model` context var (e.g., Khalid→Haiku, Rawabi→Sonnet)
+- **Revert to vLLM-only processing**: set `USE_CLAUDE_FOR_EXTRACTION=false` in `.env` + restart server. `chat_stream` (format-reminders) always uses vLLM regardless of this flag
 
 ### Prompts
 - **MUST include current date/time (UTC+3)** in system + extract prompts

@@ -177,10 +177,17 @@ class RetrievalService:
         return await self.vector.upsert_chunks(enriched, metadata_list)
 
     async def _extract_and_store_facts(self, text_en: str, file_hash: str | None = None, project_name: str | None = None) -> tuple[int, list[dict]]:
+        # Fetch existing entity names so vLLM can reuse them instead of creating duplicates
+        try:
+            existing_entities = await self.graph.get_existing_entity_names()
+        except Exception as e:
+            logger.debug("Failed to fetch existing entities for extraction: %s", e)
+            existing_entities = None
+
         # For large texts, extract from each chunk individually then merge
         tokens = count_tokens(text_en)
         if tokens <= 3000:
-            facts = await self.llm.extract_facts(text_en, project_name=project_name)
+            facts = await self.llm.extract_facts(text_en, project_name=project_name, existing_entities=existing_entities)
             count = await self.graph.upsert_from_facts(facts, file_hash=file_hash, project_name=project_name)
             return count, facts.get("entities", [])
 
@@ -189,7 +196,7 @@ class RetrievalService:
         logger.info("Large text (%d tokens) → %d chunks for extraction", tokens, len(chunks))
 
         chunk_facts = await asyncio.gather(
-            *[self.llm.extract_facts(chunk, project_name=project_name) for chunk in chunks]
+            *[self.llm.extract_facts(chunk, project_name=project_name, existing_entities=existing_entities) for chunk in chunks]
         )
 
         # Merge and dedup entities by (entity_type, entity_name)

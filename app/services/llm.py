@@ -79,6 +79,56 @@ class LLMService:
             await client.close()
         self._anthropic_clients.clear()
 
+    async def _chat_claude(
+        self,
+        messages: list[dict],
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+    ) -> str:
+        """Route chat() to Claude API instead of vLLM."""
+        client = self._get_anthropic_client()
+
+        # Separate system from user/assistant messages
+        system_parts: list[str] = []
+        api_messages: list[dict] = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_parts.append(msg.get("content", ""))
+            else:
+                api_messages.append({"role": msg["role"], "content": msg.get("content", "")})
+
+        system_content = []
+        if system_parts:
+            system_content = [{
+                "type": "text",
+                "text": "\n".join(system_parts),
+                "cache_control": {"type": "ephemeral"},
+            }]
+
+        response = await client.messages.create(
+            model=self._get_anthropic_model(),
+            system=system_content,
+            messages=api_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        logger.debug(
+            "Claude chat() usage: input=%d output=%d cache_read=%d",
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            getattr(response.usage, "cache_read_input_tokens", 0),
+        )
+        raw = response.content[0].text.strip()
+        # Claude often wraps JSON in ```json ... ``` — strip it
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            if lines[-1].strip() == "```":
+                lines = lines[1:-1]
+            else:
+                lines = lines[1:]
+            raw = "\n".join(lines).strip()
+        return raw
+
     async def chat(
         self,
         messages: list[dict],
@@ -86,6 +136,13 @@ class LLMService:
         temperature: float = 0.7,
         json_mode: bool = False,
     ) -> str:
+        # Route to Claude if extraction mode enabled
+        if settings.use_claude_for_extraction and self._get_anthropic_client():
+            try:
+                return await self._chat_claude(messages, max_tokens, temperature)
+            except Exception as e:
+                logger.error("Claude chat() failed, falling back to vLLM: %s", e)
+
         body: dict = {
             "model": settings.vllm_model,
             "messages": messages,
@@ -111,8 +168,8 @@ class LLMService:
         messages = build_translate_en_to_ar(text)
         return await self.chat(messages, max_tokens=1024, temperature=0.1)
 
-    async def extract_facts(self, text: str, ner_hints: str = "", project_name: str | None = None) -> dict:
-        messages = build_extract(text, ner_hints=ner_hints, project_name=project_name)
+    async def extract_facts(self, text: str, ner_hints: str = "", project_name: str | None = None, existing_entities: dict[str, list[str]] | None = None) -> dict:
+        messages = build_extract(text, ner_hints=ner_hints, project_name=project_name, existing_entities=existing_entities)
         raw = await self.chat(messages, max_tokens=2048, temperature=0.1, json_mode=True)
         try:
             return json.loads(raw)
