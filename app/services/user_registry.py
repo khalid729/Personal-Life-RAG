@@ -55,6 +55,7 @@ class UserRegistry:
                         tg_chat_id=info.get("tg_chat_id", ""),
                         telegram_bot_token=info.get("telegram_bot_token", ""),
                         enabled=info.get("enabled", True),
+                        isolated=info.get("isolated", False),
                     )
                     await self._store_profile(profile, raw_key)
                 logger.info("Loaded %d users from seed file", len(data))
@@ -96,6 +97,8 @@ class UserRegistry:
                     # Redis returns bytes/str — fix bool fields
                     if "enabled" in data:
                         data["enabled"] = data["enabled"] not in (b"False", "False", "0", b"0")
+                    if "isolated" in data:
+                        data["isolated"] = data["isolated"] not in (b"False", "False", "0", b"0")
                     profile = UserProfile(**data)
                     self._cache_profile(profile)
             if cursor == 0:

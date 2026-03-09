@@ -37,6 +37,7 @@ class UserProfile(BaseModel):
     tg_chat_id: str = ""
     telegram_bot_token: str = ""
     enabled: bool = True
+    isolated: bool = False  # Fully isolated — hidden from cross-user messaging
 
 
 # --- Enums ---

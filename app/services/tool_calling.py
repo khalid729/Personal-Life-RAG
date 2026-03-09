@@ -1543,10 +1543,13 @@ class ToolCallingService:
     # --- Cross-user helpers ---
 
     def _resolve_target_user(self, name: str):
-        """Resolve a target user by id, display_name, display_name_ar, or nickname."""
+        """Resolve a target user by id, display_name, display_name_ar, or nickname.
+        Skips isolated users — they can't send or receive cross-user messages."""
         if not self.user_registry:
             return None
         for user in self.user_registry.list_users():
+            if user.isolated:
+                continue
             if user.user_id == name.lower():
                 return user
             if user.display_name and user.display_name.lower() == name.lower():
@@ -1570,7 +1573,13 @@ class ToolCallingService:
 
     async def _handle_send_to_user(self, user: str, message: str) -> dict:
         """Send an immediate Telegram message to another user."""
-        from app.middleware.auth import _current_user_nickname
+        from app.middleware.auth import _current_user_nickname, _current_graph_name
+        # Check if sender is isolated
+        if self.user_registry:
+            gn = _current_graph_name.get()
+            for u in self.user_registry.list_users():
+                if u.graph_name == gn and u.isolated:
+                    return {"error": "هذا الحساب معزول — ما يقدر يرسل رسائل لمستخدمين آخرين"}
         sender = _current_user_nickname.get() or "مستخدم"
         target = self._resolve_target_user(user)
         if not target:
@@ -1583,10 +1592,23 @@ class ToolCallingService:
 
     # --- Phase 26: Home Assistant handlers ---
 
+    def _is_isolated_user(self) -> bool:
+        """Check if the current user is isolated (no HA / cross-user access)."""
+        from app.middleware.auth import _current_graph_name
+        if not self.user_registry:
+            return False
+        gn = _current_graph_name.get()
+        for u in self.user_registry.list_users():
+            if u.graph_name == gn:
+                return u.isolated
+        return False
+
     async def _handle_control_device(
         self, device: str, action: str, data: dict | None = None,
     ) -> dict:
         """Control a smart home device via Home Assistant."""
+        if self._is_isolated_user():
+            return {"error": "ما عندك صلاحية للتحكم بالأجهزة الذكية"}
         if not self.ha:
             return {"error": "Home Assistant غير مفعل"}
 
@@ -1613,6 +1635,8 @@ class ToolCallingService:
         list_automations: bool = False, cancel_automation: str | None = None,
     ) -> dict:
         """Query device state, list devices, list/cancel HA automations."""
+        if self._is_isolated_user():
+            return {"error": "ما عندك صلاحية للوصول للأجهزة الذكية"}
         if not self.ha:
             return {"error": "Home Assistant غير مفعل"}
 
@@ -1658,6 +1682,8 @@ class ToolCallingService:
         self, action: str, arabic_name: str = "", entity_id: str = "",
     ) -> dict:
         """Manage custom Arabic names for HA entities."""
+        if self._is_isolated_user():
+            return {"error": "ما عندك صلاحية للوصول للأجهزة الذكية"}
         if not self.ha:
             return {"error": "Home Assistant غير مفعل"}
 
