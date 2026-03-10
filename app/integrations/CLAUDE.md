@@ -27,10 +27,11 @@
 - **STATUS detection**: checks `tool_calls` list for successful writes → `ACTION_EXECUTED`
 - No more `PENDING_CONFIRMATION` — tools execute directly
 
-## Open WebUI Pipe (openwebui_pipe.py)
+## Open WebUI Pipe (openwebui_pipe.py) — v2.2
 
 - **Direct streaming** to `/chat/v2/stream` — bypasses wrapper LLM entirely
 - 2 LLM calls (tool selection + response) via tool-calling
+- **Multi-tenancy**: `user_api_keys` Valve maps OWUI emails → RAG API keys. `_api_headers(__user__)` injects `X-API-Key` on all HTTP calls (`_stream`, `_sync`, `_send_file`, `_stream_with_files`)
 - **Docker path builder**: `_get_owui_file_path()` builds path from OWUI convention `/app/backend/data/uploads/{id}_{filename}` (OWUI doesn't store `path` in file meta)
 - **Ingestion cache**: `_ingested_files` set tracks processed file IDs — skips re-ingestion on subsequent messages
 - **RAG context stripping**: `_strip_owui_rag_context()` removes OWUI's injected `### Task/Context/Query` wrapper — stripped BEFORE file processing to prevent RAG garbage in `/ingest/file` context param
@@ -38,6 +39,7 @@
 - All files → `/ingest/file` (raw bytes from Docker path, includes text types like .md/.txt)
 - No STATUS logic needed — streams RAG API response directly
 - Select "Personal RAG" model in Open WebUI to use
+- **OWUI v0.8.10**: O(n) message rendering, analytics dashboard, Mermaid diagrams, internal `_` method filtering
 
 ## Open WebUI Filter (openwebui_filter.py)
 

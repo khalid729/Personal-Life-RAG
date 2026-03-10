@@ -1,9 +1,12 @@
 """
 Open WebUI Pipe for Personal Life RAG — Tool-Calling Architecture.
-Version: 2.0
+Version: 2.2
 
 Uses /chat/v2 (tool-calling endpoint): LLM picks tools → code executes → real results → LLM responds.
 The model cannot lie because it sees actual tool outcomes before generating its response.
+
+Multi-tenancy: Set user_api_keys Valve to map OWUI emails → RAG API keys.
+Each OWUI user's requests are routed to their own RAG graph/data via X-API-Key header.
 
 Copy this file's content into Open WebUI Admin → Functions → Add Function (type: Pipe).
 Select "Personal RAG" model in the Open WebUI sidebar to use this pipe.
@@ -21,9 +24,9 @@ from pydantic import BaseModel, Field
 
 
 class Pipe:
-    """Personal Life RAG Pipe v2.1 — Tool-calling with JSON guard + internal prompt filter."""
+    """Personal Life RAG Pipe v2.2 — Tool-calling with multi-tenancy + JSON guard."""
 
-    VERSION = "2.1"
+    VERSION = "2.2"
 
     class Valves(BaseModel):
         api_url: str = Field(
@@ -46,12 +49,39 @@ class Pipe:
             default=True,
             description="Automatically process uploaded files via /ingest/file",
         )
+        user_api_keys: str = Field(
+            default="{}",
+            description='JSON mapping OWUI email → RAG API key, e.g. {"user@example.com": "key123"}',
+        )
 
     def __init__(self):
         self.valves = self.Valves()
         self._ingested_files: set = set()  # track already-ingested file IDs
         self._pending_files: list = []     # files from non-streaming response (for streaming fallback)
         self._pending_files_ts: float = 0  # timestamp of pending files
+
+    # ========================
+    # MULTI-TENANCY
+    # ========================
+
+    def _get_api_key(self, __user__: dict) -> str:
+        """Resolve RAG API key from OWUI user email via user_api_keys Valve."""
+        email = __user__.get("email", "")
+        if not email:
+            return ""
+        try:
+            mapping = json.loads(self.valves.user_api_keys)
+        except (json.JSONDecodeError, TypeError):
+            return ""
+        return mapping.get(email, "")
+
+    def _api_headers(self, __user__: dict) -> dict:
+        """Build HTTP headers with X-API-Key for multi-tenancy."""
+        headers = {}
+        api_key = self._get_api_key(__user__)
+        if api_key:
+            headers["X-API-Key"] = api_key
+        return headers
 
     # ========================
     # ENTRY POINT
@@ -153,16 +183,16 @@ class Pipe:
         payload = {"message": user_text, "session_id": session_id}
 
         if stream:
-            return self._stream(payload)
+            return self._stream(payload, __user__)
         else:
-            return self._sync(payload)
+            return self._sync(payload, __user__)
 
     # ========================
     # STREAMING
     # ========================
 
     def _stream_with_files(
-        self, body, last_msg, user_text, owui_files, metadata, user, session_id,
+        self, body, last_msg, user_text, owui_files, metadata, __user__, session_id,
     ) -> Generator:
         """Process files while yielding progress tokens, then stream chat response."""
         import sys
@@ -178,7 +208,7 @@ class Pipe:
         def _do_process():
             try:
                 result["context"] = self._process_files(
-                    body, last_msg, clean_text, owui_files, metadata, user,
+                    body, last_msg, clean_text, owui_files, metadata, __user__,
                     session_id=session_id,
                 )
             except Exception as e:
@@ -203,10 +233,12 @@ class Pipe:
 
         # Now stream the chat response
         url = self.valves.api_url.rstrip("/")
+        headers = self._api_headers(__user__)
         try:
             with requests.post(
                 f"{url}/chat/v2/stream",
                 json=payload,
+                headers=headers,
                 stream=True,
                 timeout=120,
             ) as resp:
@@ -246,12 +278,14 @@ class Pipe:
             print(f"[PIPE] stream error: {e}", file=sys.stderr)
             yield f"\n\nخطأ في الاتصال: {str(e)}"
 
-    def _stream(self, payload: dict) -> Generator:
+    def _stream(self, payload: dict, __user__: dict = {}) -> Generator:
         url = self.valves.api_url.rstrip("/")
+        headers = self._api_headers(__user__)
         try:
             with requests.post(
                 f"{url}/chat/v2/stream",
                 json=payload,
+                headers=headers,
                 stream=True,
                 timeout=120,
             ) as resp:
@@ -369,10 +403,11 @@ class Pipe:
     # SYNC FALLBACK
     # ========================
 
-    def _sync(self, payload: dict) -> str:
+    def _sync(self, payload: dict, __user__: dict = {}) -> str:
         url = self.valves.api_url.rstrip("/")
+        headers = self._api_headers(__user__)
         try:
-            resp = requests.post(f"{url}/chat/v2", json=payload, timeout=120)
+            resp = requests.post(f"{url}/chat/v2", json=payload, headers=headers, timeout=120)
             resp.raise_for_status()
             data = resp.json()
             reply = data.get("reply", "لا توجد إجابة.")
@@ -519,7 +554,7 @@ class Pipe:
 
         results = []
         for f in files:
-            result = self._send_file(f, user_text, session_id=session_id)
+            result = self._send_file(f, user_text, session_id=session_id, __user__=user or {})
             if result:
                 results.append(result)
                 # Mark file as ingested so we don't re-process on next message
@@ -529,9 +564,10 @@ class Pipe:
 
         return "\n".join(results) if results else ""
 
-    def _send_file(self, file_info: dict, user_text: str, session_id: str = "") -> str:
+    def _send_file(self, file_info: dict, user_text: str, session_id: str = "", __user__: dict = {}) -> str:
         """Send a single file to /ingest/file or /ingest/text, return formatted result."""
         url = self.valves.api_url.rstrip("/")
+        headers = self._api_headers(__user__)
         file_data = file_info.get("data", "")
         file_path = file_info.get("path", "")
         filename = file_info.get("filename", "unknown")
@@ -555,6 +591,7 @@ class Pipe:
                     f"{url}/ingest/file",
                     files={"file": (upload_name, file_bytes, mime_type)},
                     data={"context": user_text, "session_id": session_id},
+                    headers=headers,
                     timeout=180,
                 )
 
@@ -580,6 +617,7 @@ class Pipe:
                         f"{url}/ingest/file",
                         files={"file": (upload_name, f, content_type)},
                         data={"context": user_text, "session_id": session_id},
+                        headers=headers,
                         timeout=180,
                     )
 
@@ -601,6 +639,7 @@ class Pipe:
                     f"{url}/ingest/file",
                     files={"file": (filename, file_bytes, content_type)},
                     data={"context": user_text, "session_id": session_id},
+                    headers=headers,
                     timeout=180,
                 )
             else:
