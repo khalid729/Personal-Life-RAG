@@ -4,19 +4,15 @@ Deepgram STT Proxy — OpenAI-compatible /v1/audio/transcriptions endpoint.
 Accepts requests in OpenAI Whisper format and forwards to Deepgram Nova-3.
 Designed for Open WebUI's STT integration (AUDIO_STT_ENGINE=openai).
 
-OWUI records WAV → converts to MP3 (lossy) before sending here.
-This proxy converts MP3 → WAV 16kHz mono (optimal for Deepgram) before forwarding.
-
 Usage:
     python scripts/deepgram_stt_proxy.py
     # Listens on :8200, forwards to Deepgram Nova-3 (ar-SA)
 """
 
-import io
 import os
-import subprocess
 import sys
-import tempfile
+import time
+from contextlib import asynccontextmanager
 
 import httpx
 import uvicorn
@@ -28,39 +24,38 @@ DEEPGRAM_MODEL = os.getenv("DEEPGRAM_MODEL", "nova-3")
 DEEPGRAM_LANGUAGE = os.getenv("DEEPGRAM_LANGUAGE", "ar-SA")
 PORT = int(os.getenv("STT_PROXY_PORT", "8200"))
 
-app = FastAPI(title="Deepgram STT Proxy")
+DEEPGRAM_PARAMS = {
+    "model": DEEPGRAM_MODEL,
+    "language": DEEPGRAM_LANGUAGE,
+    "smart_format": "true",
+    "punctuate": "true",
+    "numerals": "true",
+    "diarize": "false",
+    "filler_words": "false",
+}
+
+DEEPGRAM_HEADERS = {
+    "Authorization": f"Token {DEEPGRAM_API_KEY}",
+}
+
+# Persistent HTTP client — reuses TCP connection to Deepgram
+_http_client: httpx.AsyncClient | None = None
 
 
-def _convert_to_wav16k(audio_bytes: bytes, content_type: str) -> tuple[bytes, str]:
-    """Convert any audio to WAV 16kHz mono PCM — optimal for Deepgram."""
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".in", delete=False) as inf:
-            inf.write(audio_bytes)
-            in_path = inf.name
-        out_path = in_path + ".wav"
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", in_path, "-ar", "16000", "-ac", "1",
-             "-sample_fmt", "s16", "-f", "wav", out_path],
-            capture_output=True, timeout=10,
-        )
-        if result.returncode == 0:
-            with open(out_path, "rb") as f:
-                wav_bytes = f.read()
-            print(f"[STT-PROXY] Converted {content_type} {len(audio_bytes)}B → WAV 16kHz {len(wav_bytes)}B", file=sys.stderr)
-            return wav_bytes, "audio/wav"
-        else:
-            print(f"[STT-PROXY] ffmpeg failed: {result.stderr[:200]}", file=sys.stderr)
-    except FileNotFoundError:
-        print("[STT-PROXY] ffmpeg not found, sending original audio", file=sys.stderr)
-    except Exception as e:
-        print(f"[STT-PROXY] convert error: {e}", file=sys.stderr)
-    finally:
-        for p in (in_path, out_path):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
-    return audio_bytes, content_type
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _http_client
+    _http_client = httpx.AsyncClient(
+        timeout=30,
+        http2=True,
+        limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=300),
+    )
+    print(f"[STT-PROXY] HTTP/2 client ready, connection pool initialized", file=sys.stderr)
+    yield
+    await _http_client.aclose()
+
+
+app = FastAPI(title="Deepgram STT Proxy", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -85,32 +80,21 @@ async def transcriptions(
     language: str = Form(default=None),
 ):
     """OpenAI-compatible transcription endpoint → Deepgram Nova-3."""
+    t0 = time.monotonic()
     audio_bytes = await file.read()
     content_type = file.content_type or "audio/wav"
 
     print(f"[STT-PROXY] Received {len(audio_bytes)}B {content_type} ({file.filename})", file=sys.stderr)
 
-    params = {
-        "model": DEEPGRAM_MODEL,
-        "language": DEEPGRAM_LANGUAGE,
-        "smart_format": "true",
-        "punctuate": "true",
-        "numerals": "true",
-        "diarize": "false",
-        "filler_words": "false",
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                "https://api.deepgram.com/v1/listen",
-                params=params,
-                headers={
-                    "Authorization": f"Token {DEEPGRAM_API_KEY}",
-                    "Content-Type": content_type,
-                },
-                content=audio_bytes,
-            )
+        t1 = time.monotonic()
+        resp = await _http_client.post(
+            "https://api.deepgram.com/v1/listen",
+            params=DEEPGRAM_PARAMS,
+            headers={**DEEPGRAM_HEADERS, "Content-Type": content_type},
+            content=audio_bytes,
+        )
+        t2 = time.monotonic()
 
         if resp.status_code != 200:
             print(f"[STT-PROXY] Deepgram error {resp.status_code}: {resp.text[:200]}", file=sys.stderr)
@@ -124,9 +108,11 @@ async def transcriptions(
             .get("transcript", "")
         )
 
-        print(f"[STT-PROXY] Transcribed {len(audio_bytes)} bytes → '{transcript}'", file=sys.stderr)
+        print(
+            f"[STT-PROXY] '{transcript}' — deepgram={t2-t1:.1f}s total={t2-t0:.1f}s",
+            file=sys.stderr,
+        )
 
-        # Return OpenAI-compatible response
         return {"text": transcript}
 
     except Exception as e:
