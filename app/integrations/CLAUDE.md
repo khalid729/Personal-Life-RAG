@@ -27,7 +27,7 @@
 - **STATUS detection**: checks `tool_calls` list for successful writes → `ACTION_EXECUTED`
 - No more `PENDING_CONFIRMATION` — tools execute directly
 
-## Open WebUI Pipe (openwebui_pipe.py) — v2.2
+## Open WebUI Pipe (openwebui_pipe.py) — v2.3
 
 - **Direct streaming** to `/chat/v2/stream` — bypasses wrapper LLM entirely
 - 2 LLM calls (tool selection + response) via tool-calling
@@ -36,10 +36,26 @@
 - **Ingestion cache**: `_ingested_files` set tracks processed file IDs — skips re-ingestion on subsequent messages
 - **RAG context stripping**: `_strip_owui_rag_context()` removes OWUI's injected `### Task/Context/Query` wrapper — stripped BEFORE file processing to prevent RAG garbage in `/ingest/file` context param
 - **Stream with files**: `_stream_with_files()` yields "جاري معالجة الملف..." immediately, then streams chat — prevents OWUI timeout during long ingestion
+- **Voice/Call mode** (Phase 27): `_is_voice_mode()` detects `__metadata__.features.voice == True` → injects `_VOICE_PREFIX` (concise response instruction). Controlled by `voice_concise` Valve (default True). OWUI passes features in `__metadata__`, NOT `body`, for Pipes.
 - All files → `/ingest/file` (raw bytes from Docker path, includes text types like .md/.txt)
 - No STATUS logic needed — streams RAG API response directly
 - Select "Personal RAG" model in Open WebUI to use
 - **OWUI v0.8.10**: O(n) message rendering, analytics dashboard, Mermaid diagrams, internal `_` method filtering
+
+## Deepgram STT Proxy (scripts/deepgram_stt_proxy.py)
+
+- **OpenAI-compatible** `/v1/audio/transcriptions` on `:8200` → forwards to Deepgram Nova-3 (`ar-SA`)
+- **systemd**: `rag-stt-proxy.service` (enabled, `Restart=always`)
+- Used by OWUI (`AUDIO_STT_ENGINE=openai`, `AUDIO_STT_OPENAI_API_BASE_URL=http://host.docker.internal:8200/v1`)
+- Deepgram params: `smart_format`, `punctuate`, `numerals`, `filler_words=false`
+- **Do NOT set** `encoding`/`sample_rate` — Deepgram auto-detects from WAV/MP3 headers; explicit params degrade accuracy
+- **Do NOT convert** audio via ffmpeg — OWUI sends MP3, Deepgram handles natively; conversion worsened results
+
+## OWUI Voice Call Mode — ElevenLabs TTS
+
+- **Docker env vars**: `AUDIO_TTS_ENGINE=elevenlabs`, `AUDIO_TTS_API_KEY`, `AUDIO_TTS_VOICE`, `AUDIO_TTS_MODEL=eleven_multilingual_v2`
+- **ElevenLabs billing**: per-character (starter tier: 90,000 chars/month)
+- **API key**: must be unrestricted — restricted keys return 401 even with valid credits
 
 ## Open WebUI Filter (openwebui_filter.py)
 

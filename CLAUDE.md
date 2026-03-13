@@ -11,6 +11,8 @@ FastAPI :8500 → Claude API (chat/tool-calling + vision)
                → FalkorDB :6379 (knowledge graph)
                → Qdrant :6333 (BGE-M3, 1024-dim)
                → Redis :6380 (3-layer memory)
+STT Proxy :8200 → Deepgram Nova-3 (OpenAI-compatible, for OWUI)
+OWUI :3000      → ElevenLabs TTS (eleven_multilingual_v2) + STT Proxy
 ```
 
 ## Structure
@@ -24,7 +26,9 @@ app/
 ├── services/            # 12 async services — see services/CLAUDE.md
 ├── routers/             # 18 REST routers — see routers/CLAUDE.md
 ├── prompts/             # 6 prompt builders — see prompts/CLAUDE.md
-└── integrations/        # Telegram, Open WebUI, MCP — see integrations/CLAUDE.md
+├── integrations/        # Telegram, Open WebUI, MCP — see integrations/CLAUDE.md
+scripts/
+└── deepgram_stt_proxy.py  # OpenAI-compatible STT proxy → Deepgram Nova-3 (:8200)
 ```
 
 ## Commands
@@ -38,6 +42,7 @@ curl -s -X POST http://localhost:8500/chat/v2 \
 sudo systemctl restart rag-server                                    # Restart API
 sudo systemctl restart rag-telegram                                  # Restart Khalid bot
 sudo systemctl restart rag-telegram-rawabi                           # Restart Rawabi bot
+sudo systemctl restart rag-stt-proxy                                 # Restart Deepgram STT proxy
 ```
 
 ## Core Rules
@@ -95,6 +100,16 @@ These are the essential constraints — violating any of them causes bugs.
 - **HA automations separate from reminders**: `is_ha_automation=true` on Reminder node → filtered from `query_reminders`, `query_daily_plan`, `due-reminders`, `noon-checkin`, `evening-summary`, `search_reminders`
 - **Streaming fix**: tool calls take priority over streamed text — Haiku emits both simultaneously, tools must execute first
 
+### OWUI Voice Call Mode (Phase 27)
+- **STT**: Deepgram Nova-3 via `rag-stt-proxy` (:8200) — OpenAI-compatible proxy (`scripts/deepgram_stt_proxy.py`)
+- **TTS**: ElevenLabs `eleven_multilingual_v2` — Docker env vars on OWUI container
+- **Voice detection**: `_is_voice_mode()` reads `__metadata__.features.voice` (NOT `body.features`) — OWUI passes features in metadata for Pipes
+- **Concise prefix**: when voice detected, injects `_VOICE_PREFIX` to keep responses short (1-2 sentences, no emoji/formatting)
+- **`voice_concise` Valve**: controls concise injection (default True)
+- **STT proxy gotchas**: do NOT set `encoding`/`sample_rate` params (Deepgram auto-detects from headers); do NOT convert audio via ffmpeg (degrades accuracy)
+- **ElevenLabs API key**: must be unrestricted — restricted keys return 401 even with valid credits
+- **Billing**: per-character (starter: 90K chars/month)
+
 ### Config
 - `.env` overrides `config.py` — always check `.env` first
 - `datetime.utcnow()` deprecated → `datetime.now(timezone(timedelta(hours=3)))`
@@ -127,3 +142,6 @@ These are the essential constraints — violating any of them causes bugs.
 | HA automation in reminders | `tool_calling.py` (`is_ha_automation` flag), `graph.py` (`query_reminders` filter) |
 | Stream skips tool calls | `tool_calling.py` (`chat_stream` — tool_calls_found must precede streamed_text check) |
 | HA webhook not notifying | `routers/homeassistant.py` (`ha_webhook`), Telegram bot token |
+| OWUI voice no audio / TTS 401 | Docker env vars (`AUDIO_TTS_*`), ElevenLabs API key (must be unrestricted) |
+| OWUI STT bad transcription | `scripts/deepgram_stt_proxy.py`, `rag-stt-proxy` service, Deepgram params |
+| OWUI voice not concise | `openwebui_pipe.py` (`_is_voice_mode`, `voice_concise` Valve) |
