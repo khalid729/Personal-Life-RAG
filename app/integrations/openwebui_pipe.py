@@ -24,9 +24,9 @@ from pydantic import BaseModel, Field
 
 
 class Pipe:
-    """Personal Life RAG Pipe v2.2 — Tool-calling with multi-tenancy + JSON guard."""
+    """Personal Life RAG Pipe v2.3 — Tool-calling with multi-tenancy + voice mode."""
 
-    VERSION = "2.2"
+    VERSION = "2.3"
 
     class Valves(BaseModel):
         api_url: str = Field(
@@ -52,6 +52,10 @@ class Pipe:
         user_api_keys: str = Field(
             default="{}",
             description='JSON mapping OWUI email → RAG API key, e.g. {"user@example.com": "key123"}',
+        )
+        voice_concise: bool = Field(
+            default=True,
+            description="Inject concise-response prefix when voice/call mode is detected",
         )
 
     def __init__(self):
@@ -82,6 +86,50 @@ class Pipe:
         if api_key:
             headers["X-API-Key"] = api_key
         return headers
+
+    # ========================
+    # VOICE MODE
+    # ========================
+
+    _VOICE_PREFIX = "[وضع صوتي — رد باختصار شديد، جملة أو جملتين كحد أقصى، بدون إيموجي وبدون تنسيق]\n"
+
+    def _is_voice_mode(self, body: dict, metadata: dict) -> bool:
+        """Detect if the request comes from OWUI voice/call mode."""
+        import sys
+        meta = metadata or {}
+
+        # Log features from both sources for debugging
+        body_features = body.get("features") or {}
+        meta_features = meta.get("features") or {}
+        if body_features or meta_features:
+            print(f"[PIPE] body.features={body_features} meta.features={meta_features}", file=sys.stderr)
+
+        # Check metadata.features (OWUI passes features here for Pipes)
+        if isinstance(meta_features, dict):
+            if meta_features.get("voice") or meta_features.get("call"):
+                print("[PIPE] Voice mode detected via meta.features", file=sys.stderr)
+                return True
+
+        # Check body.features
+        if isinstance(body_features, dict):
+            if body_features.get("voice") or body_features.get("call"):
+                print("[PIPE] Voice mode detected via body.features", file=sys.stderr)
+                return True
+
+        # Check metadata direct keys
+        if meta.get("voice") or meta.get("call") or meta.get("call_mode"):
+            print("[PIPE] Voice mode detected via meta keys", file=sys.stderr)
+            return True
+
+        # Check system messages for voice/call keywords
+        for m in body.get("messages", []):
+            if m.get("role") == "system":
+                content = (m.get("content") or "").lower()
+                if any(kw in content for kw in ("voice", "call", "brief", "concise", "tts")):
+                    print(f"[PIPE] Voice mode detected via system msg", file=sys.stderr)
+                    return True
+
+        return False
 
     # ========================
     # ENTRY POINT
@@ -180,6 +228,10 @@ class Pipe:
             if file_context:
                 user_text = user_text + "\n\n" + file_context
 
+        # Voice/call mode: inject concise-response prefix
+        if self.valves.voice_concise and self._is_voice_mode(body, __metadata__):
+            user_text = self._VOICE_PREFIX + user_text
+
         payload = {"message": user_text, "session_id": session_id}
 
         if stream:
@@ -227,6 +279,11 @@ class Pipe:
 
         file_context = result["context"]
         final_text = (clean_text + "\n\n" + file_context) if file_context else clean_text
+
+        # Voice/call mode: inject concise-response prefix
+        if self.valves.voice_concise and self._is_voice_mode(body, metadata):
+            final_text = self._VOICE_PREFIX + final_text
+
         payload = {"message": final_text, "session_id": session_id}
 
         yield "\n\n"
