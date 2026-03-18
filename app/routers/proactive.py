@@ -157,6 +157,32 @@ async def evening_summary(request: Request):
     }
 
 
+@router.get("/latest-water-report")
+async def latest_water_report(request: Request):
+    """Return the most recent OpenClaw water report (for morning summary)."""
+    graph = request.app.state.retrieval.graph
+    q = """
+    MATCH (k:Knowledge)
+    WHERE k.category = 'openclaw-homeassistant'
+      AND k.source = 'openclaw'
+    RETURN k.title, k.content, k.severity, k.report_time
+    ORDER BY k.report_time DESC
+    LIMIT 1
+    """
+    rows = await graph.query(q)
+    if not rows:
+        return {"water_report": None}
+    title, content, severity, report_time = rows[0]
+    return {
+        "water_report": {
+            "title": title,
+            "content": content,
+            "severity": severity,
+            "report_time": report_time,
+        }
+    }
+
+
 @router.get("/due-reminders")
 async def due_reminders(request: Request):
     """Regular reminders only (excludes HA automations)."""

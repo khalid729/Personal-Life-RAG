@@ -1233,6 +1233,16 @@ async def job_morning_summary(bot: Bot):
             if alerts:
                 text += f"\n\n💰 {alerts}"
 
+            # Append latest water report (if available)
+            try:
+                water = await api_get("/proactive/latest-water-report", api_key=ak)
+                wr = water.get("water_report")
+                if wr:
+                    sev_icon = {"info": "📊", "warning": "⚠️", "critical": "🚨"}.get(wr.get("severity", ""), "📊")
+                    text += f"\n\n{sev_icon} {wr['title']}\n{wr['content']}"
+            except Exception as e:
+                logger.warning("Water report fetch failed: %s", e)
+
             for part in split_message(text):
                 await bot.send_message(chat_id=tg_id, text=part)
             logger.info("Morning summary sent to %s", user.get("user_id", tg_id))
