@@ -1,6 +1,6 @@
 # Routers
 
-18 REST routers, all use `request.app.state.<service>`.
+19 REST routers, all use `request.app.state.<service>`.
 
 ## Endpoints
 
@@ -17,7 +17,8 @@
 | knowledge | `/knowledge` | GET / |
 | inventory | `/inventory` | GET /, POST /item, PUT /item/{name}/location, GET /unused, /report, /duplicates |
 | productivity | `/productivity` | Sprints CRUD, focus sessions, time-blocking |
-| proactive | `/proactive` | Morning/noon/evening summaries, smart alerts, reschedule-persistent, due-ha-automations, format-reminders (gender-aware via `user_name` + `is_female`, respectful title "عمتي" for female) |
+| proactive | `/proactive` | Morning/noon/evening summaries, smart alerts, reschedule-persistent, due-ha-automations, format-reminders (gender-aware), latest-water-report |
+| openclaw | `/integrations/openclaw` | POST /report (webhook from NemoClaw — stores Knowledge + embeds, critical→Telegram) |
 | backup | `/backup` | POST /create, GET /list, POST /restore/{timestamp} |
 | graph_viz | `/graph` | GET /export, /schema, /stats, POST /image |
 | homeassistant | `/ha` | GET /states, GET /states/{id}, POST /services/{d}/{s}, GET/POST/DELETE /names, POST /webhook |
@@ -66,3 +67,15 @@
 - When enabled: reads `X-API-Key` → `UserRegistry.get_user_by_api_key()` → sets context vars
 - Context vars (`_current_graph_name`, `_current_collection`, `_current_redis_prefix`, `_current_user_nickname`, `_current_user_gender`, `_current_anthropic_key`, `_current_anthropic_model`) are task-local, inherited by `asyncio.create_task`
 - `request.state.user_ctx` available to all route handlers
+
+## OpenClaw Router (Phase 28)
+
+- `POST /integrations/openclaw/report` — webhook for NemoClaw structured reports
+  - Saves as `Knowledge` node: `category=openclaw-{source}`, `source=openclaw`, `report_time`, `severity`
+  - Embeds via `retrieval.ingest_text(embed_only=True)` for semantic search
+  - Flat metadata fields (primitives only) stored as node properties; `chart_base64` skipped in graph
+  - **Critical only**: `severity=critical` → immediate Telegram (text or photo if `chart_base64` present)
+  - `info`/`warning` → no Telegram; picked up by morning summary via `/proactive/latest-water-report`
+- `GET /proactive/latest-water-report` — returns most recent `openclaw-homeassistant` Knowledge node (title, content, severity, report_time)
+  - Used by `job_morning_summary()` in Telegram bot to append water report to daily message
+  - Khalid only (report stored in `personal_life` graph)

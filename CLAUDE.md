@@ -110,6 +110,14 @@ These are the essential constraints — violating any of them causes bugs.
 - **ElevenLabs API key**: must be unrestricted — restricted keys return 401 even with valid credits
 - **Billing**: per-character (starter: 90K chars/month)
 
+### OpenClaw Integration (Phase 28)
+- **Webhook**: `POST /integrations/openclaw/report` — receives structured reports from NemoClaw (water monitoring, etc.)
+- **Storage**: Knowledge node with `category=openclaw-{source}`, `source=openclaw`, `report_time` + vector embedding (`embed_only=True`)
+- **Critical alerts**: only `severity=critical` sends immediate Telegram notification; `info`/`warning` are silent
+- **Morning summary**: `job_morning_summary()` fetches `/proactive/latest-water-report` and appends to daily message (Khalid only — report stored in `personal_life` graph)
+- **Water report query**: `GET /proactive/latest-water-report` — returns latest `openclaw-homeassistant` Knowledge node
+- **Chart support**: `metadata.chart_base64` → sent as Telegram photo on critical alerts
+
 ### Config
 - `.env` overrides `config.py` — always check `.env` first
 - `datetime.utcnow()` deprecated → `datetime.now(timezone(timedelta(hours=3)))`
@@ -145,3 +153,6 @@ These are the essential constraints — violating any of them causes bugs.
 | OWUI voice no audio / TTS 401 | Docker env vars (`AUDIO_TTS_*`), ElevenLabs API key (must be unrestricted) |
 | OWUI STT bad transcription | `scripts/deepgram_stt_proxy.py`, `rag-stt-proxy` service, Deepgram params |
 | OWUI voice not concise | `openwebui_pipe.py` (`_is_voice_mode`, `voice_concise` Valve) |
+| OpenClaw report not saving | `routers/openclaw.py` (`openclaw_report`), `retrieval.py` (`ingest_text`) |
+| Water report missing from morning | `telegram_bot.py` (`job_morning_summary`), `routers/proactive.py` (`latest_water_report`) |
+| OpenClaw critical not notifying | `routers/openclaw.py` (severity check, `_get_bot_token`) |
