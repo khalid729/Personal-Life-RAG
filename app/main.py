@@ -11,6 +11,7 @@ from app.routers import backup as backup_router
 from app.routers import graph_viz
 from app.routers import homeassistant as ha_router
 from app.routers import location as location_router
+from app.routers import openclaw as openclaw_router
 from app.routers import users as users_router
 from app.services.backup import BackupService
 from app.services.files import FileService
@@ -142,6 +143,7 @@ app.include_router(productivity.router)
 app.include_router(backup_router.router)
 app.include_router(graph_viz.router)
 app.include_router(ha_router.router)
+app.include_router(openclaw_router.router)
 app.include_router(location_router.router)
 app.include_router(users_router.router)
 
